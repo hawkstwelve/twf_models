@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Weather Models - Coming Soon | The Weather Forums</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            padding: 60px 40px;
+            max-width: 600px;
+            text-align: center;
+        }
+        
+        .icon {
+            font-size: 80px;
+            margin-bottom: 20px;
+        }
+        
+        h1 {
+            color: #333;
+            font-size: 2.5em;
+            margin-bottom: 20px;
+            font-weight: 700;
+        }
+        
+        .subtitle {
+            color: #666;
+            font-size: 1.2em;
+            margin-bottom: 30px;
+            line-height: 1.6;
+        }
+        
+        .features {
+            text-align: left;
+            margin: 40px 0;
+            padding: 30px;
+            background: #f8f9fa;
+            border-radius: 10px;
+        }
+        
+        .features h2 {
+            color: #333;
+            font-size: 1.5em;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        
+        .features ul {
+            list-style: none;
+            padding: 0;
+        }
+        
+        .features li {
+            padding: 10px 0;
+            color: #555;
+            font-size: 1.1em;
+            padding-left: 30px;
+            position: relative;
+        }
+        
+        .features li:before {
+            content: "✓";
+            position: absolute;
+            left: 0;
+            color: #667eea;
+            font-weight: bold;
+            font-size: 1.2em;
+        }
+        
+        .status {
+            background: #e3f2fd;
+            border-left: 4px solid #2196f3;
+            padding: 15px 20px;
+            margin: 30px 0;
+            border-radius: 5px;
+            color: #1976d2;
+        }
+        
+        .footer {
+            margin-top: 40px;
+            color: #999;
+            font-size: 0.9em;
+        }
+        
+        @media (max-width: 600px) {
+            .container {
+                padding: 40px 20px;
+            }
+            
+            h1 {
+                font-size: 2em;
+            }
+            
+            .subtitle {
+                font-size: 1em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="icon">🌦️</div>
+        <h1>Weather Models</h1>
+        <p class="subtitle">
+            Custom forecast maps from GFS and other weather models, 
+            focused on the Pacific Northwest.
+        </p>
+        
+        <div class="status">
+            <strong>🚧 Coming Soon</strong><br>
+            We're currently building and testing the weather model visualization system. 
+            Check back soon for access to custom forecast maps!
+        </div>
+        
+        <div class="features">
+            <h2>What to Expect</h2>
+            <ul>
+                <li>Temperature forecasts (2m)</li>
+                <li>Precipitation type maps (rain/snow/freezing rain)</li>
+                <li>Total precipitation forecasts</li>
+                <li>Wind speed maps</li>
+                <li>Pacific Northwest focus (WA, OR, ID)</li>
+                <li>Multiple forecast hours (0, 24, 48, 72 hours)</li>
+                <li>Regular updates every 6 hours</li>
+            </ul>
+        </div>
+        
+        <div class="footer">
+            <p>The Weather Forums</p>
+            <p>Custom weather model visualizations</p>
+        </div>
+    </div>
+</body>
+</html>
