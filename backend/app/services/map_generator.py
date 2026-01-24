@@ -497,12 +497,8 @@ class MapGenerator:
             cbar.set_label(f"{variable.replace('_', ' ').title()} ({units})")
         
         # Add gridlines
-        gl = ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=True,
+        gl = ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=False,
                          linewidth=0.5, color='gray', alpha=0.5, linestyle='--')
-        gl.top_labels = False
-        gl.right_labels = False
-        gl.xformatter = LONGITUDE_FORMATTER
-        gl.yformatter = LATITUDE_FORMATTER
         
         # Add title
         run_str = run_time.strftime("%Y-%m-%d %H:00 UTC") if run_time else "Latest"
