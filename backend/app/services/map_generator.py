@@ -303,36 +303,68 @@ class MapGenerator:
         # Add station overlays if enabled
         if settings.station_overlays and variable not in ["precipitation_type", "precip_type"]:
             try:
+                station_values = None
+                
                 # Determine which dataset variable to use for extraction
                 if variable in ["temperature_2m", "temp"]:
                     extract_var = 't2m' if 't2m' in ds else 'tmp2m'
-                elif variable in ["precipitation", "precip"]:
-                    extract_var = 'prate'
-                elif variable in ["wind_speed_10m", "wind_speed"]:
-                    # For wind speed, we need to calculate it first
-                    # We'll extract the magnitude after calculation
-                    extract_var = None  # Handle separately below
-                else:
-                    extract_var = None
-                
-                if extract_var:
                     station_values = self.extract_station_values(
                         ds, extract_var, 
                         region=region_to_use,
                         priority_level=settings.station_priority
                     )
+                    # Convert K to F for display
+                    station_values = {k: (v - 273.15) * 9/5 + 32 
+                                    for k, v in station_values.items()}
                     
-                    # Convert units to match map display
-                    if variable in ["temperature_2m", "temp"]:
-                        # Convert K to F for display
-                        station_values = {k: (v - 273.15) * 9/5 + 32 
-                                        for k, v in station_values.items()}
-                    elif variable in ["precipitation", "precip"]:
-                        # Convert kg/m²/s to inches
-                        # Need to account for time period (hourly rate to accumulation)
-                        station_values = {k: v * 3600 * 0.0393701 
-                                        for k, v in station_values.items()}
+                elif variable in ["precipitation", "precip"]:
+                    extract_var = 'prate'
+                    station_values = self.extract_station_values(
+                        ds, extract_var, 
+                        region=region_to_use,
+                        priority_level=settings.station_priority
+                    )
+                    # Convert kg/m²/s to inches (hourly accumulation)
+                    station_values = {k: v * 3600 * 0.0393701 
+                                    for k, v in station_values.items()}
                     
+                elif variable in ["wind_speed_10m", "wind_speed"]:
+                    # Wind speed requires calculating magnitude from u and v components
+                    from app.services.stations import get_stations_for_region
+                    stations = get_stations_for_region(region_to_use, settings.station_priority)
+                    station_values = {}
+                    
+                    for station_name, station_data in stations.items():
+                        try:
+                            # Extract u and v components
+                            u = ds['ugrd10m'].sel(
+                                latitude=station_data['lat'],
+                                longitude=station_data['lon'],
+                                method='nearest'
+                            ).values
+                            v = ds['vgrd10m'].sel(
+                                latitude=station_data['lat'],
+                                longitude=station_data['lon'],
+                                method='nearest'
+                            ).values
+                            
+                            # Handle numpy arrays
+                            if hasattr(u, 'item'):
+                                u = u.item()
+                            if hasattr(v, 'item'):
+                                v = v.item()
+                            
+                            # Calculate wind speed magnitude
+                            wind_speed = np.sqrt(u**2 + v**2)
+                            # Convert m/s to mph
+                            wind_speed_mph = wind_speed * 2.23694
+                            station_values[station_name] = float(wind_speed_mph)
+                            
+                        except Exception as e:
+                            logger.warning(f"Could not extract wind speed for station {station_name}: {e}")
+                            continue
+                
+                if station_values:
                     self.plot_station_overlays(
                         ax, station_values, variable,
                         region=region_to_use,
