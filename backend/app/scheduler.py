@@ -9,6 +9,7 @@ from pathlib import Path
 
 from app.config import settings
 from app.services.map_generator import MapGenerator
+from app.services.data_fetcher import GFSDataFetcher
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
