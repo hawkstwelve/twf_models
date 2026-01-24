@@ -10,7 +10,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'backend
 
 from app.services.data_fetcher import GFSDataFetcher
 from app.services.map_generator import MapGenerator
-from app.core.config import settings
+from app.config import settings
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
