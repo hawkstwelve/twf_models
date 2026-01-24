@@ -200,26 +200,41 @@ class MapGenerator:
                 data = data - 273.15 # Convert to Celsius
             units = "°C"
             from matplotlib.colors import LinearSegmentedColormap
-            # Custom 850mb Hex Scale matching provided screenshot
+            
+            # 1. Define anchor points in Celsius (Converted from the professional F scale)
+            # Mapping: (Value in C, Hex Code)
             colors = [
-                (-50, '#2A0A5E'), (-45, '#4D0673'), (-40, '#8A005F'), 
-                (-35, '#C7005B'), (-30, '#E94FA3'), (-25, '#F29EC4'), 
-                (-20, '#D8BFD8'), (-15, '#B0E0E6'), (-10, '#40E0D0'), 
-                (-5, '#008080'), (0, '#F5F5F5'),   (3, '#2A0A5E'), 
-                (6, '#800000'),  (9, '#D81B60'),  (12, '#FADADD'), 
-                (15, '#87CEFA'), (18, '#0000CD'), (21, '#708090'), 
-                (24, '#FFFACD'), (27, '#FFD700'), (30, '#FF4500'), 
-                (33, '#8B0000'), (36, '#4B3621'), (39, '#006400')
+                (-40.0, '#E8D0D8'), # -40F
+                (-34.4, '#D0A0C0'), # -30F
+                (-28.9, '#A070B0'), # -20F
+                (-23.3, '#704090'), # -10F
+                (-17.8, '#8050A0'), #  0F
+                (-12.2, '#C0D0F0'), # 10F
+                (-6.7,  '#80A0D0'), # 20F
+                (-1.1,  '#4060B0'), # 30F
+                (0.0,   '#204080'), # 32F (FREEZING LINE)
+                (1.7,   '#406050'), # 35F
+                (7.2,   '#709070'), # 45F
+                (12.8,  '#D0D090'), # 55F
+                (18.3,  '#B09060'), # 65F
+                (23.9,  '#804030'), # 75F
+                (29.4,  '#901010'), # 85F
+                (35.0,  '#A08080'), # 95F
+                (40.6,  '#D0C0C0'), # 105F
+                (46.1,  '#504040')  # 115F
             ]
-            # Normalize points to 0-1 range for LinearSegmentedColormap
+
+            # 2. Set the data range in Celsius
+            min_val = -40.0 
+            max_val = 46.1
+
+            # 3. Normalize and Create Cmap
             norm_colors = []
-            min_val = colors[0][0]
-            max_val = colors[-1][0]
             for val, hex_code in colors:
                 pos = (val - min_val) / (max_val - min_val)
-                norm_colors.append((pos, hex_code))
-            
-            cmap = LinearSegmentedColormap.from_list('temp_850', norm_colors, N=256)
+                norm_colors.append((max(0, min(1, pos)), hex_code))
+
+            cmap = LinearSegmentedColormap.from_list('weatherbell_c', norm_colors, N=256)
             is_850mb_map = True
         elif variable == "mslp_precip" or variable == "mslp_pcpn":
             # MSLP & Categorical Precipitation (Rain/Snow/Sleet/Freezing Rain)
@@ -390,8 +405,8 @@ class MapGenerator:
             # 850mb Temp shading
             lon_vals = data.coords.get('lon', data.coords.get('longitude'))
             lat_vals = data.coords.get('lat', data.coords.get('latitude'))
-            # Use Celsius levels from -50 to 40 with 1 degree increments for smoothness
-            temp_levels = np.arange(-50, 41, 1)
+            # Use Celsius levels from -40 to 46 with 1 degree increments for smoothness
+            temp_levels = np.arange(-40, 47, 1)
             
             im = ax.contourf(
                 lon_vals, lat_vals, data,
