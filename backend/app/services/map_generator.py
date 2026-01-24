@@ -170,7 +170,7 @@ class MapGenerator:
             elif variable in ["wind_speed_10m", "wind_speed"]:
                 needed_vars = ['ugrd10m', 'vgrd10m']
             elif variable in ["mslp_precip", "mslp_pcpn"]:
-                needed_vars = ['prate', 'prmsl', 'gh', 'cpofp', 'csnow', 'cicep', 'cfrzr', 'crain']  # Added categorical types
+                needed_vars = ['prate', 'tp', 'prmsl', 'gh', 'cpofp', 'csnow', 'cicep', 'cfrzr', 'crain']  # Added categorical types and tp
             
             # Fetch only what we need, subset to PNW region
             ds = self.data_fetcher.fetch_gfs_data(
@@ -428,6 +428,60 @@ class MapGenerator:
                 extend='both',
                 zorder=1
             )
+        
+        # Add MSLP contours if this is an MSLP & Precip map (legacy check)
+        if not is_mslp_precip and variable in ["mslp_precip", "mslp_pcpn"]:
+            mslp_data = self._process_mslp(ds)
+            lon_coord = mslp_data.coords.get('lon', mslp_data.coords.get('longitude'))
+            lat_coord = mslp_data.coords.get('lat', mslp_data.coords.get('latitude'))
+            
+            # Contour levels every 4mb (standard)
+            contour_levels = np.arange(960, 1060, 4)
+            
+            # Draw contour lines
+            cs = ax.contour(
+                lon_coord, lat_coord, mslp_data,
+                levels=contour_levels,
+                colors='black',
+                linewidths=1.2,
+                transform=ccrs.PlateCarree(),
+                zorder=12
+            )
+            ax.clabel(cs, inline=True, fontsize=9, fmt='%d', zorder=13)
+            
+            # Add thickness if available
+            thickness_data = self._process_thickness(ds)
+            if thickness_data is not None:
+                # Cold thickness (<= 540) - Blue
+                cold_levels = np.arange(480, 541, 6)
+                cs_cold = ax.contour(
+                    lon_coord, lat_coord, thickness_data,
+                    levels=cold_levels,
+                    colors='blue',
+                    linewidths=1.2,
+                    linestyles='dashed',
+                    transform=ccrs.PlateCarree(),
+                    zorder=11
+                )
+                ax.clabel(cs_cold, inline=True, fontsize=8, fmt='%d', colors='blue')
+                
+                # Warm thickness (> 546) - Red
+                warm_levels = np.arange(552, 601, 6)
+                cs_warm = ax.contour(
+                    lon_coord, lat_coord, thickness_data,
+                    levels=warm_levels,
+                    colors='red',
+                    linewidths=1.2,
+                    linestyles='dashed',
+                    transform=ccrs.PlateCarree(),
+                    zorder=11
+                )
+                ax.clabel(cs_warm, inline=True, fontsize=8, fmt='%d', colors='red')
+                
+                # 546 line itself in Red
+                ax.contour(lon_coord, lat_coord, thickness_data, levels=[546], 
+                           colors='red', linewidths=1.2, linestyles='dashed', 
+                           transform=ccrs.PlateCarree(), zorder=11)
         
         # Add colorbar
         if variable in ["precipitation_type", "precip_type"]:
@@ -725,19 +779,32 @@ class MapGenerator:
     
     def _process_precipitation_mmhr(self, ds: xr.Dataset) -> xr.DataArray:
         """Process precipitation data in mm/hr (6-hour average rate)"""
-        if 'prate' in ds:
+        # Try common precipitation variable names
+        precip = None
+        
+        # Check for 'tp' (Total Precipitation) - often used for accumulated precip
+        if 'tp' in ds:
+            precip = ds['tp']
+            # If it's accumulated, we might need to handle it, but for GFS 6-hour files
+            # it often represents the accumulation in that period.
+        elif 'prate' in ds:
             # prate is in kg/m²/s, convert to mm/hr
             precip = ds['prate'] * 3600  # Convert to mm/h
         elif 'APCP_surface' in ds:
             precip = ds['APCP_surface']
+        elif 'Total_precipitation' in ds:
+            precip = ds['Total_precipitation']
         else:
-            precip_vars = [v for v in ds.data_vars if 'prate' in v.lower() or 'precip' in v.lower()]
+            # Search for anything matching precip or prate
+            precip_vars = [v for v in ds.data_vars if 'prate' in v.lower() or 'precip' in v.lower() or 'tp' == v.lower()]
             if precip_vars:
                 precip = ds[precip_vars[0]]
-                # Check if it needs conversion
-                if precip.max() < 1:  # Likely in kg/m²/s
-                    precip = precip * 3600  # Convert to mm/h
+                # Check if it needs conversion from kg/m2/s to mm/h
+                if float(precip.max()) < 0.1:  # Likely in kg/m²/s
+                    precip = precip * 3600
             else:
+                # Log available variables to help debugging
+                logger.warning(f"Available variables in dataset: {list(ds.data_vars)}")
                 raise ValueError("Could not find precipitation variable in dataset")
         
         return precip.isel(time=0) if 'time' in precip.dims else precip

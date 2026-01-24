@@ -435,6 +435,7 @@ class GFSDataFetcher:
                 'ugrd10m': ['u10', 'ugrd10m', 'UGRD_10maboveground', '10u', 'u-component_of_wind_height_above_ground', 'UGRD_P0_L103_GLL0'],
                 'vgrd10m': ['v10', 'vgrd10m', 'VGRD_10maboveground', '10v', 'v-component_of_wind_height_above_ground', 'VGRD_P0_L103_GLL0'],
                 'prmsl': ['prmsl', 'msl', 'PRMSL_meansealevel', 'MSL_meansealevel', 'Mean_sea_level_pressure', 'PRES_P0_L101_GLL0'],
+                'tp': ['tp', 'Total_precipitation', 'APCP_surface'],
                 'gh': ['gh', 'Geopotential_height_isobaric', 'HGT_isobaric', 'z'],
                 'gh_1000': ['gh_1000'],
                 'gh_500': ['gh_500'],
