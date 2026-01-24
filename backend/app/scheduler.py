@@ -283,24 +283,33 @@ class ForecastScheduler:
         """Start the scheduler"""
         # Schedule progressive generation at 03:30, 09:30, 15:30, 21:30 UTC
         # Starts 3.5 hours after each GFS run (00Z, 06Z, 12Z, 18Z)
-        # Then monitors S3 every 60 seconds for up to 90 minutes
-        # Generates maps in real-time as forecast hours become available
-        # 
-        # CST times: 9:30 PM, 3:30 AM, 9:30 AM, 3:30 PM
-        # PST times: 7:30 PM, 1:30 AM, 7:30 AM, 1:30 PM
-        # EST times: 10:30 PM, 4:30 AM, 10:30 AM, 4:30 PM
         self.scheduler.add_job(
             self.generate_forecast_maps,
-            trigger=CronTrigger(hour='3,9,15,21', minute='30'),  # Start monitoring 3.5h after each GFS run
+            trigger=CronTrigger(hour='3,9,15,21', minute='30'),
             id='generate_forecasts',
             name='Generate forecast maps',
             replace_existing=True,
-            max_instances=1  # Ensure only one monitoring session runs at a time
+            max_instances=1,
+            misfire_grace_time=3600  # Allow catching up if missed by up to 1 hour
         )
         
         logger.info("Forecast scheduler started")
         logger.info("Schedule: 03:30, 09:30, 15:30, 21:30 UTC")
-        logger.info("Mode: Progressive real-time generation (checks S3 every 60 seconds)")
+        
+        # Catch-up logic: If we start within 90 minutes of a scheduled time, run now
+        now = datetime.utcnow()
+        for sched_hour in [3, 9, 15, 21]:
+            sched_time = now.replace(hour=sched_hour, minute=30, second=0, microsecond=0)
+            # If current time is between sched_time and sched_time + 90 minutes
+            if sched_time <= now <= (sched_time + timedelta(minutes=90)):
+                logger.info(f"🕒 Catch-up: Starting missed 18z run (scheduled for {sched_hour}:30 UTC)")
+                self.scheduler.add_job(
+                    self.generate_forecast_maps,
+                    id='catch_up_run',
+                    name='Catch-up run'
+                )
+                break
+
         self.scheduler.start()
     
     def stop(self):
