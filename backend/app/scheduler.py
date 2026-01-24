@@ -56,9 +56,18 @@ class ForecastScheduler:
             hour_padded = f"{forecast_hour:03d}"
             
             # Check GRIB file (primary data source)
+            # Use '000' for forecast hour 0, but GFS sometimes uses 'anl' for analysis
             grib_path = f"noaa-gfs-bdp-pds/gfs.{date_str}/{hour_str}/atmos/gfs.t{hour_str}z.pgrb2.{settings.gfs_resolution}.f{hour_padded}"
             
             exists = self.s3.exists(grib_path)
+            
+            # If f000 doesn't exist, try 'anl' (some GFS versions use this for hour 0)
+            if not exists and forecast_hour == 0:
+                anl_path = f"noaa-gfs-bdp-pds/gfs.{date_str}/{hour_str}/atmos/gfs.t{hour_str}z.pgrb2.{settings.gfs_resolution}.anl"
+                exists = self.s3.exists(anl_path)
+                if exists:
+                    logger.info(f"Found analysis file (anl) for f000")
+            
             return exists
             
         except Exception as e:

@@ -184,7 +184,16 @@ class GFSDataFetcher:
             logger.info("Checking if GRIB file exists on S3...")
             try:
                 if not self.s3.exists(grib_file_path):
-                    raise FileNotFoundError(f"GRIB file not found on S3: {grib_file_path}")
+                    # If f000 doesn't exist, try 'anl' (Analysis)
+                    if forecast_hour == 0:
+                        anl_file_path = grib_file_path.replace('.f000', '.anl')
+                        if self.s3.exists(anl_file_path):
+                            logger.info(f"Using analysis file (anl) for f000")
+                            grib_file_path = anl_file_path
+                        else:
+                            raise FileNotFoundError(f"GRIB file not found on S3: {grib_file_path} (also tried .anl)")
+                    else:
+                        raise FileNotFoundError(f"GRIB file not found on S3: {grib_file_path}")
                 logger.info("✅ GRIB file exists on S3")
             except Exception as e:
                 logger.error(f"Failed to check if file exists: {e}")
