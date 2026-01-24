@@ -405,8 +405,29 @@ class MapGenerator:
                            colors='red', linewidths=1.2, linestyles='dashed', 
                            transform=ccrs.PlateCarree(), zorder=11)
         else:
-            # Continuous data (Temperature, Wind, etc.)
-            # ... (existing continuous data logic)
+            # Continuous data
+            # For temperature, use fixed levels for consistent colors across all maps
+            if variable in ["temperature_2m", "temp"]:
+                # Use 2.5 degree increments to make the gradient smoother 
+                # while keeping labels consistent with your 5-degree target
+                temp_levels = np.arange(-40, 122.5, 2.5)
+            elif variable in ["precipitation", "precip"]:
+                # Fixed precipitation levels for inches
+                temp_levels = [0.0, 0.01, 0.05, 0.10, 0.25, 0.50, 0.75, 1.0, 1.5, 2.0, 2.5, 3.0]
+            else:
+                temp_levels = 20  # Auto levels for other variables
+            
+            lon_vals = data.lon if hasattr(data, 'lat') else data.coords.get('lon', data.coords.get('longitude'))
+            lat_vals = data.lat if hasattr(data, 'lat') else data.coords.get('lat', data.coords.get('latitude'))
+            
+            im = ax.contourf(
+                lon_vals, lat_vals, data,
+                transform=ccrs.PlateCarree(),
+                cmap=cmap,
+                levels=temp_levels,
+                extend='both',
+                zorder=1
+            )
         
         # Add colorbar
         if variable in ["precipitation_type", "precip_type"]:
@@ -417,7 +438,6 @@ class MapGenerator:
         elif is_mslp_precip:
             cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40)
             cbar.set_label("6-h QPF by type (in), MSLP (hPa), 1000-500mb Thickness (dam)")
-        elif variable in ["mslp_precip", "mslp_pcpn"]:
         else:
             cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40)
             cbar.set_label(f"{variable.replace('_', ' ').title()} ({units})")
