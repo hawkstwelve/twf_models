@@ -317,6 +317,23 @@ class GFSDataFetcher:
                 except Exception as e:
                     logger.warning(f"  10m level failed: {str(e)[:100]}")
                 
+                # Try meanSea level (MSLP)
+                try:
+                    logger.info("Opening meanSea level...")
+                    ds_msl = xr.open_dataset(
+                        tmp_path,
+                        engine='cfgrib',
+                        backend_kwargs={'filter_by_keys': {'typeOfLevel': 'meanSea'}},
+                        decode_timedelta=False
+                    )
+                    for var in ds_msl.data_vars:
+                        all_data_vars[var] = ds_msl[var]
+                    if coords is None:
+                        coords = {k: v for k, v in ds_msl.coords.items()}
+                    logger.info(f"  meanSea variables: {list(ds_msl.data_vars)}")
+                except Exception as e:
+                    logger.warning(f"  meanSea level failed: {str(e)[:100]}")
+                
                 if not all_data_vars:
                     raise ValueError("Could not extract any variables from GRIB file")
                 
