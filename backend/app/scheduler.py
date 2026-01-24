@@ -20,8 +20,9 @@ class ForecastScheduler:
     def __init__(self):
         self.scheduler = BlockingScheduler()
         self.map_generator = MapGenerator()
-        # PNW-focused variables (wind gusts to be added later)
-        self.variables = ['temp', 'precip', 'precip_type', 'wind_speed']
+        self.data_fetcher = GFSDataFetcher()
+        # PNW-focused variables
+        self.variables = ['temp', 'precip', 'precip_type', 'wind_speed', 'mslp_precip', 'temp_850_wind_mslp']
         # Initialize S3 filesystem for data availability checks
         self.s3 = s3fs.S3FileSystem(anon=True)
     
@@ -131,18 +132,45 @@ class ForecastScheduler:
                     
                     # Generate all variables for this forecast hour
                     success_count = 0
-                    for variable in self.variables:
-                        try:
-                            self.map_generator.generate_map(
-                                variable=variable,
-                                model="GFS",
-                                run_time=run_time,
-                                forecast_hour=forecast_hour
-                            )
-                            logger.info(f"  ✓ {variable}")
-                            success_count += 1
-                        except Exception as e:
-                            logger.error(f"  ✗ {variable}: {e}")
+                    
+                    # Fetch data once for all variables in this forecast hour
+                    try:
+                        # Determine all variables needed for this hour
+                        all_needed_vars = set()
+                        for variable in self.variables:
+                            if variable in ["temp", "precip_type"]:
+                                all_needed_vars.update(['tmp2m', 'prate'])
+                            elif variable == "precip":
+                                all_needed_vars.add('prate')
+                            elif variable == "wind_speed":
+                                all_needed_vars.update(['ugrd10m', 'vgrd10m'])
+                            elif variable == "temp_850_wind_mslp":
+                                all_needed_vars.update(['tmp_850', 'ugrd_850', 'vgrd_850', 'prmsl'])
+                            elif variable == "mslp_precip":
+                                all_needed_vars.update(['prate', 'tp', 'prmsl', 'gh', 'gh_1000', 'gh_500', 'crain', 'csnow', 'cicep', 'cfrzr'])
+                        
+                        ds = self.data_fetcher.fetch_gfs_data(
+                            run_time, 
+                            forecast_hour,
+                            variables=list(all_needed_vars),
+                            subset_region=True
+                        )
+                        
+                        for variable in self.variables:
+                            try:
+                                self.map_generator.generate_map(
+                                    ds=ds,
+                                    variable=variable,
+                                    model="GFS",
+                                    run_time=run_time,
+                                    forecast_hour=forecast_hour
+                                )
+                                logger.info(f"  ✓ {variable}")
+                                success_count += 1
+                            except Exception as e:
+                                logger.error(f"  ✗ {variable}: {e}")
+                    except Exception as e:
+                        logger.error(f"  ✗ Failed to fetch data for f{forecast_hour:03d}: {e}")
                     
                     if success_count > 0:
                         generated_hours.add(forecast_hour)
