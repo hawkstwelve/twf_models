@@ -304,29 +304,40 @@ curl http://localhost:8000/health
 - ⏳ Verify 100% success rate
 - ⏳ Document any issues or improvements
 
-### Phase 2: Frontend Development (Next)
-After 1 week of stable backend operation:
+### Phase 2: Full Development & Testing on sodakweather.com (Next)
+After 1 week of stable backend operation, complete ALL enhancements on sodakweather.com:
+
+**Backend Enhancements**:
+- Increase resolution to 0.25° GFS
+- Add 10-15 additional map types (winter weather focused)
+- Extend forecast hours (every 3h to 48h, every 6h to 120h)
+- Optimize performance for larger dataset
+- Additional models (HRRR, NAM) if feasible
+
+**Frontend Development**:
 - Design interactive slider/animation interface
-- Build frontend application
-- Deploy to sodakweather.com for testing
+- Build responsive, mobile-friendly UI
+- Implement map type selector
+- Run time selector
+- GIF animation generation
+- TropicalTidbits-style user experience
+
+**Testing & Iteration**:
+- Deploy to sodakweather.com for comprehensive testing
 - Beta test with select users
 - Gather feedback and iterate
+- Performance optimization
+- Bug fixes and polish
 
-### Phase 3: Production Launch
-After successful testing on sodakweather.com:
-- Migrate to theweatherforums.com/models
+### Phase 3: Production Launch on theweatherforums.com
+**ONLY after sodakweather.com is fully polished and production-ready**:
+- Migrate completed, tested system to theweatherforums.com/models
 - Add to forum navigation
-- Public announcement
+- Public announcement to forum users
 - Monitor usage and performance
+- Minor tweaks and additional map types as needed
 
-### Phase 4: Enhancements
-Future improvements:
-- Higher resolution (0.25° GFS)
-- 10-15 additional map types
-- Extended forecast hours (every 3h to 48h, every 6h to 120h)
-- Additional models (HRRR, NAM, Graphcast)
-- GIF animations
-- Mobile optimization
+**Key Point**: theweatherforums.com deployment is the final production launch with a complete, polished product - NOT an incremental/beta deployment.
 
 ---
 

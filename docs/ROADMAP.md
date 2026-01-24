@@ -194,6 +194,15 @@ Based on TropicalTidbits GFS products:
 
 ## Phase 5: Production Deployment (3-Phase Approach)
 
+**DEPLOYMENT STRATEGY**:
+1. **Phase 5A (Current)**: Deploy basic backend infrastructure to Digital Ocean droplet
+2. **Phase 5B (Next)**: Complete ALL features and enhancements, test comprehensively on sodakweather.com
+3. **Phase 5C (Final)**: Launch fully polished, production-ready system on theweatherforums.com
+
+**IMPORTANT**: theweatherforums.com deployment is the FINAL production launch, not an iterative deployment. All enhancements (higher resolution, 15+ map types, extended forecast hours, interactive slider UI) must be completed and tested on sodakweather.com BEFORE launching on theweatherforums.com.
+
+---
+
 ### 🎯 PHASE 5A: Backend Deployment to DO Droplet (NOW - Week 8)
 
 **Status**: ✅ READY TO DEPLOY  
@@ -225,78 +234,110 @@ Based on TropicalTidbits GFS products:
 
 ---
 
-### 🎯 PHASE 5B: Frontend Testing on sodakweather.com (Week 10-12)
+### 🎯 PHASE 5B: Complete Development & Testing on sodakweather.com (Week 10-16)
 
 **Status**: ⏳ WAITING (After backend stable)  
-**Timeline**: 2-4 weeks development + testing  
-**Domain**: models.sodakweather.com (testing)
+**Timeline**: 6-8 weeks development + comprehensive testing  
+**Domain**: models.sodakweather.com (development & testing environment)
+
+**CRITICAL**: ALL enhancements and features must be completed and tested on sodakweather.com BEFORE deploying to theweatherforums.com. This is NOT a minimal viable product - this is the production-ready system being tested.
 
 #### Prerequisites
 - Backend API stable for 1-2 weeks on droplet
 - Maps generating reliably
-- Interactive frontend developed (slider, animation)
+- Ready to implement all Phases 2-4 enhancements
 
-#### Frontend Deployment
-- [ ] Nginx configured on sodakweather.com
-- [ ] SSL certificate installed
-- [ ] Frontend files deployed
+#### Backend Enhancements (Complete on sodakweather.com)
+- [ ] Upgrade to 0.25° GFS resolution (4x more detail)
+- [ ] Add 10-15 additional map types (winter weather focused)
+- [ ] Extend forecast hours (every 3h to 48h, every 6h to 120h)
+- [ ] Parallel map generation (performance optimization)
+- [ ] Smart scheduling and caching
+- [ ] Additional models (HRRR, NAM) if feasible
+
+#### Frontend Development (Complete on sodakweather.com)
+- [ ] Interactive slider/animation interface
+- [ ] Run time selection dropdown
+- [ ] Variable/map type selector
+- [ ] GIF animation generation
+- [ ] Play/pause controls with speed adjustment
+- [ ] Mobile responsive design
+- [ ] TropicalTidbits-style UX
+- [ ] Nginx configured with SSL
 - [ ] API proxy configured
 - [ ] CORS properly set up
 
-#### User Testing
-- [ ] Slider/animation interface working
-- [ ] Map viewing functional
-- [ ] Mobile responsive
-- [ ] Gather feedback from moderators/beta users
-- [ ] Refine UI/UX based on feedback
-- [ ] Cross-browser testing
-- [ ] Performance testing
+#### Comprehensive Testing (on sodakweather.com)
+- [ ] All map types generating correctly
+- [ ] Slider/animation working smoothly
+- [ ] Performance testing (load times, responsiveness)
+- [ ] Cross-browser testing (Chrome, Firefox, Safari, Edge)
+- [ ] Mobile testing (iOS, Android)
+- [ ] Beta user feedback from moderators/selected users
+- [ ] Iterate and polish based on feedback
+- [ ] Monitor system stability for 2-4 weeks
 
 **Success Criteria**:
+- ALL planned map types and features working
 - Frontend loads quickly (< 2 seconds)
-- Slider works smoothly
-- Maps display correctly on all devices
+- Smooth animation with 40+ forecast hours per variable
+- Maps display correctly on all devices and browsers
+- System stable under test usage
 - Positive feedback from beta testers
+- NO major known bugs or issues
 
-**Deliverable**: Fully functional frontend on sodakweather.com
+**Deliverable**: Fully production-ready system tested and refined on sodakweather.com
 
 ---
 
-### 🎯 PHASE 5C: Production Migration to theweatherforums.com (Week 14-16)
+### 🎯 PHASE 5C: Production Launch on theweatherforums.com (Week 18-20)
 
-**Status**: ⏳ WAITING (After frontend tested)  
-**Timeline**: 1 week migration + testing  
-**Domain**: theweatherforums.com/models (production)
+**Status**: ⏳ WAITING (After complete system tested on sodakweather.com)  
+**Timeline**: 1 week migration + final verification  
+**Domain**: theweatherforums.com/models (FINAL PRODUCTION)
 
-#### Prerequisites
-- Frontend tested successfully on sodakweather.com
-- User feedback incorporated
-- System stable for 2-4 weeks total
-- Forum ready to add /models link to navigation
+**NOTE**: This is the FINAL production launch of a complete, polished, production-ready system. All features, enhancements, and testing must be complete on sodakweather.com before this phase.
 
-#### Migration Steps
-- [ ] Copy frontend from sodakweather.com to theweatherforums.com
+#### Prerequisites (ALL Must Be Met)
+- ✅ All backend enhancements complete (0.25° resolution, 15+ map types, extended hours)
+- ✅ Full frontend with slider/animation working perfectly
+- ✅ Thoroughly tested on sodakweather.com for 2-4 weeks
+- ✅ All beta user feedback incorporated
+- ✅ System proven stable under test usage
+- ✅ No known major bugs or issues
+- ✅ Forum administrators ready for public launch
+
+#### Migration Steps (Simple - Just Moving Tested Code)
+- [ ] Copy tested frontend from sodakweather.com to theweatherforums.com
 - [ ] Update nginx configuration on forum droplet
 - [ ] Configure API proxy to models droplet
 - [ ] Update DNS/configuration as needed
-- [ ] Final testing on production domain
+- [ ] Final smoke testing on production domain
 - [ ] Add /models link to forum navigation
 - [ ] Remove "Coming Soon" page
 
-#### Launch
-- [ ] Announce to forum users
-- [ ] Monitor for issues
+#### Public Launch
+- [ ] Announce to forum users (forum post, newsletter)
+- [ ] Monitor for any deployment-specific issues
 - [ ] Gather user feedback
-- [ ] Quick fixes as needed
+- [ ] Minor tweaks as needed (NOT major features)
+
+#### Post-Launch Enhancements (Optional, Incremental)
+- [ ] Additional map types based on user requests
+- [ ] Minor UI/UX improvements
+- [ ] New models if requested
+- [ ] Performance optimizations if needed
 
 **Success Criteria**:
-- Maps accessible at theweatherforums.com/models
+- Polished, feature-complete maps accessible at theweatherforums.com/models
 - Navigation link working
-- Users can view and interact with maps
+- Users can view 15+ map types with 40+ forecast hours each
+- Smooth slider/animation interface
 - No performance impact on forum
 - System stable under real user load
+- Positive user reception
 
-**Deliverable**: Public launch on theweatherforums.com
+**Deliverable**: Public production launch of complete, TropicalTidbits-style model viewer
 
 ---
 
