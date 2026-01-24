@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="GFS Weather Model Forecasts for the Pacific Northwest">
+    <title>Weather Models - Pacific Northwest</title>
+    
+    <!-- Styles -->
+    <link rel="stylesheet" href="css/style.css">
+    
+    <!-- Configuration -->
+    <script src="config.js?v=3"></script>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <h1>Pacific Northwest Weather Models</h1>
+            <p>GFS Model Forecasts - Updated Every 6 Hours</p>
+        </header>
+
+        <!-- Controls Panel -->
+        <div class="controls-panel">
+            <!-- Variable Selector -->
+            <div class="control-group">
+                <label class="control-label">Select Variable</label>
+                <div class="button-group">
+                    <button class="btn variable-btn active" data-variable="temp">
+                        Temperature
+                    </button>
+                    <button class="btn variable-btn" data-variable="precip">
+                        Precipitation
+                    </button>
+                    <button class="btn variable-btn" data-variable="wind_speed">
+                        Wind Speed
+                    </button>
+                    <button class="btn variable-btn" data-variable="precip_type">
+                        Precip Type
+                    </button>
+                    <button class="btn variable-btn" data-variable="mslp_precip">
+                        MSLP & Precip
+                    </button>
+                </div>
+            </div>
+
+            <!-- Forecast Hour Selector -->
+            <div class="control-group">
+                <label class="control-label">Select Forecast Hour</label>
+                <div class="button-group">
+                    <button class="btn hour-btn active" data-hour="0">
+                        Now
+                    </button>
+                    <button class="btn hour-btn" data-hour="24">
+                        +24 Hours
+                    </button>
+                    <button class="btn hour-btn" data-hour="48">
+                        +48 Hours
+                    </button>
+                    <button class="btn hour-btn" data-hour="72">
+                        +72 Hours
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Error Message -->
+        <div id="error-message"></div>
+
+        <!-- Map Display -->
+        <div class="map-display">
+            <!-- Loading Indicator -->
+            <div id="loading-indicator">
+                <div class="spinner"></div>
+                <p>Loading forecast map...</p>
+            </div>
+
+            <!-- Map Container -->
+            <div class="map-container">
+                <div class="map-header">
+                    <h2 id="map-title">Temperature - Now (Analysis)</h2>
+                </div>
+
+                <div class="map-image-wrapper">
+                    <img id="map-image" src="" alt="Weather Map">
+                </div>
+
+                <div id="map-metadata">
+                    <!-- Metadata will be populated by JavaScript -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>
+                GFS Model Data from NOAA | 
+                Map Generation: 0.25° Resolution | 
+                <a href="https://theweatherforums.com" target="_blank">The Weather Forums</a>
+            </p>
+            <p style="margin-top: 10px; font-size: 12px;">
+                Maps update at 9:30 PM, 3:30 AM, 9:30 AM, and 3:30 PM CST
+            </p>
+        </footer>
+    </div>
+
+    <!-- Scripts -->
+    <script src="js/api-client.js"></script>
+    <script src="js/map-viewer.js"></script>
+</body>
+</html>
