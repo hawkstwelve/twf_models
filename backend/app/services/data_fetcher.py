@@ -169,29 +169,12 @@ class GFSDataFetcher:
                     client_kwargs={'region_name': 'us-east-1'}
                 )
             
-            # Try NetCDF first (much easier than GRIB)
+            # Use GRIB files (NetCDF has SSL issues on droplet)
+            # GRIB is reliable and cached for performance
             ds = None
-            try:
-                logger.info(f"Trying NetCDF file: {nc_file_path}")
-                ds = xr.open_dataset(
-                    nc_file_path,
-                    engine='netcdf4',
-                    chunks={'lat': 50, 'lon': 50}
-                )
-                logger.info("✅ Successfully opened NetCDF file!")
-                logger.info(f"Available variables: {list(ds.data_vars)[:20]}...")
-                # NetCDF files are already structured, no need for complex filtering
-                # Continue to variable selection and subsetting below
-                
-            except Exception as nc_error:
-                logger.warning(f"NetCDF file not available or failed: {nc_error}")
-                logger.info("Falling back to GRIB file...")
-                
-                # Fallback to GRIB - need to handle multiple level types separately
-                # (ds will be set in this block)
-                import cfgrib
-                
-                logger.info(f"Fetching GFS data from: {grib_file_path}")
+            import cfgrib
+            
+            logger.info(f"Fetching GFS data from GRIB: {grib_file_path}")
                 
                 # Check if the GRIB file exists on S3
                 logger.info("Checking if GRIB file exists on S3...")
