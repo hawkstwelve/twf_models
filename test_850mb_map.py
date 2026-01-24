@@ -8,7 +8,7 @@ import logging
 # Add the backend directory to sys.path to allow imports
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'backend')))
 
-from app.services.data_fetcher import DataFetcher
+from app.services.data_fetcher import GFSDataFetcher
 from app.services.map_generator import MapGenerator
 from app.core.config import settings
 
@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def test_850mb_map():
-    fetcher = DataFetcher()
+    fetcher = GFSDataFetcher()
     generator = MapGenerator()
     
     # Use 12z run from today
