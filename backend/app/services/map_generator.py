@@ -184,7 +184,23 @@ class MapGenerator:
         if variable == "temperature_2m" or variable == "temp":
             data = self._process_temperature(ds)
             units = "°F"  # Fahrenheit for PNW users
-            cmap = "coolwarm"
+            # Custom temperature colormap matching professional weather sites
+            from matplotlib.colors import LinearSegmentedColormap
+            temp_colors = [
+                '#4B0082',  # -40°F: Deep purple
+                '#0000CD',  # -20°F: Blue
+                '#1E90FF',  # 0°F: Dodger blue
+                '#00CED1',  # 15°F: Dark turquoise
+                '#00FF7F',  # 32°F: Spring green
+                '#32CD32',  # 50°F: Lime green
+                '#FFFF00',  # 65°F: Yellow
+                '#FFD700',  # 75°F: Gold
+                '#FFA500',  # 85°F: Orange
+                '#FF4500',  # 95°F: Orange red
+                '#DC143C',  # 105°F: Crimson
+                '#8B0000',  # 115°F: Dark red/brown
+            ]
+            cmap = LinearSegmentedColormap.from_list('temperature', temp_colors, N=256)
         elif variable == "precipitation_type" or variable == "precip_type":
             data = self._process_precipitation_type(ds)
             units = ""
