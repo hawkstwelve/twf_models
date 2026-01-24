@@ -147,6 +147,10 @@ class GFSDataFetcher:
             # Our current variables: temp, precip, precip_type, wind_speed
             variables = ['tmp2m', 'prate', 'ugrd10m', 'vgrd10m']
         
+        # If gh is requested, we need both 1000mb and 500mb for thickness
+        if 'gh' in variables:
+            variables = variables + ['gh_1000', 'gh_500']
+        
         date_str = run_time.strftime("%Y%m%d")
         run_hour_str = run_time.strftime("%H")  # Just the hour (00, 06, 12, 18)
         hour_str = f"{forecast_hour:03d}"
@@ -432,6 +436,8 @@ class GFSDataFetcher:
                 'vgrd10m': ['v10', 'vgrd10m', 'VGRD_10maboveground', '10v', 'v-component_of_wind_height_above_ground', 'VGRD_P0_L103_GLL0'],
                 'prmsl': ['prmsl', 'msl', 'PRMSL_meansealevel', 'MSL_meansealevel', 'Mean_sea_level_pressure', 'PRES_P0_L101_GLL0'],
                 'gh': ['gh', 'Geopotential_height_isobaric', 'HGT_isobaric', 'z'],
+                'gh_1000': ['gh_1000'],
+                'gh_500': ['gh_500'],
             }
             
             # Find matching variables

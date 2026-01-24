@@ -226,9 +226,9 @@ class MapGenerator:
             # Precipitation color scheme (Cyans/Blues) to match reference
             from matplotlib.colors import LinearSegmentedColormap
             precip_colors = [
-                '#FFFFFF00', # 0.0 mm/hr - Transparent White
-                '#E0F7FA',  # 0.1 mm/hr - Pale Cyan
-                '#B2EBF2',  # 0.5 mm/hr - Light Cyan
+                '#FFFFFF00', # 0.0 mm/hr - Transparent
+                '#B2EBF2',  # 0.1 mm/hr - Very light cyan
+                '#80DEEA',  # 0.5 mm/hr - Light cyan
                 '#4DD0E1',  # 1.0 mm/hr - Cyan
                 '#00BCD4',  # 2.0 mm/hr - Bright Cyan
                 '#0097A7',  # 4.0 mm/hr - Dark Cyan
@@ -271,12 +271,12 @@ class MapGenerator:
             ax = plt.axes(projection=ccrs.PlateCarree())
             ax.set_global()
         
-        # Add map features
-        ax.add_feature(cfeature.COASTLINE, linewidth=0.5)
-        ax.add_feature(cfeature.BORDERS, linewidth=0.5)
-        ax.add_feature(cfeature.STATES, linewidth=0.3, linestyle=':')
-        ax.add_feature(cfeature.LAND, facecolor='lightgray', alpha=0.5)
-        ax.add_feature(cfeature.OCEAN, facecolor='lightblue', alpha=0.5)
+        # Add map features (zorder=0 to keep them below data)
+        ax.add_feature(cfeature.OCEAN, facecolor='#e3f2fd', zorder=0)
+        ax.add_feature(cfeature.LAND, facecolor='#fbf5e7', zorder=0)
+        ax.add_feature(cfeature.COASTLINE, linewidth=0.6, edgecolor='#333333', zorder=2)
+        ax.add_feature(cfeature.BORDERS, linewidth=0.6, edgecolor='#333333', zorder=2)
+        ax.add_feature(cfeature.STATES, linewidth=0.4, edgecolor='#666666', linestyle=':', zorder=2)
         
         # Plot data
         # Handle precipitation type differently (discrete values)
@@ -288,26 +288,18 @@ class MapGenerator:
             bounds = [-0.5, 0.5, 1.5, 2.5, 3.5]
             norm = BoundaryNorm(bounds, cmap_discrete.N)
             
-            if hasattr(data, 'lat') and hasattr(data, 'lon'):
-                im = ax.contourf(
-                    data.lon, data.lat, data,
-                    transform=ccrs.PlateCarree(),
-                    cmap=cmap_discrete,
-                    norm=norm,
-                    levels=bounds,
-                    extend='neither'
-                )
-            else:
-                im = ax.contourf(
-                    data.coords.get('lon', data.coords.get('longitude')),
-                    data.coords.get('lat', data.coords.get('latitude')),
-                    data,
-                    transform=ccrs.PlateCarree(),
-                    cmap=cmap_discrete,
-                    norm=norm,
-                    levels=bounds,
-                    extend='neither'
-                )
+            lon_vals = data.lon if hasattr(data, 'lat') else data.coords.get('lon', data.coords.get('longitude'))
+            lat_vals = data.lat if hasattr(data, 'lat') else data.coords.get('lat', data.coords.get('latitude'))
+            
+            im = ax.contourf(
+                lon_vals, lat_vals, data,
+                transform=ccrs.PlateCarree(),
+                cmap=cmap_discrete,
+                norm=norm,
+                levels=bounds,
+                extend='neither',
+                zorder=1
+            )
         else:
             # Continuous data
             # For temperature, use fixed levels for consistent colors across all maps
@@ -324,25 +316,17 @@ class MapGenerator:
             else:
                 temp_levels = 20  # Auto levels for other variables
             
-            if hasattr(data, 'lat') and hasattr(data, 'lon'):
-                im = ax.contourf(
-                    data.lon, data.lat, data,
-                    transform=ccrs.PlateCarree(),
-                    cmap=cmap,
-                    levels=temp_levels,
-                    extend='both'
-                )
-            else:
-                # Fallback if coordinates are different
-                im = ax.contourf(
-                    data.coords.get('lon', data.coords.get('longitude')),
-                    data.coords.get('lat', data.coords.get('latitude')),
-                    data,
-                    transform=ccrs.PlateCarree(),
-                    cmap=cmap,
-                    levels=temp_levels,
-                    extend='both'
-                )
+            lon_vals = data.lon if hasattr(data, 'lat') else data.coords.get('lon', data.coords.get('longitude'))
+            lat_vals = data.lat if hasattr(data, 'lat') else data.coords.get('lat', data.coords.get('latitude'))
+            
+            im = ax.contourf(
+                lon_vals, lat_vals, data,
+                transform=ccrs.PlateCarree(),
+                cmap=cmap,
+                levels=temp_levels,
+                extend='both',
+                zorder=1
+            )
         
         # Add MSLP contours if this is an MSLP & Precip map
         if variable in ["mslp_precip", "mslp_pcpn"]:
@@ -358,13 +342,13 @@ class MapGenerator:
                 lon_coord, lat_coord, mslp_data,
                 levels=contour_levels,
                 colors='black',
-                linewidths=1.0,
+                linewidths=1.2, # Slightly thicker
                 transform=ccrs.PlateCarree(),
-                zorder=10
+                zorder=12 # Higher than thickness
             )
             
             # Label contours
-            ax.clabel(cs, inline=True, fontsize=8, fmt='%d')
+            ax.clabel(cs, inline=True, fontsize=9, fmt='%d', zorder=13)
             
             # Find and label HIGH/LOW pressure centers
             try:
