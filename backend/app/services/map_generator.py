@@ -413,20 +413,17 @@ class MapGenerator:
             )
             ax.clabel(cs_mslp, inline=True, fontsize=9, fmt='%d', zorder=13)
             
-            # Wind Arrows (Color-filled by speed)
+            # Wind Arrows (Black)
             u = ds['ugrd_850'].squeeze()
             v = ds['vgrd_850'].squeeze()
-            # Convert m/s to mph
-            wind_speed = np.sqrt(u**2 + v**2) * 2.23694
             
             # Subsample for readability
             skip = 4
             ax.quiver(
                 lon_vals[::skip].values, lat_vals[::skip].values, 
                 u[::skip, ::skip].values, v[::skip, ::skip].values,
-                wind_speed[::skip, ::skip].values,
                 transform=ccrs.PlateCarree(),
-                cmap='plasma',
+                color='black',
                 scale=400,
                 width=0.005,
                 zorder=14
