@@ -272,3 +272,347 @@ If theweatherforums.com uses WordPress, you can:
 2. Use WordPress REST API to fetch map data
 3. Embed maps using shortcodes
 4. Use WordPress caching for performance
+
+---
+
+## Progressive Loading Implementation
+
+### Overview
+Maps should appear dynamically as they're generated rather than all at once. This provides a better user experience, similar to TropicalTidbits.com behavior.
+
+**Current Backend Behavior** (already implemented):
+- Progressive generation: f000 maps generated first (~1 min), then f024, f048, f072
+- Maps saved immediately after generation
+- API serves maps as soon as they're available
+
+**Frontend Implementation Strategy**:
+Frontend polls for new maps and updates the UI dynamically without page refresh.
+
+---
+
+### Backend Components (To Be Implemented)
+
+#### 1. manifest.json Generation
+**Location**: `backend/app/services/map_generator.py`
+
+After each map is saved, update `manifest.json`:
+
+```python
+# Pseudo-code - to be implemented in Phase 2
+def _update_manifest(self, maps_completed, total_maps, available_maps):
+    manifest = {
+        "run_time": "2026-01-24T00:00:00Z",
+        "generated_at": datetime.utcnow().isoformat(),
+        "status": "generating" if maps_completed < total_maps else "complete",
+        "progress": {
+            "completed": maps_completed,
+            "total": total_maps,
+            "percentage": (maps_completed / total_maps) * 100,
+            "current_hour": 24  # Which forecast hour is currently generating
+        },
+        "forecast_hours_available": [0, 24],  # Which hours are complete
+        "maps": [
+            {
+                "id": "gfs_20260124_00_temp_0",
+                "variable": "temp",
+                "forecast_hour": 0,
+                "image_url": "/api/images/gfs_20260124_00_temp_0.png",
+                "created_at": "2026-01-24T00:01:23Z"
+            },
+            # ... more maps
+        ]
+    }
+    
+    with open("/opt/twf_models/images/manifest.json", "w") as f:
+        json.dump(manifest, f, indent=2)
+```
+
+**Why manifest.json?**
+- Lightweight (~2-5KB vs full API call)
+- Can be served as static file (faster, cacheable)
+- No authentication needed
+- Easy to parse in frontend JavaScript
+
+#### 2. Generation Status API Endpoint
+**Location**: `backend/app/api/routes.py`
+
+```python
+@router.get("/api/generation/status")
+def get_generation_status():
+    """
+    Returns real-time status of current generation run.
+    Provides more detail than manifest.json.
+    """
+    return {
+        "in_progress": True,
+        "run_time": "2026-01-24T00:00:00Z",
+        "started_at": "2026-01-24T00:00:15Z",
+        "elapsed_seconds": 87,
+        "estimated_remaining_seconds": 153,
+        "progress": {
+            "completed": 8,
+            "total": 16,
+            "percentage": 50.0,
+            "current_forecast_hour": 24,
+            "current_variable": "precip"
+        },
+        "forecast_hours": {
+            "0": {"status": "complete", "maps_count": 4},
+            "24": {"status": "generating", "maps_count": 2},
+            "48": {"status": "pending", "maps_count": 0},
+            "72": {"status": "pending", "maps_count": 0}
+        },
+        "last_completed_map": {
+            "variable": "wind_speed",
+            "forecast_hour": 24,
+            "completed_at": "2026-01-24T00:01:42Z"
+        }
+    }
+```
+
+---
+
+### Frontend Implementation (To Be Built in Phase 2)
+
+#### 1. Polling Strategy
+
+**manifest.json Approach** (Recommended - lightweight):
+```javascript
+class MapMonitor {
+    constructor(apiBaseUrl) {
+        this.apiBaseUrl = apiBaseUrl;
+        this.pollInterval = 60000; // 60 seconds
+        this.knownMaps = new Set();
+        this.isPolling = false;
+    }
+    
+    async startMonitoring() {
+        this.isPolling = true;
+        while (this.isPolling) {
+            await this.checkForNewMaps();
+            await this.sleep(this.pollInterval);
+        }
+    }
+    
+    async checkForNewMaps() {
+        try {
+            const response = await fetch(`${this.apiBaseUrl}/images/manifest.json`);
+            const manifest = await response.json();
+            
+            // Check if generation is in progress
+            if (manifest.status === "generating") {
+                this.updateProgressBar(manifest.progress);
+                
+                // Check for new maps
+                const newMaps = manifest.maps.filter(map => 
+                    !this.knownMaps.has(map.id)
+                );
+                
+                if (newMaps.length > 0) {
+                    this.addMapsToUI(newMaps);
+                    newMaps.forEach(map => this.knownMaps.add(map.id));
+                }
+            } else if (manifest.status === "complete") {
+                this.updateProgressBar({ percentage: 100 });
+                this.isPolling = false; // Stop polling
+            }
+        } catch (error) {
+            console.error("Error checking for new maps:", error);
+        }
+    }
+    
+    updateProgressBar(progress) {
+        const bar = document.getElementById('progress-bar');
+        const text = document.getElementById('progress-text');
+        
+        bar.style.width = `${progress.percentage}%`;
+        text.textContent = `Generating maps... ${progress.completed}/${progress.total} complete`;
+    }
+    
+    addMapsToUI(newMaps) {
+        // Group by forecast hour
+        const hourGroups = this.groupByForecastHour(newMaps);
+        
+        // Update slider with new forecast hours
+        Object.keys(hourGroups).forEach(hour => {
+            this.addForecastHourToSlider(hour, hourGroups[hour]);
+        });
+    }
+    
+    sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+}
+
+// Usage
+const monitor = new MapMonitor('http://174.138.84.70:8000');
+monitor.startMonitoring();
+```
+
+#### 2. Progressive UI Updates
+
+**HTML Structure**:
+```html
+<div class="map-viewer">
+    <!-- Progress indicator (shown during generation) -->
+    <div id="generation-progress" class="progress-container">
+        <div class="progress-bar" id="progress-bar"></div>
+        <div class="progress-text" id="progress-text">
+            Generating maps... 0/16 complete
+        </div>
+    </div>
+    
+    <!-- Map slider/viewer -->
+    <div class="map-display">
+        <img id="current-map" src="" alt="Weather Map">
+    </div>
+    
+    <!-- Forecast hour slider -->
+    <div class="forecast-slider">
+        <button class="hour-button" data-hour="0">Now</button>
+        <!-- Additional hour buttons appear as maps become available -->
+    </div>
+    
+    <!-- Variable selector -->
+    <div class="variable-selector">
+        <button data-variable="temp">Temperature</button>
+        <button data-variable="precip">Precipitation</button>
+        <button data-variable="wind_speed">Wind Speed</button>
+        <button data-variable="precip_type">Precip Type</button>
+    </div>
+</div>
+```
+
+**CSS (Progressive Loading States)**:
+```css
+.hour-button {
+    opacity: 0.3;
+    cursor: not-allowed;
+    transition: opacity 0.3s ease;
+}
+
+.hour-button.available {
+    opacity: 1.0;
+    cursor: pointer;
+    animation: fadeIn 0.5s ease;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0.3; transform: scale(0.95); }
+    to { opacity: 1.0; transform: scale(1.0); }
+}
+
+.progress-container {
+    margin: 20px 0;
+    transition: opacity 0.5s ease;
+}
+
+.progress-container.hidden {
+    opacity: 0;
+    height: 0;
+    overflow: hidden;
+}
+```
+
+#### 3. User Experience Flow
+
+**Timeline (User Perspective)**:
+```
+00:00 UTC - User visits page
+  ↓
+  Display: "Loading latest forecast..."
+  Backend: Starting generation
+  
+00:01 UTC - First maps available (f000)
+  ↓
+  Display: Progress bar "4/16 complete (25%)"
+  Slider: f000 button now enabled and highlighted
+  User: Can immediately view f000 maps
+  
+00:02 UTC - f024 maps available
+  ↓
+  Display: Progress bar "8/16 complete (50%)"
+  Slider: f024 button appears and animates in
+  User: Can now toggle between f000 and f024
+  
+00:03 UTC - f048 maps available
+  ↓
+  Display: Progress bar "12/16 complete (75%)"
+  Slider: f048 button appears
+  
+00:04 UTC - f072 maps complete
+  ↓
+  Display: Progress bar "16/16 complete (100%)"
+  Progress bar fades out after 2 seconds
+  User: Full forecast available, can animate through all hours
+```
+
+---
+
+### Benefits of This Approach
+
+✅ **Keeps Current Backend** - No rewrite needed  
+✅ **Lightweight** - manifest.json is small (~2-5KB)  
+✅ **Fast** - Static file served by nginx  
+✅ **Scalable** - Can add more complex API endpoint later  
+✅ **Flexible** - Frontend can poll manifest OR use API  
+✅ **User-Friendly** - Maps appear progressively, not all at once  
+✅ **Professional** - Matches TropicalTidbits.com UX  
+
+---
+
+### Implementation Priority
+
+**Phase 2A: Backend Additions** (1-2 hours)
+1. Add manifest.json generation to `map_generator.py`
+2. Add `/api/generation/status` endpoint to `routes.py`
+3. Test with current 4-variable, 4-hour setup
+
+**Phase 2B: Frontend Development** (3-5 days)
+1. Build polling mechanism
+2. Create responsive UI with slider
+3. Implement progressive loading animation
+4. Add loading indicators
+5. Test across browsers/devices
+
+**Phase 2C: Testing on sodakweather.com** (1-2 weeks)
+1. Deploy to sodakweather.com
+2. Beta test with select users
+3. Gather feedback
+4. Polish and optimize
+
+---
+
+### Alternative: Server-Sent Events (SSE)
+
+For real-time updates without polling:
+
+```python
+# Backend (routes.py)
+@router.get("/api/generation/stream")
+async def generation_stream():
+    async def event_generator():
+        while generation_in_progress:
+            yield f"data: {json.dumps(get_current_status())}\n\n"
+            await asyncio.sleep(5)
+    
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+```
+
+```javascript
+// Frontend
+const eventSource = new EventSource('/api/generation/stream');
+eventSource.onmessage = (event) => {
+    const status = JSON.parse(event.data);
+    updateUI(status);
+};
+```
+
+**Trade-offs**:
+- ✅ True real-time (no 60s delay)
+- ✅ Server pushes updates
+- ❌ More complex backend
+- ❌ Keeps connection open
+- ❌ Overkill for 60s polling
+
+**Recommendation**: Start with manifest.json polling, add SSE later if needed.

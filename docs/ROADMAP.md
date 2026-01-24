@@ -141,6 +141,33 @@ Based on TropicalTidbits GFS products:
 - [ ] Match forum theme
 - [ ] Fast image loading (preload next/previous)
 
+### Progressive Loading System
+- [ ] **manifest.json Generation** (Backend)
+  - Generate manifest.json alongside each map
+  - Include progress tracking (e.g., "8/16 maps complete")
+  - Update after each map is saved
+  - Include timestamps, run time, available forecast hours
+  
+- [ ] **Generation Status Endpoint** (Backend)
+  - `/api/generation/status` endpoint
+  - Returns real-time progress of current run
+  - Shows which forecast hours are complete
+  - Estimated time remaining
+  
+- [ ] **Progressive Polling** (Frontend)
+  - Fetch manifest.json every 60 seconds during generation
+  - Auto-update slider when new maps appear
+  - Loading bar showing generation progress (e.g., "12/16 complete - 75%")
+  - Smooth transitions as new forecast hours become available
+  - No page refresh required - maps appear dynamically
+  
+- [ ] **User Experience Benefits**
+  - Users see f000 (current) maps first (~1 minute)
+  - Progressive appearance of f024, f048, f072 maps
+  - Don't wait for full 4-5 minute generation
+  - Clear visual feedback on what's loading
+  - Can start viewing while rest generates
+
 ---
 
 ## Phase 4: Backend Optimization (Weeks 6-10)
