@@ -169,6 +169,8 @@ class MapGenerator:
                 needed_vars = ['prate']
             elif variable in ["wind_speed_10m", "wind_speed"]:
                 needed_vars = ['ugrd10m', 'vgrd10m']
+            elif variable in ["temp_850_wind_mslp", "850mb"]:
+                needed_vars = ['tmp_850', 'ugrd_850', 'vgrd_850', 'prmsl']
             elif variable in ["mslp_precip", "mslp_pcpn"]:
                 needed_vars = ['prate', 'tp', 'prmsl', 'gh', 'cpofp', 'csnow', 'cicep', 'cfrzr', 'crain']  # Added categorical types and tp
             
@@ -184,6 +186,7 @@ class MapGenerator:
         
         # Select variable and process
         is_mslp_precip = False
+        is_850mb_map = False
         if variable == "temperature_2m" or variable == "temp":
             data = self._process_temperature(ds)
             units = "°F"
@@ -214,6 +217,21 @@ class MapGenerator:
             data = self._process_wind_speed(ds)
             units = "mph"  # MPH for PNW users
             cmap = "YlOrRd"
+        elif variable == "temp_850_wind_mslp" or variable == "850mb":
+            # 850mb Temperature shading, Wind Arrows, and MSLP Contours
+            data = ds['tmp_850']
+            if float(data.max()) > 100: # Kelvin
+                data = (data - 273.15) * 9/5 + 32
+            units = "°F"
+            from matplotlib.colors import LinearSegmentedColormap
+            # Professional Temperature Gradient
+            colors = [
+                (0.0, '#4B0082'), (0.1, '#0000FF'), (0.2, '#00FFFF'),
+                (0.3, '#00FF00'), (0.4, '#FFFF00'), (0.5, '#FFA500'),
+                (0.6, '#FF0000'), (0.8, '#8B0000'), (1.0, '#3D0000')
+            ]
+            cmap = LinearSegmentedColormap.from_list('temperature', colors, N=256)
+            is_850mb_map = True
         elif variable == "mslp_precip" or variable == "mslp_pcpn":
             # MSLP & Categorical Precipitation (Rain/Snow/Sleet/Freezing Rain)
             # This follows the WeatherBell/TropicalTidbits style
@@ -343,34 +361,6 @@ class MapGenerator:
             )
             ax.clabel(cs_mslp, inline=True, fontsize=9, fmt='%d', zorder=13)
             
-            # Label HIGH/LOW
-            try:
-                from scipy.ndimage import maximum_filter, minimum_filter
-                mslp_array = mslp_data.values
-                local_max = maximum_filter(mslp_array, size=20) == mslp_array
-                local_min = minimum_filter(mslp_array, size=20) == mslp_array
-                is_360 = lon_vals.max() > 180
-                
-                west = -125.0 % 360 if is_360 else -125.0
-                east = -110.0 % 360 if is_360 else -110.0
-                lon_min, lon_max = (west, east) if west < east else (west, 360)
-                lat_min, lat_max = 42.5, 48.5
-                
-                for i in range(5, len(lat_vals) - 5):
-                    for j in range(5, len(lon_vals) - 5):
-                        lat_v, lon_v = lat_vals[i], lon_vals[j]
-                        if not (lon_min <= lon_v <= lon_max and lat_min <= lat_v <= lat_max):
-                            continue
-                        val = mslp_array[i, j]
-                        if local_max[i, j] and val > 1013:
-                            ax.text(lon_v, lat_v, 'H', transform=ccrs.PlateCarree(), fontsize=16, fontweight='bold', ha='center', color='blue', zorder=15)
-                            ax.text(lon_v, lat_v - 0.2, f'{int(val)}', transform=ccrs.PlateCarree(), fontsize=10, fontweight='bold', ha='center', color='blue', zorder=15)
-                        elif local_min[i, j] and val < 1013:
-                            ax.text(lon_v, lat_v, 'L', transform=ccrs.PlateCarree(), fontsize=16, fontweight='bold', ha='center', color='red', zorder=15)
-                            ax.text(lon_v, lat_v - 0.2, f'{int(val)}', transform=ccrs.PlateCarree(), fontsize=10, fontweight='bold', ha='center', color='red', zorder=15)
-            except Exception as e:
-                logger.warning(f"Error labeling H/L: {e}")
-
             # Plot Dual-Color Thickness
             if thickness_data is not None:
                 # ... (rest of the logic)
@@ -404,6 +394,57 @@ class MapGenerator:
                 ax.contour(lon_vals, lat_vals, thickness_data, levels=[546], 
                            colors='red', linewidths=1.2, linestyles='dashed', 
                            transform=ccrs.PlateCarree(), zorder=11)
+            
+            # Label HIGH/LOW (MSLP Precip case)
+            mslp_data_to_label = mslp_data
+        elif is_850mb_map:
+            # 850mb Temp shading
+            lon_vals = data.coords.get('lon', data.coords.get('longitude'))
+            lat_vals = data.coords.get('lat', data.coords.get('latitude'))
+            temp_levels = np.arange(-40, 101, 2)
+            
+            im = ax.contourf(
+                lon_vals, lat_vals, data,
+                transform=ccrs.PlateCarree(),
+                cmap=cmap,
+                levels=temp_levels,
+                extend='both',
+                zorder=1
+            )
+            
+            # MSLP Contours
+            mslp_data = self._process_mslp(ds)
+            cs_mslp = ax.contour(
+                lon_vals, lat_vals, mslp_data,
+                levels=np.arange(960, 1060, 4),
+                colors='black',
+                linewidths=1.0,
+                transform=ccrs.PlateCarree(),
+                zorder=12
+            )
+            ax.clabel(cs_mslp, inline=True, fontsize=9, fmt='%d', zorder=13)
+            
+            # Wind Arrows (Color-filled by speed)
+            u = ds['ugrd_850'].squeeze()
+            v = ds['vgrd_850'].squeeze()
+            # Convert m/s to mph
+            wind_speed = np.sqrt(u**2 + v**2) * 2.23694
+            
+            # Subsample for readability
+            skip = 4
+            ax.quiver(
+                lon_vals[::skip], lat_vals[::skip], 
+                u[::skip, ::skip], v[::skip, ::skip],
+                wind_speed[::skip, ::skip],
+                transform=ccrs.PlateCarree(),
+                cmap='plasma',
+                scale=400,
+                width=0.005,
+                zorder=14
+            )
+            
+            # Set this so the H/L labeling logic runs
+            mslp_data_to_label = mslp_data
         else:
             # Continuous data
             # For temperature, use fixed levels for consistent colors across all maps
@@ -429,59 +470,39 @@ class MapGenerator:
                 zorder=1
             )
         
-        # Add MSLP contours if this is an MSLP & Precip map (legacy check)
-        if not is_mslp_precip and variable in ["mslp_precip", "mslp_pcpn"]:
-            mslp_data = self._process_mslp(ds)
-            lon_coord = mslp_data.coords.get('lon', mslp_data.coords.get('longitude'))
-            lat_coord = mslp_data.coords.get('lat', mslp_data.coords.get('latitude'))
-            
-            # Contour levels every 4mb (standard)
-            contour_levels = np.arange(960, 1060, 4)
-            
-            # Draw contour lines
-            cs = ax.contour(
-                lon_coord, lat_coord, mslp_data,
-                levels=contour_levels,
-                colors='black',
-                linewidths=1.2,
-                transform=ccrs.PlateCarree(),
-                zorder=12
-            )
-            ax.clabel(cs, inline=True, fontsize=9, fmt='%d', zorder=13)
-            
-            # Add thickness if available
-            thickness_data = self._process_thickness(ds)
-            if thickness_data is not None:
-                # Cold thickness (<= 540) - Blue
-                cold_levels = np.arange(480, 541, 6)
-                cs_cold = ax.contour(
-                    lon_coord, lat_coord, thickness_data,
-                    levels=cold_levels,
-                    colors='blue',
-                    linewidths=1.2,
-                    linestyles='dashed',
-                    transform=ccrs.PlateCarree(),
-                    zorder=11
-                )
-                ax.clabel(cs_cold, inline=True, fontsize=8, fmt='%d', colors='blue')
+        # Add shared HIGH/LOW labels if MSLP data is available
+        if 'mslp_data_to_label' in locals() and mslp_data_to_label is not None:
+            try:
+                from scipy.ndimage import maximum_filter, minimum_filter
+                mslp_array = mslp_data_to_label.values
+                local_max = maximum_filter(mslp_array, size=20) == mslp_array
+                local_min = minimum_filter(mslp_array, size=20) == mslp_array
                 
-                # Warm thickness (> 546) - Red
-                warm_levels = np.arange(552, 601, 6)
-                cs_warm = ax.contour(
-                    lon_coord, lat_coord, thickness_data,
-                    levels=warm_levels,
-                    colors='red',
-                    linewidths=1.2,
-                    linestyles='dashed',
-                    transform=ccrs.PlateCarree(),
-                    zorder=11
-                )
-                ax.clabel(cs_warm, inline=True, fontsize=8, fmt='%d', colors='red')
+                # Use lon/lat from the data itself
+                lons = mslp_data_to_label.coords.get('lon', mslp_data_to_label.coords.get('longitude'))
+                lats = mslp_data_to_label.coords.get('lat', mslp_data_to_label.coords.get('latitude'))
+                is_360 = lons.max() > 180
                 
-                # 546 line itself in Red
-                ax.contour(lon_coord, lat_coord, thickness_data, levels=[546], 
-                           colors='red', linewidths=1.2, linestyles='dashed', 
-                           transform=ccrs.PlateCarree(), zorder=11)
+                west = -125.0 % 360 if is_360 else -125.0
+                east = -110.0 % 360 if is_360 else -110.0
+                lon_min, lon_max = (west, east) if west < east else (west, 360)
+                lat_min, lat_max = 42.5, 48.5
+                
+                for i in range(5, len(lats) - 5):
+                    for j in range(5, len(lons) - 5):
+                        lat_v, lon_v = lats[i], lons[j]
+                        if not (lon_min <= lon_v <= lon_max and lat_min <= lat_v <= lat_max):
+                            continue
+                        val = mslp_array[i, j]
+                        if local_max[i, j] and val > 1013:
+                            ax.text(lon_v, lat_v, 'H', transform=ccrs.PlateCarree(), fontsize=16, fontweight='bold', ha='center', color='blue', zorder=15)
+                            ax.text(lon_v, lat_v - 0.2, f'{int(val)}', transform=ccrs.PlateCarree(), fontsize=10, fontweight='bold', ha='center', color='blue', zorder=15)
+                        elif local_min[i, j] and val < 1013:
+                            ax.text(lon_v, lat_v, 'L', transform=ccrs.PlateCarree(), fontsize=16, fontweight='bold', ha='center', color='red', zorder=15)
+                            ax.text(lon_v, lat_v - 0.2, f'{int(val)}', transform=ccrs.PlateCarree(), fontsize=10, fontweight='bold', ha='center', color='red', zorder=15)
+            except Exception as e:
+                logger.warning(f"Error labeling H/L: {e}")
+        
         
         # Add colorbar
         if variable in ["precipitation_type", "precip_type"]:
@@ -492,6 +513,9 @@ class MapGenerator:
         elif is_mslp_precip:
             cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40)
             cbar.set_label("6-h QPF by type (in), MSLP (hPa), 1000-500mb Thickness (dam)")
+        elif is_850mb_map:
+            cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40)
+            cbar.set_label("850mb Temperature (°F), Wind (arrows, mph), MSLP (hPa)")
         else:
             cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40)
             cbar.set_label(f"{variable.replace('_', ' ').title()} ({units})")
@@ -519,7 +543,17 @@ class MapGenerator:
                         priority_level=settings.station_priority
                     )
                     # Convert K to F for display
-                    station_values = {k: (v - 273.15) * 9/5 + 32 
+                    station_values = {k: (v - 273.15) * 9/5 + 32 if v > 100 else v
+                                    for k, v in station_values.items()}
+                
+                elif variable in ["temp_850_wind_mslp", "850mb"]:
+                    station_values = self.extract_station_values(
+                        ds, 'tmp_850', 
+                        region=region_to_use,
+                        priority_level=settings.station_priority
+                    )
+                    # Convert K to F for display
+                    station_values = {k: (v - 273.15) * 9/5 + 32 if v > 100 else v
                                     for k, v in station_values.items()}
                     
                 elif variable in ["precipitation", "precip"]:
