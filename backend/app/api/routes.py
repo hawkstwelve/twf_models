@@ -1,5 +1,6 @@
 """API routes"""
 from fastapi import APIRouter, HTTPException, Query, Header
+from fastapi.responses import FileResponse
 from typing import Optional, List
 from pathlib import Path
 from datetime import datetime
