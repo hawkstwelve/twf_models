@@ -175,185 +175,184 @@ class GFSDataFetcher:
             import cfgrib
             
             logger.info(f"Fetching GFS data from GRIB: {grib_file_path}")
+            
+            # Check if the GRIB file exists on S3
+            logger.info("Checking if GRIB file exists on S3...")
+            try:
+                if not self.s3.exists(grib_file_path):
+                    raise FileNotFoundError(f"GRIB file not found on S3: {grib_file_path}")
+                logger.info("✅ GRIB file exists on S3")
+            except Exception as e:
+                logger.error(f"Failed to check if file exists: {e}")
+                raise
+            
+            # Try to get from cache first, otherwise download
+            tmp_path = self._get_cached_grib_path(grib_file_path)
+            cache_hit = tmp_path is not None
+            
+            if not cache_hit:
+                tmp_path = self._download_and_cache_grib(grib_file_path)
+            
+            try:
+                # Open each level type separately and extract only the variables we need
+                # This avoids coordinate conflicts when merging
+                logger.info("Opening GRIB file with cfgrib (opening levels separately to avoid conflicts)...")
                 
-                # Check if the GRIB file exists on S3
-                logger.info("Checking if GRIB file exists on S3...")
+                all_data_vars = {}
+                coords = None
+                
+                # Try surface level (precipitation and other surface variables)
+                # For forecast hours > 0, GRIB files have multiple stepType values
+                # We need to try different stepTypes to get all variables
                 try:
-                    if not self.s3.exists(grib_file_path):
-                        raise FileNotFoundError(f"GRIB file not found on S3: {grib_file_path}")
-                    logger.info("✅ GRIB file exists on S3")
-                except Exception as e:
-                    logger.error(f"Failed to check if file exists: {e}")
-                    raise
-                
-                # Try to get from cache first, otherwise download
-                tmp_path = self._get_cached_grib_path(grib_file_path)
-                cache_hit = tmp_path is not None
-                
-                if not cache_hit:
-                    tmp_path = self._download_and_cache_grib(grib_file_path)
-                
-                try:
+                    logger.info("Opening surface level...")
                     
-                    # Open each level type separately and extract only the variables we need
-                    # This avoids coordinate conflicts when merging
-                    logger.info("Opening GRIB file with cfgrib (opening levels separately to avoid conflicts)...")
+                    # Try to open surface level with different stepType filters
+                    surface_datasets = []
                     
-                    all_data_vars = {}
-                    coords = None
-                    
-                    # Try surface level (precipitation and other surface variables)
-                    # For forecast hours > 0, GRIB files have multiple stepType values
-                    # We need to try different stepTypes to get all variables
-                    try:
-                        logger.info("Opening surface level...")
+                    if forecast_hour > 0:
+                        # For forecast hours, try both instant and accumulated
+                        logger.info("  Forecast hour > 0, trying multiple stepTypes...")
                         
-                        # Try to open surface level with different stepType filters
-                        surface_datasets = []
-                        
-                        if forecast_hour > 0:
-                            # For forecast hours, try both instant and accumulated
-                            logger.info("  Forecast hour > 0, trying multiple stepTypes...")
-                            
-                            # Try instant stepType (most variables)
-                            try:
-                                ds_surf_instant = xr.open_dataset(
-                                    tmp_path,
-                                    engine='cfgrib',
-                                    backend_kwargs={'filter_by_keys': {
-                                        'typeOfLevel': 'surface',
-                                        'stepType': 'instant'
-                                    }},
-                                    decode_timedelta=False
-                                )
-                                surface_datasets.append(ds_surf_instant)
-                                logger.info(f"    Instant stepType variables: {list(ds_surf_instant.data_vars)}")
-                            except Exception as e:
-                                logger.info(f"    Instant stepType not available: {str(e)[:80]}")
-                            
-                            # Try accumulated stepType (precipitation)
-                            try:
-                                ds_surf_accum = xr.open_dataset(
-                                    tmp_path,
-                                    engine='cfgrib',
-                                    backend_kwargs={'filter_by_keys': {
-                                        'typeOfLevel': 'surface',
-                                        'stepType': 'accum'
-                                    }},
-                                    decode_timedelta=False
-                                )
-                                surface_datasets.append(ds_surf_accum)
-                                logger.info(f"    Accumulated stepType variables: {list(ds_surf_accum.data_vars)}")
-                            except Exception as e:
-                                logger.info(f"    Accumulated stepType not available: {str(e)[:80]}")
-                        else:
-                            # Hour 0 (analysis) doesn't have stepType complexity
-                            ds_surface = xr.open_dataset(
+                        # Try instant stepType (most variables)
+                        try:
+                            ds_surf_instant = xr.open_dataset(
                                 tmp_path,
                                 engine='cfgrib',
-                                backend_kwargs={'filter_by_keys': {'typeOfLevel': 'surface'}},
+                                backend_kwargs={'filter_by_keys': {
+                                    'typeOfLevel': 'surface',
+                                    'stepType': 'instant'
+                                }},
                                 decode_timedelta=False
                             )
-                            surface_datasets.append(ds_surface)
+                            surface_datasets.append(ds_surf_instant)
+                            logger.info(f"    Instant stepType variables: {list(ds_surf_instant.data_vars)}")
+                        except Exception as e:
+                            logger.info(f"    Instant stepType not available: {str(e)[:80]}")
                         
-                        # Extract variables from all surface datasets
-                        for ds_surf in surface_datasets:
-                            for var in ds_surf.data_vars:
-                                # Skip if we already have this variable
-                                if var in all_data_vars:
-                                    continue
-                                # Drop heightAboveGround coordinate if it exists to avoid conflicts
-                                var_data = ds_surf[var].drop_vars(['heightAboveGround'], errors='ignore')
-                                all_data_vars[var] = var_data
-                            if coords is None:
-                                # Get coords but exclude heightAboveGround
-                                coords = {k: v for k, v in ds_surf.coords.items() if k != 'heightAboveGround'}
-                        
-                        if surface_datasets:
-                            all_surf_vars = list(set([v for ds in surface_datasets for v in ds.data_vars]))
-                            logger.info(f"  Surface variables (combined): {all_surf_vars[:20]}...")
-                        else:
-                            logger.warning("  No surface data loaded")
-                            
-                    except Exception as e:
-                        logger.warning(f"  Surface level failed: {str(e)[:100]}")
-                    
-                    # Try 2m height (temperature)
-                    try:
-                        logger.info("Opening 2m heightAboveGround...")
-                        ds_2m = xr.open_dataset(
+                        # Try accumulated stepType (precipitation)
+                        try:
+                            ds_surf_accum = xr.open_dataset(
+                                tmp_path,
+                                engine='cfgrib',
+                                backend_kwargs={'filter_by_keys': {
+                                    'typeOfLevel': 'surface',
+                                    'stepType': 'accum'
+                                }},
+                                decode_timedelta=False
+                            )
+                            surface_datasets.append(ds_surf_accum)
+                            logger.info(f"    Accumulated stepType variables: {list(ds_surf_accum.data_vars)}")
+                        except Exception as e:
+                            logger.info(f"    Accumulated stepType not available: {str(e)[:80]}")
+                    else:
+                        # Hour 0 (analysis) doesn't have stepType complexity
+                        ds_surface = xr.open_dataset(
                             tmp_path,
                             engine='cfgrib',
-                            backend_kwargs={'filter_by_keys': {'typeOfLevel': 'heightAboveGround', 'level': 2}},
-                            decode_timedelta=False  # Avoid timedelta decoding issues
+                            backend_kwargs={'filter_by_keys': {'typeOfLevel': 'surface'}},
+                            decode_timedelta=False
                         )
-                        for var in ds_2m.data_vars:
-                            # Drop heightAboveGround coordinate to avoid conflicts
-                            var_data = ds_2m[var].drop_vars(['heightAboveGround'], errors='ignore')
+                        surface_datasets.append(ds_surface)
+                    
+                    # Extract variables from all surface datasets
+                    for ds_surf in surface_datasets:
+                        for var in ds_surf.data_vars:
+                            # Skip if we already have this variable
+                            if var in all_data_vars:
+                                continue
+                            # Drop heightAboveGround coordinate if it exists to avoid conflicts
+                            var_data = ds_surf[var].drop_vars(['heightAboveGround'], errors='ignore')
                             all_data_vars[var] = var_data
                         if coords is None:
                             # Get coords but exclude heightAboveGround
-                            coords = {k: v for k, v in ds_2m.coords.items() if k != 'heightAboveGround'}
-                        logger.info(f"  2m variables: {list(ds_2m.data_vars)}")
-                    except Exception as e:
-                        logger.warning(f"  2m level failed: {str(e)[:100]}")
+                            coords = {k: v for k, v in ds_surf.coords.items() if k != 'heightAboveGround'}
                     
-                    # Try 10m height (wind)
-                    try:
-                        logger.info("Opening 10m heightAboveGround...")
-                        ds_10m = xr.open_dataset(
-                            tmp_path,
-                            engine='cfgrib',
-                            backend_kwargs={'filter_by_keys': {'typeOfLevel': 'heightAboveGround', 'level': 10}},
-                            decode_timedelta=False  # Avoid timedelta decoding issues
-                        )
-                        for var in ds_10m.data_vars:
-                            # Drop heightAboveGround coordinate to avoid conflicts
-                            var_data = ds_10m[var].drop_vars(['heightAboveGround'], errors='ignore')
-                            all_data_vars[var] = var_data
-                        if coords is None:
-                            # Get coords but exclude heightAboveGround
-                            coords = {k: v for k, v in ds_10m.coords.items() if k != 'heightAboveGround'}
-                        logger.info(f"  10m variables: {list(ds_10m.data_vars)}")
-                    except Exception as e:
-                        logger.warning(f"  10m level failed: {str(e)[:100]}")
-                    
-                    if not all_data_vars:
-                        raise ValueError("Could not extract any variables from GRIB file")
-                    
+                    if surface_datasets:
+                        all_surf_vars = list(set([v for ds in surface_datasets for v in ds.data_vars]))
+                        logger.info(f"  Surface variables (combined): {all_surf_vars[:20]}...")
+                    else:
+                        logger.warning("  No surface data loaded")
+                        
+                except Exception as e:
+                    logger.warning(f"  Surface level failed: {str(e)[:100]}")
+                
+                # Try 2m height (temperature)
+                try:
+                    logger.info("Opening 2m heightAboveGround...")
+                    ds_2m = xr.open_dataset(
+                        tmp_path,
+                        engine='cfgrib',
+                        backend_kwargs={'filter_by_keys': {'typeOfLevel': 'heightAboveGround', 'level': 2}},
+                        decode_timedelta=False  # Avoid timedelta decoding issues
+                    )
+                    for var in ds_2m.data_vars:
+                        # Drop heightAboveGround coordinate to avoid conflicts
+                        var_data = ds_2m[var].drop_vars(['heightAboveGround'], errors='ignore')
+                        all_data_vars[var] = var_data
                     if coords is None:
-                        raise ValueError("Could not get coordinates from any dataset")
-                    
-                    # Create new dataset with extracted variables
-                    # Build dataset incrementally to avoid coordinate conflicts
-                    logger.info("Combining extracted variables into dataset...")
-                    ds = xr.Dataset(coords=coords)
-                    
-                    # Add variables one at a time, ensuring no coordinate conflicts
-                    for var_name, var_data in all_data_vars.items():
-                        # Make sure variable doesn't have conflicting coordinates
-                        var_clean = var_data.drop_vars(['heightAboveGround'], errors='ignore')
-                        # Ensure coordinates match the base dataset
-                        var_clean = var_clean.drop_vars([c for c in var_clean.coords if c not in coords], errors='ignore')
-                        ds[var_name] = var_clean
-                    
-                    logger.info("GRIB file opened and variables extracted successfully")
-                    logger.info(f"Available variables: {list(ds.data_vars)[:20]}...")
-                    
-                    # IMPORTANT: Load data into memory NOW, before file might be deleted
-                    # cfgrib uses lazy loading, so we must load before the finally block
-                    logger.info("Loading GRIB data into memory...")
-                    ds = ds.load()
-                    logger.info(f"GRIB data loaded: {ds.nbytes / 1024 / 1024:.2f} MB")
-                    
-                finally:
-                    # Only delete if it wasn't a cache hit (new download to temp location)
-                    # Cached files are managed by _cleanup_old_cache()
-                    if not cache_hit and os.path.exists(tmp_path) and tmp_path not in [v[0] for v in self._grib_cache.values()]:
-                        os.unlink(tmp_path)
-                        logger.info("Cleaned up temp file")
-                    elif cache_hit:
-                        logger.debug("Keeping cached GRIB file for reuse")
+                        # Get coords but exclude heightAboveGround
+                        coords = {k: v for k, v in ds_2m.coords.items() if k != 'heightAboveGround'}
+                    logger.info(f"  2m variables: {list(ds_2m.data_vars)}")
+                except Exception as e:
+                    logger.warning(f"  2m level failed: {str(e)[:100]}")
+                
+                # Try 10m height (wind)
+                try:
+                    logger.info("Opening 10m heightAboveGround...")
+                    ds_10m = xr.open_dataset(
+                        tmp_path,
+                        engine='cfgrib',
+                        backend_kwargs={'filter_by_keys': {'typeOfLevel': 'heightAboveGround', 'level': 10}},
+                        decode_timedelta=False  # Avoid timedelta decoding issues
+                    )
+                    for var in ds_10m.data_vars:
+                        # Drop heightAboveGround coordinate to avoid conflicts
+                        var_data = ds_10m[var].drop_vars(['heightAboveGround'], errors='ignore')
+                        all_data_vars[var] = var_data
+                    if coords is None:
+                        # Get coords but exclude heightAboveGround
+                        coords = {k: v for k, v in ds_10m.coords.items() if k != 'heightAboveGround'}
+                    logger.info(f"  10m variables: {list(ds_10m.data_vars)}")
+                except Exception as e:
+                    logger.warning(f"  10m level failed: {str(e)[:100]}")
+                
+                if not all_data_vars:
+                    raise ValueError("Could not extract any variables from GRIB file")
+                
+                if coords is None:
+                    raise ValueError("Could not get coordinates from any dataset")
+                
+                # Create new dataset with extracted variables
+                # Build dataset incrementally to avoid coordinate conflicts
+                logger.info("Combining extracted variables into dataset...")
+                ds = xr.Dataset(coords=coords)
+                
+                # Add variables one at a time, ensuring no coordinate conflicts
+                for var_name, var_data in all_data_vars.items():
+                    # Make sure variable doesn't have conflicting coordinates
+                    var_clean = var_data.drop_vars(['heightAboveGround'], errors='ignore')
+                    # Ensure coordinates match the base dataset
+                    var_clean = var_clean.drop_vars([c for c in var_clean.coords if c not in coords], errors='ignore')
+                    ds[var_name] = var_clean
+                
+                logger.info("GRIB file opened and variables extracted successfully")
+                logger.info(f"Available variables: {list(ds.data_vars)[:20]}...")
+                
+                # IMPORTANT: Load data into memory NOW, before file might be deleted
+                # cfgrib uses lazy loading, so we must load before the finally block
+                logger.info("Loading GRIB data into memory...")
+                ds = ds.load()
+                logger.info(f"GRIB data loaded: {ds.nbytes / 1024 / 1024:.2f} MB")
+                
+            finally:
+                # Only delete if it wasn't a cache hit (new download to temp location)
+                # Cached files are managed by _cleanup_old_cache()
+                if not cache_hit and os.path.exists(tmp_path) and tmp_path not in [v[0] for v in self._grib_cache.values()]:
+                    os.unlink(tmp_path)
+                    logger.info("Cleaned up temp file")
+                elif cache_hit:
+                    logger.debug("Keeping cached GRIB file for reuse")
             
             # Now handle variable selection and subsetting (for both NetCDF and GRIB)
             if ds is None:
