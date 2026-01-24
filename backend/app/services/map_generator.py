@@ -44,12 +44,24 @@ class MapGenerator:
         stations = get_stations_for_region(region, priority_level)
         values = {}
         
+        # Detect if dataset uses 0-360 longitude format
+        lon_coord_name = 'longitude' if 'longitude' in ds.coords else 'lon'
+        lon_vals = ds.coords[lon_coord_name].values
+        uses_360_format = lon_vals.min() >= 0 and lon_vals.max() > 180
+        
         for station_name, station_data in stations.items():
             try:
+                station_lat = station_data['lat']
+                station_lon = station_data['lon']
+                
+                # Convert longitude to match dataset format if needed
+                if uses_360_format and station_lon < 0:
+                    station_lon = station_lon % 360
+                
                 # Extract value at station location using nearest neighbor
                 value = ds[variable].sel(
-                    latitude=station_data['lat'],
-                    longitude=station_data['lon'],
+                    latitude=station_lat,
+                    longitude=station_lon,
                     method='nearest'
                 ).values
                 
