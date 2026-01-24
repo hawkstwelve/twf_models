@@ -1,5 +1,5 @@
 """Scheduled task scheduler"""
-from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 import logging
 from datetime import datetime
@@ -8,13 +8,14 @@ from app.config import settings
 from app.services.map_generator import MapGenerator
 
 logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 
 class ForecastScheduler:
     """Schedules forecast map generation"""
     
     def __init__(self):
-        self.scheduler = BackgroundScheduler()
+        self.scheduler = BlockingScheduler()
         self.map_generator = MapGenerator()
         # PNW-focused variables (wind gusts to be added later)
         self.variables = ['temp', 'precip', 'precip_type', 'wind_speed']
@@ -66,3 +67,13 @@ class ForecastScheduler:
         """Stop the scheduler"""
         self.scheduler.shutdown()
         logger.info("Forecast scheduler stopped")
+
+
+if __name__ == "__main__":
+    logger.info("Starting TWF Models Scheduler")
+    scheduler = ForecastScheduler()
+    try:
+        scheduler.start()
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Scheduler interrupted, shutting down...")
+        scheduler.stop()
