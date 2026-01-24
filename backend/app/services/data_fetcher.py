@@ -334,6 +334,30 @@ class GFSDataFetcher:
                 except Exception as e:
                     logger.warning(f"  meanSea level failed: {str(e)[:100]}")
                 
+                # Try isobaricInhPa levels (geopotential height for thickness)
+                if 'gh' in variables:
+                    try:
+                        logger.info("Opening isobaricInhPa levels for geopotential height...")
+                        # Open both 1000mb and 500mb levels
+                        ds_gh = xr.open_dataset(
+                            tmp_path,
+                            engine='cfgrib',
+                            backend_kwargs={'filter_by_keys': {'typeOfLevel': 'isobaricInhPa'}},
+                            decode_timedelta=False
+                        )
+                        # Extract geopotential height and filter to 1000mb and 500mb
+                        if 'gh' in ds_gh.data_vars and 'isobaricInhPa' in ds_gh.dims:
+                            gh_data = ds_gh['gh'].sel(isobaricInhPa=[1000, 500])
+                            all_data_vars['gh'] = gh_data
+                            if coords is None:
+                                # Use coords from gh but drop isobaricInhPa
+                                coords = {k: v for k, v in ds_gh.coords.items() if k != 'isobaricInhPa'}
+                            logger.info(f"  isobaricInhPa variables: geopotential height at 1000mb and 500mb")
+                        else:
+                            logger.warning("Geopotential height not found at isobaricInhPa levels")
+                    except Exception as e:
+                        logger.warning(f"  isobaricInhPa level failed: {str(e)[:100]}")
+                
                 if not all_data_vars:
                     raise ValueError("Could not extract any variables from GRIB file")
                 
@@ -382,6 +406,7 @@ class GFSDataFetcher:
                 'ugrd10m': ['u10', 'ugrd10m', 'UGRD_10maboveground', '10u', 'u-component_of_wind_height_above_ground', 'UGRD_P0_L103_GLL0'],
                 'vgrd10m': ['v10', 'vgrd10m', 'VGRD_10maboveground', '10v', 'v-component_of_wind_height_above_ground', 'VGRD_P0_L103_GLL0'],
                 'prmsl': ['prmsl', 'msl', 'PRMSL_meansealevel', 'MSL_meansealevel', 'Mean_sea_level_pressure', 'PRES_P0_L101_GLL0'],
+                'gh': ['gh', 'Geopotential_height_isobaric', 'HGT_isobaric', 'z'],
             }
             
             # Find matching variables

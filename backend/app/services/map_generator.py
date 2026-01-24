@@ -170,7 +170,7 @@ class MapGenerator:
             elif variable in ["wind_speed_10m", "wind_speed"]:
                 needed_vars = ['ugrd10m', 'vgrd10m']
             elif variable in ["mslp_precip", "mslp_pcpn"]:
-                needed_vars = ['prate', 'prmsl']  # Precipitation rate and mean sea level pressure
+                needed_vars = ['prate', 'prmsl', 'gh']  # Precipitation rate, MSLP, and geopotential height for thickness
             
             # Fetch only what we need, subset to PNW region
             ds = self.data_fetcher.fetch_gfs_data(
@@ -215,23 +215,25 @@ class MapGenerator:
             cmap = "YlOrRd"
         elif variable == "mslp_precip" or variable == "mslp_pcpn":
             # MSLP & Precipitation - combines pressure contours with precip color-fill
-            precip_data = self._process_precipitation(ds)
+            # For this map, keep precip in mm/hr (6-hour average rate)
+            precip_data = self._process_precipitation_mmhr(ds)
             mslp_data = self._process_mslp(ds)
+            thickness_data = self._process_thickness(ds) if 'gh' in ds or any('gh' in str(v).lower() for v in ds.data_vars) else None
             data = precip_data  # Primary data for color-filling
-            units = "in"  # For precipitation
-            # Precipitation color scheme (greens/blues)
+            units = "mm/hr"  # For precipitation rate
+            # Precipitation color scheme (greens/blues) for mm/hr
             from matplotlib.colors import LinearSegmentedColormap
             precip_colors = [
-                '#FFFFFF',  # 0.00" - White (no precip)
-                '#C8E6C9',  # 0.01" - Very light green
-                '#81C784',  # 0.05" - Light green
-                '#4CAF50',  # 0.10" - Green
-                '#388E3C',  # 0.25" - Dark green
-                '#1976D2',  # 0.50" - Blue
-                '#1565C0',  # 0.75" - Darker blue
-                '#0D47A1',  # 1.00" - Deep blue
-                '#8E24AA',  # 1.50" - Purple (very heavy)
-                '#4A148C',  # 2.00"+ - Deep purple
+                '#FFFFFF',  # 0.0 mm/hr - White (no precip)
+                '#C8E6C9',  # 0.1 mm/hr - Very light green
+                '#81C784',  # 0.5 mm/hr - Light green
+                '#4CAF50',  # 1.0 mm/hr - Green
+                '#388E3C',  # 2.0 mm/hr - Dark green
+                '#1976D2',  # 4.0 mm/hr - Blue
+                '#1565C0',  # 6.0 mm/hr - Darker blue
+                '#0D47A1',  # 8.0 mm/hr - Deep blue
+                '#8E24AA',  # 12.0 mm/hr - Purple (very heavy)
+                '#4A148C',  # 16.0+ mm/hr - Deep purple
             ]
             cmap = LinearSegmentedColormap.from_list('precipitation', precip_colors, N=256)
         # Note: wind_gusts removed for initial release, can be added later
@@ -311,9 +313,11 @@ class MapGenerator:
                 # Use 2.5 degree increments to make the gradient smoother 
                 # while keeping labels consistent with your 5-degree target
                 temp_levels = np.arange(-40, 122.5, 2.5)
-            elif variable in ["mslp_precip", "mslp_pcpn", "precipitation", "precip"]:
-                # Fixed precipitation levels for consistent colors
-                # Range from 0 to 3 inches with finer increments for light precip
+            elif variable in ["mslp_precip", "mslp_pcpn"]:
+                # Fixed precipitation levels for mm/hr (6-hour average rate)
+                temp_levels = [0.0, 0.1, 0.5, 1.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 16.0, 20.0]
+            elif variable in ["precipitation", "precip"]:
+                # Fixed precipitation levels for inches
                 temp_levels = [0.0, 0.01, 0.05, 0.10, 0.25, 0.50, 0.75, 1.0, 1.5, 2.0, 2.5, 3.0]
             else:
                 temp_levels = 20  # Auto levels for other variables
@@ -369,22 +373,42 @@ class MapGenerator:
                 lat_array = lat_coord.values
                 lon_array = lon_coord.values
                 
-                # Find local maxima and minima
+                # Find local maxima and minima (excluding edges)
                 local_max = maximum_filter(mslp_array, size=20) == mslp_array
                 local_min = minimum_filter(mslp_array, size=20) == mslp_array
                 
-                # Label HIGHs and LOWs
-                for i in range(len(lat_array)):
-                    for j in range(len(lon_array)):
+                # Get map extent to check boundaries
+                if region_to_use == "pnw":
+                    bounds = settings.map_region_bounds or {
+                        "west": -125.0, "east": -110.0,
+                        "south": 42.0, "north": 49.0
+                    }
+                    # Add small margin to keep labels inside
+                    lon_min, lon_max = bounds["west"] + 1, bounds["east"] - 1
+                    lat_min, lat_max = bounds["south"] + 0.5, bounds["north"] - 0.5
+                else:
+                    lon_min, lon_max = lon_array.min() + 2, lon_array.max() - 2
+                    lat_min, lat_max = lat_array.min() + 1, lat_array.max() - 1
+                
+                # Label HIGHs and LOWs (only if within visible bounds)
+                for i in range(5, len(lat_array) - 5):  # Skip edges
+                    for j in range(5, len(lon_array) - 5):  # Skip edges
+                        lat_val = lat_array[i]
+                        lon_val = lon_array[j]
+                        
+                        # Check if within map bounds
+                        if not (lon_min <= lon_val <= lon_max and lat_min <= lat_val <= lat_max):
+                            continue
+                        
                         if local_max[i, j] and mslp_array[i, j] > 1013:
-                            ax.text(lon_array[j], lat_array[i], 'H',
+                            ax.text(lon_val, lat_val, 'H',
                                    transform=ccrs.PlateCarree(),
                                    fontsize=16, fontweight='bold',
                                    ha='center', va='center',
                                    color='blue',
                                    zorder=15)
                         elif local_min[i, j] and mslp_array[i, j] < 1013:
-                            ax.text(lon_array[j], lat_array[i], 'L',
+                            ax.text(lon_val, lat_val, 'L',
                                    transform=ccrs.PlateCarree(),
                                    fontsize=16, fontweight='bold',
                                    ha='center', va='center',
@@ -392,6 +416,26 @@ class MapGenerator:
                                    zorder=15)
             except Exception as e:
                 logger.warning(f"Could not add HIGH/LOW labels: {e}")
+            
+            # Add 1000-500mb thickness contours if available
+            if thickness_data is not None:
+                try:
+                    # Thickness contours every 6 dam (60 m), dashed green lines
+                    thickness_levels = np.arange(480, 600, 6)
+                    cs_thickness = ax.contour(
+                        lon_coord, lat_coord, thickness_data,
+                        levels=thickness_levels,
+                        colors='green',
+                        linewidths=1.0,
+                        linestyles='dashed',
+                        transform=ccrs.PlateCarree(),
+                        zorder=11
+                    )
+                    # Label thickness contours
+                    ax.clabel(cs_thickness, inline=True, fontsize=7, fmt='%d', colors='green')
+                    logger.info("Added 1000-500mb thickness contours")
+                except Exception as e:
+                    logger.warning(f"Could not add thickness contours: {e}")
         
         # Add colorbar
         if variable in ["precipitation_type", "precip_type"]:
@@ -401,7 +445,7 @@ class MapGenerator:
             cbar.set_label("Precipitation Type")
         elif variable in ["mslp_precip", "mslp_pcpn"]:
             cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40)
-            cbar.set_label(f"Precipitation (in), MSLP Contours (mb)")
+            cbar.set_label(f"6-hr Avg Precip Rate (mm/hr), MSLP (hPa), 1000-500mb Thickness (dam)")
         else:
             cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40)
             cbar.set_label(f"{variable.replace('_', ' ').title()} ({units})")
@@ -686,3 +730,59 @@ class MapGenerator:
             mslp = mslp / 100.0
         
         return mslp.isel(time=0) if 'time' in mslp.dims else mslp
+    
+    def _process_precipitation_mmhr(self, ds: xr.Dataset) -> xr.DataArray:
+        """Process precipitation data in mm/hr (6-hour average rate)"""
+        if 'prate' in ds:
+            # prate is in kg/m²/s, convert to mm/hr
+            precip = ds['prate'] * 3600  # Convert to mm/h
+        elif 'APCP_surface' in ds:
+            precip = ds['APCP_surface']
+        else:
+            precip_vars = [v for v in ds.data_vars if 'prate' in v.lower() or 'precip' in v.lower()]
+            if precip_vars:
+                precip = ds[precip_vars[0]]
+                # Check if it needs conversion
+                if precip.max() < 1:  # Likely in kg/m²/s
+                    precip = precip * 3600  # Convert to mm/h
+            else:
+                raise ValueError("Could not find precipitation variable in dataset")
+        
+        return precip.isel(time=0) if 'time' in precip.dims else precip
+    
+    def _process_thickness(self, ds: xr.Dataset) -> xr.DataArray:
+        """Process 1000-500mb thickness (decameters)"""
+        try:
+            # Try to find geopotential height variable
+            gh_var = None
+            if 'gh' in ds:
+                gh_var = 'gh'
+            else:
+                gh_vars = [v for v in ds.data_vars if 'gh' in v.lower() or 'geopotential' in v.lower()]
+                if gh_vars:
+                    gh_var = gh_vars[0]
+            
+            if gh_var is None:
+                logger.warning("Could not find geopotential height variable for thickness")
+                return None
+            
+            # Extract 1000mb and 500mb levels
+            # Check if pressure level dimension exists
+            if 'isobaricInhPa' in ds[gh_var].dims:
+                gh_1000 = ds[gh_var].sel(isobaricInhPa=1000, method='nearest')
+                gh_500 = ds[gh_var].sel(isobaricInhPa=500, method='nearest')
+            elif 'level' in ds[gh_var].dims:
+                gh_1000 = ds[gh_var].sel(level=1000, method='nearest')
+                gh_500 = ds[gh_var].sel(level=500, method='nearest')
+            else:
+                logger.warning(f"Geopotential height does not have pressure level dimension: {ds[gh_var].dims}")
+                return None
+            
+            # Calculate thickness (in meters, convert to decameters)
+            thickness = (gh_500 - gh_1000) / 10.0  # Convert m to dam (decameters)
+            
+            return thickness.isel(time=0) if 'time' in thickness.dims else thickness
+            
+        except Exception as e:
+            logger.warning(f"Could not calculate thickness: {e}")
+            return None
