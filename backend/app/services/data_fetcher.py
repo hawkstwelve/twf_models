@@ -449,6 +449,17 @@ class GFSDataFetcher:
             available_vars = list(ds.data_vars)
             selected_vars = []
             
+            # Ensure precip is requested for MSLP & Precip maps
+            if variables is not None and ('mslp_precip' in variables or 'mslp_pcpn' in variables):
+                for v in ['prate', 'tp', 'prmsl', 'gh', 'gh_1000', 'gh_500', 'crain', 'csnow', 'cicep', 'cfrzr']:
+                    if v not in variables:
+                        variables.append(v)
+            
+            # If gh is requested, we need both 1000mb and 500mb for thickness
+            if variables is not None and 'gh' in variables:
+                if 'gh_1000' not in variables: variables.append('gh_1000')
+                if 'gh_500' not in variables: variables.append('gh_500')
+
             for our_var in variables:
                 possible_names = variable_map.get(our_var, [our_var])
                 found = False
