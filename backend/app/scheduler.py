@@ -298,13 +298,25 @@ class ForecastScheduler:
         
         # Catch-up logic: If we start within 90 minutes of a scheduled time, run now
         now = datetime.utcnow()
+        logger.info(f"Checking for catch-up... Current UTC: {now.strftime('%H:%M')}")
         for sched_hour in [3, 9, 15, 21]:
             sched_time = now.replace(hour=sched_hour, minute=30, second=0, microsecond=0)
             # If current time is between sched_time and sched_time + 90 minutes
-            if sched_time <= now <= (sched_time + timedelta(minutes=90)):
-                logger.info(f"🕒 Catch-up: Starting missed 18z run (scheduled for {sched_hour}:30 UTC)")
+            # Handle the case where sched_time might be from "yesterday" for the 21:30 run if it's currently 00:15
+            if sched_hour == 21 and now.hour < 3:
+                sched_time = sched_time - timedelta(days=1)
+            
+            diff_minutes = (now - sched_time).total_seconds() / 60
+            logger.info(f"  Checking {sched_hour}:30 UTC run... (diff: {diff_minutes:.1f} min)")
+            
+            if 0 <= diff_minutes <= 90:
+                logger.info(f"🕒 Catch-up triggered: Starting missed run (scheduled for {sched_hour}:30 UTC)")
+                # Run the function directly in a separate thread or just call it if using BlockingScheduler
+                # Since it's a blocking scheduler, we add it as a 'date' job to run immediately
                 self.scheduler.add_job(
                     self.generate_forecast_maps,
+                    trigger='date',
+                    run_date=datetime.now(), # Local time for the scheduler's internal clock
                     id='catch_up_run',
                     name='Catch-up run'
                 )
