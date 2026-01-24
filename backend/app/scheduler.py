@@ -38,22 +38,48 @@ class ForecastScheduler:
             run_time = now.replace(hour=run_hour, minute=0, second=0, microsecond=0)
             logger.info(f"Fetching GFS data for run time: {run_time.strftime('%Y-%m-%d %H:00 UTC')}")
             
-            for variable in self.variables:
+            # Progressive generation: Generate by forecast hour (f000 first) so users
+            # see the most current data appear first, then progressively older forecasts
+            if settings.progressive_generation:
+                logger.info("Using progressive generation (by forecast hour)")
                 for forecast_hour in settings.forecast_hours_list:
                     if forecast_hour > settings.max_forecast_hour:
                         continue
                     
-                    try:
-                        self.map_generator.generate_map(
-                            variable=variable,
-                            model="GFS",
-                            run_time=run_time,
-                            forecast_hour=forecast_hour
-                        )
-                        logger.info(f"Generated map: {variable} at +{forecast_hour}h")
-                    except Exception as e:
-                        logger.error(f"Error generating map {variable} +{forecast_hour}h: {e}")
-                        continue
+                    logger.info(f"→ Generating forecast hour +{forecast_hour}h...")
+                    
+                    for variable in self.variables:
+                        try:
+                            self.map_generator.generate_map(
+                                variable=variable,
+                                model="GFS",
+                                run_time=run_time,
+                                forecast_hour=forecast_hour
+                            )
+                            logger.info(f"  ✓ {variable}")
+                        except Exception as e:
+                            logger.error(f"  ✗ {variable}: {e}")
+                            continue
+            else:
+                # Standard generation: Generate by variable (all hours of temp, then all hours of precip, etc.)
+                logger.info("Using standard generation (by variable)")
+                for variable in self.variables:
+                    logger.info(f"→ Generating variable: {variable}")
+                    for forecast_hour in settings.forecast_hours_list:
+                        if forecast_hour > settings.max_forecast_hour:
+                            continue
+                        
+                        try:
+                            self.map_generator.generate_map(
+                                variable=variable,
+                                model="GFS",
+                                run_time=run_time,
+                                forecast_hour=forecast_hour
+                            )
+                            logger.info(f"  ✓ +{forecast_hour}h")
+                        except Exception as e:
+                            logger.error(f"  ✗ +{forecast_hour}h: {e}")
+                            continue
             
             logger.info("Completed forecast map generation")
         except Exception as e:
