@@ -338,25 +338,47 @@ class GFSDataFetcher:
                 if 'gh' in variables:
                     try:
                         logger.info("Opening isobaricInhPa levels for geopotential height...")
-                        # Open both 1000mb and 500mb levels
-                        ds_gh = xr.open_dataset(
-                            tmp_path,
-                            engine='cfgrib',
-                            backend_kwargs={'filter_by_keys': {'typeOfLevel': 'isobaricInhPa'}},
-                            decode_timedelta=False
-                        )
-                        # Extract geopotential height and filter to 1000mb and 500mb
-                        if 'gh' in ds_gh.data_vars and 'isobaricInhPa' in ds_gh.dims:
-                            gh_data = ds_gh['gh'].sel(isobaricInhPa=[1000, 500])
-                            all_data_vars['gh'] = gh_data
-                            if coords is None:
-                                # Use coords from gh but drop isobaricInhPa
-                                coords = {k: v for k, v in ds_gh.coords.items() if k != 'isobaricInhPa'}
-                            logger.info(f"  isobaricInhPa variables: geopotential height at 1000mb and 500mb")
-                        else:
-                            logger.warning("Geopotential height not found at isobaricInhPa levels")
+                        # Open with specific pressure levels to avoid conflicts
+                        # First try 1000mb
+                        try:
+                            ds_gh_1000 = xr.open_dataset(
+                                tmp_path,
+                                engine='cfgrib',
+                                backend_kwargs={'filter_by_keys': {
+                                    'typeOfLevel': 'isobaricInhPa',
+                                    'level': 1000
+                                }},
+                                decode_timedelta=False
+                            )
+                            if 'gh' in ds_gh_1000.data_vars:
+                                all_data_vars['gh_1000'] = ds_gh_1000['gh'].squeeze()
+                                logger.info("  Extracted gh at 1000mb")
+                        except Exception as e:
+                            logger.warning(f"  Could not extract gh at 1000mb: {str(e)[:100]}")
+                        
+                        # Then try 500mb
+                        try:
+                            ds_gh_500 = xr.open_dataset(
+                                tmp_path,
+                                engine='cfgrib',
+                                backend_kwargs={'filter_by_keys': {
+                                    'typeOfLevel': 'isobaricInhPa',
+                                    'level': 500
+                                }},
+                                decode_timedelta=False
+                            )
+                            if 'gh' in ds_gh_500.data_vars:
+                                all_data_vars['gh_500'] = ds_gh_500['gh'].squeeze()
+                                logger.info("  Extracted gh at 500mb")
+                        except Exception as e:
+                            logger.warning(f"  Could not extract gh at 500mb: {str(e)[:100]}")
+                        
+                        if coords is None and ('gh_1000' in all_data_vars or 'gh_500' in all_data_vars):
+                            # Use coords from gh dataset
+                            src_ds = ds_gh_1000 if 'gh_1000' in all_data_vars else ds_gh_500
+                            coords = {k: v for k, v in src_ds.coords.items() if k not in ['isobaricInhPa', 'level']}
                     except Exception as e:
-                        logger.warning(f"  isobaricInhPa level failed: {str(e)[:100]}")
+                        logger.warning(f"  isobaricInhPa level extraction failed: {str(e)[:100]}")
                 
                 if not all_data_vars:
                     raise ValueError("Could not extract any variables from GRIB file")

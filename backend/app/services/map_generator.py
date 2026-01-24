@@ -218,7 +218,9 @@ class MapGenerator:
             # For this map, keep precip in mm/hr (6-hour average rate)
             precip_data = self._process_precipitation_mmhr(ds)
             mslp_data = self._process_mslp(ds)
-            thickness_data = self._process_thickness(ds) if 'gh' in ds or any('gh' in str(v).lower() for v in ds.data_vars) else None
+            # Check if we have geopotential height data for thickness
+            has_gh = ('gh_1000' in ds and 'gh_500' in ds) or 'gh' in ds or any('gh' in str(v).lower() for v in ds.data_vars)
+            thickness_data = self._process_thickness(ds) if has_gh else None
             data = precip_data  # Primary data for color-filling
             units = "mm/hr"  # For precipitation rate
             # Precipitation color scheme (greens/blues) for mm/hr
@@ -753,35 +755,38 @@ class MapGenerator:
     def _process_thickness(self, ds: xr.Dataset) -> xr.DataArray:
         """Process 1000-500mb thickness (decameters)"""
         try:
-            # Try to find geopotential height variable
-            gh_var = None
-            if 'gh' in ds:
-                gh_var = 'gh'
+            # Check if we have the separate gh_1000 and gh_500 variables
+            if 'gh_1000' in ds and 'gh_500' in ds:
+                gh_1000 = ds['gh_1000']
+                gh_500 = ds['gh_500']
+                logger.info("Using separate gh_1000 and gh_500 variables for thickness")
+            elif 'gh' in ds:
+                # Try to extract from multi-level gh variable
+                gh_var = ds['gh']
+                if 'isobaricInhPa' in gh_var.dims:
+                    gh_1000 = gh_var.sel(isobaricInhPa=1000, method='nearest')
+                    gh_500 = gh_var.sel(isobaricInhPa=500, method='nearest')
+                elif 'level' in gh_var.dims:
+                    gh_1000 = gh_var.sel(level=1000, method='nearest')
+                    gh_500 = gh_var.sel(level=500, method='nearest')
+                else:
+                    logger.warning(f"Geopotential height does not have pressure level dimension: {gh_var.dims}")
+                    return None
             else:
-                gh_vars = [v for v in ds.data_vars if 'gh' in v.lower() or 'geopotential' in v.lower()]
-                if gh_vars:
-                    gh_var = gh_vars[0]
-            
-            if gh_var is None:
-                logger.warning("Could not find geopotential height variable for thickness")
+                logger.warning("Could not find geopotential height variables for thickness")
                 return None
             
-            # Extract 1000mb and 500mb levels
-            # Check if pressure level dimension exists
-            if 'isobaricInhPa' in ds[gh_var].dims:
-                gh_1000 = ds[gh_var].sel(isobaricInhPa=1000, method='nearest')
-                gh_500 = ds[gh_var].sel(isobaricInhPa=500, method='nearest')
-            elif 'level' in ds[gh_var].dims:
-                gh_1000 = ds[gh_var].sel(level=1000, method='nearest')
-                gh_500 = ds[gh_var].sel(level=500, method='nearest')
-            else:
-                logger.warning(f"Geopotential height does not have pressure level dimension: {ds[gh_var].dims}")
-                return None
+            # Remove time dimension if present
+            if 'time' in gh_1000.dims:
+                gh_1000 = gh_1000.isel(time=0)
+            if 'time' in gh_500.dims:
+                gh_500 = gh_500.isel(time=0)
             
             # Calculate thickness (in meters, convert to decameters)
             thickness = (gh_500 - gh_1000) / 10.0  # Convert m to dam (decameters)
             
-            return thickness.isel(time=0) if 'time' in thickness.dims else thickness
+            logger.info(f"Calculated thickness: range {float(thickness.min()):.1f} to {float(thickness.max()):.1f} dam")
+            return thickness
             
         except Exception as e:
             logger.warning(f"Could not calculate thickness: {e}")
