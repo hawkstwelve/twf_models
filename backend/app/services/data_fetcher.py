@@ -364,6 +364,7 @@ class GFSDataFetcher:
                 'prate': ['prate', 'prcp', 'APCP_surface', 'tp', 'Total_precipitation', 'PRATE_P0_L1_GLL0'],
                 'ugrd10m': ['u10', 'ugrd10m', 'UGRD_10maboveground', '10u', 'u-component_of_wind_height_above_ground', 'UGRD_P0_L103_GLL0'],
                 'vgrd10m': ['v10', 'vgrd10m', 'VGRD_10maboveground', '10v', 'v-component_of_wind_height_above_ground', 'VGRD_P0_L103_GLL0'],
+                'prmsl': ['prmsl', 'msl', 'PRMSL_meansealevel', 'MSL_meansealevel', 'Mean_sea_level_pressure', 'PRES_P0_L101_GLL0'],
             }
             
             # Find matching variables

@@ -169,6 +169,8 @@ class MapGenerator:
                 needed_vars = ['prate']
             elif variable in ["wind_speed_10m", "wind_speed"]:
                 needed_vars = ['ugrd10m', 'vgrd10m']
+            elif variable in ["mslp_precip", "mslp_pcpn"]:
+                needed_vars = ['prate', 'prmsl']  # Precipitation rate and mean sea level pressure
             
             # Fetch only what we need, subset to PNW region
             ds = self.data_fetcher.fetch_gfs_data(
@@ -211,6 +213,27 @@ class MapGenerator:
             data = self._process_wind_speed(ds)
             units = "mph"  # MPH for PNW users
             cmap = "YlOrRd"
+        elif variable == "mslp_precip" or variable == "mslp_pcpn":
+            # MSLP & Precipitation - combines pressure contours with precip color-fill
+            precip_data = self._process_precipitation(ds)
+            mslp_data = self._process_mslp(ds)
+            data = precip_data  # Primary data for color-filling
+            units = "in"  # For precipitation
+            # Precipitation color scheme (greens/blues)
+            from matplotlib.colors import LinearSegmentedColormap
+            precip_colors = [
+                '#FFFFFF',  # 0.00" - White (no precip)
+                '#C8E6C9',  # 0.01" - Very light green
+                '#81C784',  # 0.05" - Light green
+                '#4CAF50',  # 0.10" - Green
+                '#388E3C',  # 0.25" - Dark green
+                '#1976D2',  # 0.50" - Blue
+                '#1565C0',  # 0.75" - Darker blue
+                '#0D47A1',  # 1.00" - Deep blue
+                '#8E24AA',  # 1.50" - Purple (very heavy)
+                '#4A148C',  # 2.00"+ - Deep purple
+            ]
+            cmap = LinearSegmentedColormap.from_list('precipitation', precip_colors, N=256)
         # Note: wind_gusts removed for initial release, can be added later
         else:
             raise ValueError(f"Unsupported variable: {variable}")
@@ -288,6 +311,10 @@ class MapGenerator:
                 # Use 2.5 degree increments to make the gradient smoother 
                 # while keeping labels consistent with your 5-degree target
                 temp_levels = np.arange(-40, 122.5, 2.5)
+            elif variable in ["mslp_precip", "mslp_pcpn", "precipitation", "precip"]:
+                # Fixed precipitation levels for consistent colors
+                # Range from 0 to 3 inches with finer increments for light precip
+                temp_levels = [0.0, 0.01, 0.05, 0.10, 0.25, 0.50, 0.75, 1.0, 1.5, 2.0, 2.5, 3.0]
             else:
                 temp_levels = 20  # Auto levels for other variables
             
@@ -311,12 +338,70 @@ class MapGenerator:
                     extend='both'
                 )
         
+        # Add MSLP contours if this is an MSLP & Precip map
+        if variable in ["mslp_precip", "mslp_pcpn"]:
+            # Plot MSLP contours over the precipitation color-fill
+            lon_coord = mslp_data.coords.get('lon', mslp_data.coords.get('longitude'))
+            lat_coord = mslp_data.coords.get('lat', mslp_data.coords.get('latitude'))
+            
+            # Contour levels every 4mb (standard)
+            contour_levels = np.arange(960, 1060, 4)
+            
+            # Draw contour lines
+            cs = ax.contour(
+                lon_coord, lat_coord, mslp_data,
+                levels=contour_levels,
+                colors='black',
+                linewidths=1.0,
+                transform=ccrs.PlateCarree(),
+                zorder=10
+            )
+            
+            # Label contours
+            ax.clabel(cs, inline=True, fontsize=8, fmt='%d')
+            
+            # Find and label HIGH/LOW pressure centers
+            try:
+                from scipy.ndimage import maximum_filter, minimum_filter
+                
+                # Convert to numpy array
+                mslp_array = mslp_data.values
+                lat_array = lat_coord.values
+                lon_array = lon_coord.values
+                
+                # Find local maxima and minima
+                local_max = maximum_filter(mslp_array, size=20) == mslp_array
+                local_min = minimum_filter(mslp_array, size=20) == mslp_array
+                
+                # Label HIGHs and LOWs
+                for i in range(len(lat_array)):
+                    for j in range(len(lon_array)):
+                        if local_max[i, j] and mslp_array[i, j] > 1013:
+                            ax.text(lon_array[j], lat_array[i], 'H',
+                                   transform=ccrs.PlateCarree(),
+                                   fontsize=16, fontweight='bold',
+                                   ha='center', va='center',
+                                   color='blue',
+                                   zorder=15)
+                        elif local_min[i, j] and mslp_array[i, j] < 1013:
+                            ax.text(lon_array[j], lat_array[i], 'L',
+                                   transform=ccrs.PlateCarree(),
+                                   fontsize=16, fontweight='bold',
+                                   ha='center', va='center',
+                                   color='red',
+                                   zorder=15)
+            except Exception as e:
+                logger.warning(f"Could not add HIGH/LOW labels: {e}")
+        
         # Add colorbar
         if variable in ["precipitation_type", "precip_type"]:
             cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40, 
                                ticks=[0, 1, 2, 3])
             cbar.set_ticklabels(['No Precip', 'Rain', 'Snow', 'Freezing'])
             cbar.set_label("Precipitation Type")
+        elif variable in ["mslp_precip", "mslp_pcpn"]:
+            cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40)
+            cbar.set_label(f"Precipitation (in), MSLP Contours (mb)")
         else:
             cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40)
             cbar.set_label(f"{variable.replace('_', ' ').title()} ({units})")
@@ -578,3 +663,26 @@ class MapGenerator:
         precip_type = xr.where((precip >= 0.1) & (temp_2m >= 0) & (temp_2m <= 2), 3, precip_type)
         
         return precip_type.isel(time=0) if 'time' in precip_type.dims else precip_type
+    
+    def _process_mslp(self, ds: xr.Dataset) -> xr.DataArray:
+        """Process Mean Sea Level Pressure data"""
+        # Try common MSLP variable names
+        if 'prmsl' in ds:
+            mslp = ds['prmsl']
+        elif 'msl' in ds:
+            mslp = ds['msl']
+        elif 'PRMSL_meansealevel' in ds:
+            mslp = ds['PRMSL_meansealevel']
+        else:
+            # Try to find MSLP variable
+            mslp_vars = [v for v in ds.data_vars if 'msl' in v.lower() or 'prmsl' in v.lower()]
+            if mslp_vars:
+                mslp = ds[mslp_vars[0]]
+            else:
+                raise ValueError("Could not find MSLP variable in dataset")
+        
+        # Convert Pa to mb (hPa) if needed
+        if mslp.max() > 10000:  # Likely in Pa
+            mslp = mslp / 100.0
+        
+        return mslp.isel(time=0) if 'time' in mslp.dims else mslp
