@@ -37,7 +37,7 @@ const CONFIG = {
         },
         'temp_850_wind_mslp': {
             label: '850mb Temp',
-            units: '°F / mph / mb',
+            units: '°C / mph / mb',
             description: '850mb Temperature, Wind, and MSLP'
         }
     },

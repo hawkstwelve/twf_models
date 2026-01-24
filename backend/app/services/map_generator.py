@@ -197,16 +197,28 @@ class MapGenerator:
             # 850mb Temperature shading, Wind Arrows, and MSLP Contours
             data = ds['tmp_850']
             if float(data.max()) > 100: # Kelvin
-                data = (data - 273.15) * 9/5 + 32
-            units = "°F"
+                data = data - 273.15 # Convert to Celsius
+            units = "°C"
             from matplotlib.colors import LinearSegmentedColormap
-            # Professional Temperature Gradient
+            # Custom 850mb Hex Scale matching provided screenshot
             colors = [
-                (0.0, '#4B0082'), (0.1, '#0000FF'), (0.2, '#00FFFF'),
-                (0.3, '#00FF00'), (0.4, '#FFFF00'), (0.5, '#FFA500'),
-                (0.6, '#FF0000'), (0.8, '#8B0000'), (1.0, '#3D0000')
+                (-50, '#2A0A5E'), (-45, '#4D0673'), (-40, '#8A005F'), 
+                (-35, '#C7005B'), (-30, '#E94FA3'), (-25, '#F29EC4'), 
+                (-20, '#D8BFD8'), (-15, '#B0E0E6'), (-10, '#40E0D0'), 
+                (-5, '#008080'), (0, '#F5F5F5'),   (3, '#2A0A5E'), 
+                (6, '#800000'),  (9, '#D81B60'),  (12, '#FADADD'), 
+                (15, '#87CEFA'), (18, '#0000CD'), (21, '#708090'), 
+                (24, '#FFFACD'), (27, '#FFD700'), (30, '#FF4500'), 
+                (33, '#8B0000'), (36, '#4B3621'), (39, '#006400')
             ]
-            cmap = LinearSegmentedColormap.from_list('temperature', colors, N=256)
+            # Normalize points to 0-1 range for LinearSegmentedColormap
+            norm_colors = []
+            min_val, max_val = -50, 40
+            for val, hex_code in colors:
+                pos = (val - min_val) / (max_val - min_val)
+                norm_colors.append((pos, hex_code))
+            
+            cmap = LinearSegmentedColormap.from_list('temp_850', norm_colors, N=256)
             is_850mb_map = True
         elif variable == "mslp_precip" or variable == "mslp_pcpn":
             # MSLP & Categorical Precipitation (Rain/Snow/Sleet/Freezing Rain)
@@ -377,7 +389,8 @@ class MapGenerator:
             # 850mb Temp shading
             lon_vals = data.coords.get('lon', data.coords.get('longitude'))
             lat_vals = data.coords.get('lat', data.coords.get('latitude'))
-            temp_levels = np.arange(-40, 101, 2)
+            # Use Celsius levels from -50 to 40 with 1 degree increments for smoothness
+            temp_levels = np.arange(-50, 41, 1)
             
             im = ax.contourf(
                 lon_vals, lat_vals, data,
@@ -528,8 +541,8 @@ class MapGenerator:
                         region=region_to_use,
                         priority_level=settings.station_priority
                     )
-                    # Convert K to F for display
-                    station_values = {k: (v - 273.15) * 9/5 + 32 if v > 100 else v
+                    # Convert K to C for 850mb map
+                    station_values = {k: (v - 273.15) if v > 100 else v
                                     for k, v in station_values.items()}
                     
                 elif variable in ["precipitation", "precip"]:
