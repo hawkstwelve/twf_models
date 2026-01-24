@@ -183,23 +183,21 @@ class MapGenerator:
         # Select variable and process
         if variable == "temperature_2m" or variable == "temp":
             data = self._process_temperature(ds)
-            units = "°F"  # Fahrenheit for PNW users
-            # Custom temperature colormap matching professional weather sites
+            units = "°F"
             from matplotlib.colors import LinearSegmentedColormap
+            
+            # Expanded color list to match the visual complexity of your screenshot
             temp_colors = [
-                '#4B0082',  # -40°F: Deep purple
-                '#0000CD',  # -20°F: Blue
-                '#1E90FF',  # 0°F: Dodger blue
-                '#00CED1',  # 15°F: Dark turquoise
-                '#00FF7F',  # 32°F: Spring green
-                '#32CD32',  # 50°F: Lime green
-                '#FFFF00',  # 65°F: Yellow
-                '#FFD700',  # 75°F: Gold
-                '#FFA500',  # 85°F: Orange
-                '#FF4500',  # 95°F: Orange red
-                '#DC143C',  # 105°F: Crimson
-                '#8B0000',  # 115°F: Dark red/brown
+                '#E8D0D8', '#D8B0C8', '#C080B0', '#9050A0', '#703090', # -40 to -15 (Purples)
+                '#A070B0', '#C8A0D0', '#E8E0F0', '#D0E0F0', '#A0C0E0', # -10 to 10 (Light Purple/Blue)
+                '#7090C0', '#4070B0', '#2050A0', '#103070',            # 15 to 30 (Deep Blues)
+                '#204048', '#406058', '#709078', '#A0C098', '#D0E0B0', # 35 to 50 (Teal/Sage Greens)
+                '#F0F0C0', '#E0D0A0', '#C0B080', '#A08060', '#805040', # 55 to 70 (Yellow/Tan/Brown)
+                '#602018', '#801010', '#A01010', '#702020',            # 75 to 90 (Deep Reds)
+                '#886666', '#A08888', '#C0A0A0', '#D8C8C8', '#E8E0E0', # 95 to 110 (Muted Grays/Pinks)
+                '#B0A0A0', '#807070', '#504040'                        # 115+ (Dark Grays)
             ]
+            
             cmap = LinearSegmentedColormap.from_list('temperature', temp_colors, N=256)
         elif variable == "precipitation_type" or variable == "precip_type":
             data = self._process_precipitation_type(ds)
@@ -287,8 +285,9 @@ class MapGenerator:
             # Continuous data
             # For temperature, use fixed levels for consistent colors across all maps
             if variable in ["temperature_2m", "temp"]:
-                # Fixed temperature range from -40°F to 115°F in 5° increments
-                temp_levels = np.arange(-40, 120, 5)
+                # Use 2.5 degree increments to make the gradient smoother 
+                # while keeping labels consistent with your 5-degree target
+                temp_levels = np.arange(-40, 122.5, 2.5)
             else:
                 temp_levels = 20  # Auto levels for other variables
             
