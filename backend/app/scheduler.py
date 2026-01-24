@@ -331,6 +331,11 @@ class ForecastScheduler:
 
 
 if __name__ == "__main__":
+    # Configure logging for direct execution
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
     logger.info("Starting TWF Models Scheduler")
     scheduler = ForecastScheduler()
     try:
