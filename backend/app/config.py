@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     map_region: str = "pnw"  # pnw (Pacific Northwest: WA, OR, ID), us, global, custom
     # PNW boundaries: approximately -125 to -110 longitude, 42 to 49 latitude
     map_region_bounds: Optional[dict] = None  # Will be set for PNW
+    station_overlays: bool = True  # Show station values on maps
+    station_priority: int = 2  # 1=major cities only, 2=+secondary, 3=all stations
     
     # Logging
     log_level: str = "INFO"

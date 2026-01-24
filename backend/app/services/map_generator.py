@@ -14,6 +14,7 @@ from typing import Optional
 
 from app.config import settings
 from app.services.data_fetcher import GFSDataFetcher
+from app.services.stations import get_stations_for_region, format_station_value
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,115 @@ class MapGenerator:
         self.data_fetcher = GFSDataFetcher()
         self.storage_path = Path(settings.storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
+    
+    def extract_station_values(self, ds: xr.Dataset, variable: str, region: str = 'pnw', 
+                               priority_level: int = 2):
+        """
+        Extract model values at station locations.
+        
+        Args:
+            ds: xarray Dataset with forecast data
+            variable: Variable name in dataset (e.g., 't2m', 'tp')
+            region: Region identifier for station selection
+            priority_level: Station priority level (1=major only, 2=major+secondary, 3=all)
+        
+        Returns:
+            Dictionary mapping station names to their values
+        """
+        stations = get_stations_for_region(region, priority_level)
+        values = {}
+        
+        for station_name, station_data in stations.items():
+            try:
+                # Extract value at station location using nearest neighbor
+                value = ds[variable].sel(
+                    latitude=station_data['lat'],
+                    longitude=station_data['lon'],
+                    method='nearest'
+                ).values
+                
+                # Handle numpy arrays and scalars
+                if hasattr(value, 'item'):
+                    value = value.item()
+                
+                values[station_name] = float(value)
+                
+            except Exception as e:
+                logger.warning(f"Could not extract value for station {station_name}: {e}")
+                continue
+        
+        return values
+    
+    def plot_station_overlays(self, ax, station_values: dict, variable: str, 
+                              region: str = 'pnw', transform=None):
+        """
+        Plot station values as overlays on the map.
+        
+        Args:
+            ax: Matplotlib axes object
+            station_values: Dictionary of station names to values
+            variable: Variable type for formatting (temp, precip, wind_speed, etc.)
+            region: Region identifier
+            transform: Cartopy transform (defaults to PlateCarree)
+        """
+        if transform is None:
+            transform = ccrs.PlateCarree()
+        
+        stations = get_stations_for_region(region, priority_level=3)  # Get all for positioning
+        
+        for station_name, value in station_values.items():
+            if station_name not in stations:
+                continue
+            
+            station = stations[station_name]
+            lat = station['lat']
+            lon = station['lon']
+            
+            # Format the value for display
+            formatted_value = format_station_value(value, variable)
+            
+            if not formatted_value:  # Skip if empty
+                continue
+            
+            # Plot station dot
+            ax.plot(lon, lat, 'o', 
+                   color='black', 
+                   markersize=4,
+                   markeredgecolor='white',
+                   markeredgewidth=0.5,
+                   transform=transform,
+                   zorder=100)
+            
+            # Plot value text with white background box for readability
+            ax.text(lon, lat, 
+                   formatted_value,
+                   transform=transform,
+                   fontsize=8,
+                   fontweight='bold',
+                   ha='left',
+                   va='bottom',
+                   color='black',
+                   bbox=dict(
+                       boxstyle='round,pad=0.3',
+                       facecolor='white',
+                       edgecolor='black',
+                       linewidth=0.5,
+                       alpha=0.85
+                   ),
+                   zorder=101)
+            
+            # Optionally add station name below (for major stations only)
+            if station.get('priority', 3) == 1:  # Only major cities
+                ax.text(lon, lat - 0.15,  # Slight offset below
+                       station.get('abbr', station_name[:3].upper()),
+                       transform=transform,
+                       fontsize=6,
+                       ha='center',
+                       va='top',
+                       color='black',
+                       style='italic',
+                       alpha=0.7,
+                       zorder=99)
     
     def generate_map(
         self,
@@ -189,6 +299,50 @@ class MapGenerator:
         run_str = run_time.strftime("%Y-%m-%d %H:00 UTC") if run_time else "Latest"
         plt.title(f"{model} {variable.replace('_', ' ').title()} - {run_str} +{forecast_hour}h", 
                  fontsize=14, fontweight='bold')
+        
+        # Add station overlays if enabled
+        if settings.station_overlays and variable not in ["precipitation_type", "precip_type"]:
+            try:
+                # Determine which dataset variable to use for extraction
+                if variable in ["temperature_2m", "temp"]:
+                    extract_var = 't2m' if 't2m' in ds else 'tmp2m'
+                elif variable in ["precipitation", "precip"]:
+                    extract_var = 'prate'
+                elif variable in ["wind_speed_10m", "wind_speed"]:
+                    # For wind speed, we need to calculate it first
+                    # We'll extract the magnitude after calculation
+                    extract_var = None  # Handle separately below
+                else:
+                    extract_var = None
+                
+                if extract_var:
+                    station_values = self.extract_station_values(
+                        ds, extract_var, 
+                        region=region_to_use,
+                        priority_level=settings.station_priority
+                    )
+                    
+                    # Convert units to match map display
+                    if variable in ["temperature_2m", "temp"]:
+                        # Convert K to F for display
+                        station_values = {k: (v - 273.15) * 9/5 + 32 
+                                        for k, v in station_values.items()}
+                    elif variable in ["precipitation", "precip"]:
+                        # Convert kg/m²/s to inches
+                        # Need to account for time period (hourly rate to accumulation)
+                        station_values = {k: v * 3600 * 0.0393701 
+                                        for k, v in station_values.items()}
+                    
+                    self.plot_station_overlays(
+                        ax, station_values, variable,
+                        region=region_to_use,
+                        transform=ccrs.PlateCarree()
+                    )
+                    logger.info(f"Added station overlays: {len(station_values)} stations")
+                    
+            except Exception as e:
+                # Don't fail the whole map generation if overlays fail
+                logger.warning(f"Could not add station overlays: {e}")
         
         # Save image
         if run_time:
