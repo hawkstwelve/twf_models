@@ -25,11 +25,6 @@ const CONFIG = {
             units: 'mph',
             description: '10m Wind Speed'
         },
-        'precip_type': {
-            label: 'Precip Type',
-            units: '',
-            description: 'Rain/Snow/Freezing Rain'
-        },
         'mslp_precip': {
             label: 'MSLP & Precip',
             units: 'mb / inches',

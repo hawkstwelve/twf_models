@@ -22,7 +22,7 @@ class ForecastScheduler:
         self.map_generator = MapGenerator()
         self.data_fetcher = GFSDataFetcher()
         # PNW-focused variables
-        self.variables = ['temp', 'precip', 'precip_type', 'wind_speed', 'mslp_precip', 'temp_850_wind_mslp']
+        self.variables = ['temp', 'precip', 'wind_speed', 'mslp_precip', 'temp_850_wind_mslp']
         # Initialize S3 filesystem for data availability checks
         self.s3 = s3fs.S3FileSystem(anon=True)
     

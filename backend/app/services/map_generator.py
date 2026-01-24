@@ -181,10 +181,6 @@ class MapGenerator:
             ]
             
             cmap = LinearSegmentedColormap.from_list('temperature', temp_colors, N=256)
-        elif variable == "precipitation_type" or variable == "precip_type":
-            data = self._process_precipitation_type(ds)
-            units = ""
-            cmap = "Set3"  # Discrete colors for different precip types
         elif variable == "precipitation" or variable == "precip":
             data = self._process_precipitation(ds)
             units = "in"  # Inches for PNW users
@@ -278,11 +274,15 @@ class MapGenerator:
             ax.set_global()
         
         # Add map features (zorder=0 to keep them below data)
-        ax.add_feature(cfeature.OCEAN, facecolor='#e3f2fd', zorder=0)
-        ax.add_feature(cfeature.LAND, facecolor='#fbf5e7', zorder=0)
-        ax.add_feature(cfeature.COASTLINE, linewidth=0.6, edgecolor='#333333', zorder=2)
-        ax.add_feature(cfeature.BORDERS, linewidth=0.6, edgecolor='#333333', zorder=2)
-        ax.add_feature(cfeature.STATES, linewidth=0.4, edgecolor='#666666', linestyle=':', zorder=2)
+        land_color = '#ffffff' if is_mslp_precip or variable in ["precipitation", "precip"] else '#fbf5e7'
+        ocean_color = '#000000' if is_mslp_precip or variable in ["precipitation", "precip"] else '#e3f2fd'
+        border_color = '#333333' if not (is_mslp_precip or variable in ["precipitation", "precip"]) else '#666666'
+
+        ax.add_feature(cfeature.OCEAN, facecolor=ocean_color, zorder=0)
+        ax.add_feature(cfeature.LAND, facecolor=land_color, zorder=0)
+        ax.add_feature(cfeature.COASTLINE, linewidth=0.6, edgecolor=border_color, zorder=2)
+        ax.add_feature(cfeature.BORDERS, linewidth=0.6, edgecolor=border_color, zorder=2)
+        ax.add_feature(cfeature.STATES, linewidth=0.4, edgecolor=border_color, linestyle=':', zorder=2)
         
         # Plot data
         # Handle precipitation type differently (discrete values)
