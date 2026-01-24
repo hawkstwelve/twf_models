@@ -16,7 +16,7 @@ const CONFIG = {
             description: '2m Temperature'
         },
         'precip': {
-            label: 'Precipitation',
+            label: 'Total Precip',
             units: 'inches',
             description: 'Total Precipitation'
         },
@@ -34,6 +34,11 @@ const CONFIG = {
             label: 'MSLP & Precip',
             units: 'mb / inches',
             description: 'Mean Sea Level Pressure & Precipitation'
+        },
+        'temp_850_wind_mslp': {
+            label: '850mb Temp',
+            units: '°F / mph / mb',
+            description: '850mb Temperature, Wind, and MSLP'
         }
     },
     
