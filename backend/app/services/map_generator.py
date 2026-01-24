@@ -285,12 +285,19 @@ class MapGenerator:
                 )
         else:
             # Continuous data
+            # For temperature, use fixed levels for consistent colors across all maps
+            if variable in ["temperature_2m", "temp"]:
+                # Fixed temperature range from -40°F to 115°F in 5° increments
+                temp_levels = np.arange(-40, 120, 5)
+            else:
+                temp_levels = 20  # Auto levels for other variables
+            
             if hasattr(data, 'lat') and hasattr(data, 'lon'):
                 im = ax.contourf(
                     data.lon, data.lat, data,
                     transform=ccrs.PlateCarree(),
                     cmap=cmap,
-                    levels=20,
+                    levels=temp_levels,
                     extend='both'
                 )
             else:
@@ -301,7 +308,7 @@ class MapGenerator:
                     data,
                     transform=ccrs.PlateCarree(),
                     cmap=cmap,
-                    levels=20,
+                    levels=temp_levels,
                     extend='both'
                 )
         
