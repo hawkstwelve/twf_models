@@ -280,6 +280,8 @@ class GFSDataFetcher:
                         if coords is None:
                             # Get coords but exclude heightAboveGround
                             coords = {k: v for k, v in ds_surf.coords.items() if k != 'heightAboveGround'}
+                        # Close dataset to free memory
+                        ds_surf.close()
                     
                     if surface_datasets:
                         all_surf_vars = list(set([v for ds in surface_datasets for v in ds.data_vars]))
@@ -307,6 +309,7 @@ class GFSDataFetcher:
                         # Get coords but exclude heightAboveGround
                         coords = {k: v for k, v in ds_2m.coords.items() if k != 'heightAboveGround'}
                     logger.info(f"  2m variables: {list(ds_2m.data_vars)}")
+                    ds_2m.close()
                 except Exception as e:
                     logger.warning(f"  2m level failed: {str(e)[:100]}")
                 
@@ -327,6 +330,7 @@ class GFSDataFetcher:
                         # Get coords but exclude heightAboveGround
                         coords = {k: v for k, v in ds_10m.coords.items() if k != 'heightAboveGround'}
                     logger.info(f"  10m variables: {list(ds_10m.data_vars)}")
+                    ds_10m.close()
                 except Exception as e:
                     logger.warning(f"  10m level failed: {str(e)[:100]}")
                 
@@ -344,6 +348,7 @@ class GFSDataFetcher:
                     if coords is None:
                         coords = {k: v for k, v in ds_msl.coords.items()}
                     logger.info(f"  meanSea variables: {list(ds_msl.data_vars)}")
+                    ds_msl.close()
                 except Exception as e:
                     logger.warning(f"  meanSea level failed: {str(e)[:100]}")
                 
@@ -382,6 +387,7 @@ class GFSDataFetcher:
                                 
                                 if coords is None:
                                     coords = {k: v for k, v in ds_level.coords.items() if k not in ['isobaricInhPa', 'level']}
+                                ds_level.close()
                             except Exception as e:
                                 logger.warning(f"  Could not extract gh at {level}mb: {str(e)[:100]}")
                     except Exception as e:

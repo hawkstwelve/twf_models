@@ -6,6 +6,7 @@ import sys
 import logging
 import time
 import s3fs
+import gc
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -191,6 +192,11 @@ class ForecastScheduler:
                                 success_count += 1
                             except Exception as e:
                                 logger.error(f"  ✗ {variable}: {e}")
+                        
+                        # Explicitly clear memory after each forecast hour
+                        ds.close()
+                        del ds
+                        gc.collect()
                     except Exception as e:
                         logger.error(f"  ✗ Failed to fetch data for f{forecast_hour:03d}: {e}")
                     
