@@ -213,7 +213,8 @@ class MapGenerator:
             ]
             # Normalize points to 0-1 range for LinearSegmentedColormap
             norm_colors = []
-            min_val, max_val = -50, 40
+            min_val = colors[0][0]
+            max_val = colors[-1][0]
             for val, hex_code in colors:
                 pos = (val - min_val) / (max_val - min_val)
                 norm_colors.append((pos, hex_code))
