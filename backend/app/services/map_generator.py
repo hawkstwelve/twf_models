@@ -409,9 +409,9 @@ class MapGenerator:
             # Subsample for readability
             skip = 4
             ax.quiver(
-                lon_vals[::skip], lat_vals[::skip], 
-                u[::skip, ::skip], v[::skip, ::skip],
-                wind_speed[::skip, ::skip],
+                lon_vals[::skip].values, lat_vals[::skip].values, 
+                u[::skip, ::skip].values, v[::skip, ::skip].values,
+                wind_speed[::skip, ::skip].values,
                 transform=ccrs.PlateCarree(),
                 cmap='plasma',
                 scale=400,
