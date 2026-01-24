@@ -176,15 +176,65 @@ twf_models/
 └── README.md
 ```
 
-## Getting Started
+## Current Status
 
-See [SETUP.md](docs/SETUP.md) for detailed setup instructions.
+✅ **Phase 1 Complete**: Backend deployed and operational on Digital Ocean  
+🚧 **Phase 2 In Progress**: Local development of enhanced features  
+⏳ **Phase 3 Planned**: Frontend development and testing on sodakweather.com  
+⏳ **Phase 4 Planned**: Production launch on theweatherforums.com/models
 
-## Next Steps
+**Deployment**: http://174.138.84.70:8000 (Backend API)
 
-1. Set up development environment
-2. Create basic data fetcher for GFS
-3. Build map generator
-4. Create API endpoints
-5. Set up scheduled processing
-6. Integrate with theweatherforums.com
+## Quick Start
+
+### Test Locally
+```bash
+# Generate a quick test map
+python3 test_quick_map.py
+
+# Generate all maps for all forecast hours
+python3 test_all_maps_all_hours.py
+
+# Test station overlay feature
+python3 test_station_overlays.py
+```
+
+### Configuration
+Copy `.env.example` to `.env` and adjust settings:
+```bash
+cp .env.example backend/.env
+```
+
+## Documentation
+
+- **[DEPLOYMENT_SUCCESS.md](DEPLOYMENT_SUCCESS.md)** - Deployment summary and monitoring
+- **[RECOMMENDED_NEXT_STEPS.md](RECOMMENDED_NEXT_STEPS.md)** - Development roadmap and TODO
+- **[docs/DEPLOYMENT_GUIDE_WALKTHROUGH.md](docs/DEPLOYMENT_GUIDE_WALKTHROUGH.md)** - Step-by-step deployment
+- **[docs/ROADMAP.md](docs/ROADMAP.md)** - Project phases and timeline
+- **[docs/INTEGRATION.md](docs/INTEGRATION.md)** - Forum integration strategy
+- **[docs/GOTCHAS.md](docs/GOTCHAS.md)** - Common issues and solutions
+
+## Features
+
+✅ **Implemented:**
+- GFS data fetching from AWS S3
+- 0.25° high-resolution maps (4x better than standard)
+- 4 map types: Temperature, Precipitation, Wind Speed, Precipitation Type
+- 4 forecast hours: 0h, 24h, 48h, 72h
+- Station overlays showing values at major PNW cities
+- GRIB file caching (75% bandwidth reduction)
+- Automated generation every 6 hours
+- FastAPI server with health checks
+
+🚧 **In Development:**
+- Extended forecast hours (every 3h to 48h, every 6h to 120h)
+- Additional map types (850mb temp, MSLP, 500mb height, etc.)
+- Interactive frontend with slider/animation
+- Mobile-responsive design
+
+## Project Status
+
+**Backend**: ✅ Deployed and stable  
+**API**: ✅ Operational at http://174.138.84.70:8000  
+**Maps**: ✅ Generating every 6 hours (00, 06, 12, 18 UTC)  
+**Frontend**: ⏳ Planned for sodakweather.com testing

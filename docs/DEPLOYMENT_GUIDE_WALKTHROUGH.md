@@ -68,15 +68,13 @@ git push origin main
 **Location**: Your local machine, new terminal window
 
 ```bash
-ssh root@YOUR_DROPLET_IP
+ssh brian@174.138.84.70
 ```
-
-Replace `YOUR_DROPLET_IP` with your actual IP address (e.g., `ssh root@64.23.145.89`)
 
 **What you should see:**
 ```
 Welcome to Ubuntu 24.04 LTS...
-root@your-droplet:~#
+brian@your-droplet:~$
 ```
 
 **✅ Checkpoint**: You're now connected to the droplet.
@@ -167,12 +165,7 @@ Processing triggers for...
 cd /opt
 
 # Clone your repository
-# IMPORTANT: Replace YOUR_GITHUB_REPO_URL with your actual repository URL
-sudo git clone YOUR_GITHUB_REPO_URL twf_models
-
-# Examples:
-# sudo git clone https://github.com/yourusername/twf_models.git twf_models
-# sudo git clone git@github.com:yourusername/twf_models.git twf_models
+sudo git clone https://github.com/hawkstwelve/twf_models.git twf_models
 ```
 
 **If you get an authentication error:**
