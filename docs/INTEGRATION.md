@@ -616,3 +616,534 @@ eventSource.onmessage = (event) => {
 - ❌ Overkill for 60s polling
 
 **Recommendation**: Start with manifest.json polling, add SSE later if needed.
+
+---
+
+## Multi-Run Selection & Comparison (Backend ✅ Implemented)
+
+### Overview
+Users can view and compare the last 4 GFS model runs (24 hours of data). This allows them to:
+- See how forecasts have evolved over time
+- Check forecast consistency between runs
+- Identify when models are "locked in" vs uncertain
+- Compare current run with previous runs
+
+**Backend Status**: ✅ Fully implemented and ready  
+**Frontend Status**: ⏳ To be built in Phase 2
+
+---
+
+### Backend API (Already Implemented)
+
+#### 1. Get Available Runs
+```
+GET /api/runs
+Query Parameters:
+  - model: string (default: "GFS") - Filter by model
+
+Response: {
+  "runs": [
+    {
+      "run_time": "2026-01-24T00:00:00Z",
+      "run_time_formatted": "00Z Jan 24",
+      "date": "2026-01-24",
+      "hour": "00Z",
+      "is_latest": true,
+      "maps_count": 16,
+      "generated_at": "2026-01-24T03:35:12Z",
+      "age_hours": 6.5
+    },
+    {
+      "run_time": "2026-01-23T18:00:00Z",
+      "run_time_formatted": "18Z Jan 23",
+      "date": "2026-01-23",
+      "hour": "18Z",
+      "is_latest": false,
+      "maps_count": 16,
+      "generated_at": "2026-01-23T21:35:45Z",
+      "age_hours": 12.5
+    }
+    // ... up to 4 most recent runs
+  ],
+  "total_runs": 4
+}
+```
+
+#### 2. Filter Maps by Run
+```
+GET /api/maps?run_time=2026-01-24T00:00:00Z
+Query Parameters:
+  - run_time: string (ISO format) - Only return maps from this run
+  - variable: string (optional) - Further filter by variable
+  - forecast_hour: int (optional) - Further filter by forecast hour
+
+Response: {
+  "maps": [
+    // Only maps from the specified run
+  ]
+}
+```
+
+#### 3. Automatic Cleanup
+- Backend automatically keeps last 4 runs (24 hours)
+- Older runs are deleted after each successful generation
+- Prevents unlimited disk space growth
+- ~22 MB storage for 4 complete runs
+
+---
+
+### Frontend Implementation (To Be Built in Phase 2)
+
+#### HTML Structure
+
+```html
+<div class="map-viewer-container">
+    <!-- Run Selector -->
+    <div class="controls-panel">
+        <div class="control-group">
+            <label for="run-selector">Model Run:</label>
+            <select id="run-selector" class="run-dropdown">
+                <!-- Populated dynamically from /api/runs -->
+            </select>
+        </div>
+        
+        <div class="control-group">
+            <label for="variable-selector">Variable:</label>
+            <select id="variable-selector">
+                <option value="temp">Temperature</option>
+                <option value="precip">Precipitation</option>
+                <option value="wind_speed">Wind Speed</option>
+                <option value="precip_type">Precip Type</option>
+            </select>
+        </div>
+        
+        <div class="control-group">
+            <label>Forecast Hour:</label>
+            <div class="hour-slider">
+                <button data-hour="0">Now</button>
+                <button data-hour="24">24h</button>
+                <button data-hour="48">48h</button>
+                <button data-hour="72">72h</button>
+            </div>
+        </div>
+        
+        <!-- Comparison Toggle -->
+        <div class="control-group">
+            <label>
+                <input type="checkbox" id="comparison-mode"> 
+                Compare with previous run
+            </label>
+        </div>
+    </div>
+    
+    <!-- Map Display -->
+    <div class="map-display-area">
+        <!-- Single Map View -->
+        <div id="single-map-view" class="map-container">
+            <img id="current-map" src="" alt="Weather Map">
+            <div class="map-metadata">
+                <span id="map-run-label">00Z Jan 24</span>
+                <span id="map-valid-time">Valid: Jan 24 6:00 PM CST</span>
+            </div>
+        </div>
+        
+        <!-- Comparison View (hidden by default) -->
+        <div id="comparison-view" class="comparison-container" style="display: none;">
+            <div class="map-container">
+                <img id="current-run-map" src="" alt="Current Run">
+                <div class="map-label">Current: <span id="current-label"></span></div>
+            </div>
+            <div class="map-container">
+                <img id="previous-run-map" src="" alt="Previous Run">
+                <div class="map-label">Previous: <span id="previous-label"></span></div>
+            </div>
+        </div>
+    </div>
+</div>
+```
+
+#### JavaScript Implementation
+
+```javascript
+class MapViewer {
+    constructor(apiBaseUrl) {
+        this.apiBaseUrl = apiBaseUrl;
+        this.availableRuns = [];
+        this.currentRun = null;
+        this.currentVariable = 'temp';
+        this.currentForecastHour = 0;
+        this.comparisonMode = false;
+    }
+    
+    async init() {
+        // Fetch available runs
+        await this.loadAvailableRuns();
+        
+        // Setup event listeners
+        this.setupEventListeners();
+        
+        // Load initial map
+        await this.loadMap();
+    }
+    
+    async loadAvailableRuns() {
+        try {
+            const response = await fetch(`${this.apiBaseUrl}/api/runs`);
+            const data = await response.json();
+            
+            this.availableRuns = data.runs;
+            this.currentRun = this.availableRuns[0]; // Latest run
+            
+            // Populate dropdown
+            this.populateRunDropdown();
+        } catch (error) {
+            console.error('Failed to load runs:', error);
+        }
+    }
+    
+    populateRunDropdown() {
+        const selector = document.getElementById('run-selector');
+        selector.innerHTML = '';
+        
+        this.availableRuns.forEach((run, index) => {
+            const option = document.createElement('option');
+            option.value = run.run_time;
+            
+            // Format: "00Z Jan 24 (Latest)" or "18Z Jan 23 (6h ago)"
+            let label = run.run_time_formatted;
+            if (run.is_latest) {
+                label += ' ⭐ Latest';
+            } else {
+                label += ` (${Math.round(run.age_hours)}h ago)`;
+            }
+            
+            option.textContent = label;
+            option.selected = (index === 0);
+            selector.appendChild(option);
+        });
+    }
+    
+    setupEventListeners() {
+        // Run selector
+        document.getElementById('run-selector').addEventListener('change', (e) => {
+            const selectedRun = this.availableRuns.find(r => r.run_time === e.target.value);
+            if (selectedRun) {
+                this.currentRun = selectedRun;
+                this.loadMap();
+            }
+        });
+        
+        // Variable selector
+        document.getElementById('variable-selector').addEventListener('change', (e) => {
+            this.currentVariable = e.target.value;
+            this.loadMap();
+        });
+        
+        // Forecast hour buttons
+        document.querySelectorAll('.hour-slider button').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                this.currentForecastHour = parseInt(e.target.dataset.hour);
+                this.loadMap();
+            });
+        });
+        
+        // Comparison mode toggle
+        document.getElementById('comparison-mode').addEventListener('change', (e) => {
+            this.comparisonMode = e.target.checked;
+            this.toggleComparisonView();
+        });
+    }
+    
+    async loadMap() {
+        if (!this.currentRun) return;
+        
+        if (this.comparisonMode) {
+            await this.loadComparisonMaps();
+        } else {
+            await this.loadSingleMap();
+        }
+    }
+    
+    async loadSingleMap() {
+        try {
+            // Fetch maps for current run, variable, and forecast hour
+            const params = new URLSearchParams({
+                run_time: this.currentRun.run_time,
+                variable: this.currentVariable,
+                forecast_hour: this.currentForecastHour
+            });
+            
+            const response = await fetch(`${this.apiBaseUrl}/api/maps?${params}`);
+            const data = await response.json();
+            
+            if (data.maps.length > 0) {
+                const map = data.maps[0];
+                document.getElementById('current-map').src = `${this.apiBaseUrl}${map.image_url}`;
+                document.getElementById('map-run-label').textContent = this.currentRun.run_time_formatted;
+                
+                // Calculate valid time
+                const validTime = this.calculateValidTime(this.currentRun.run_time, this.currentForecastHour);
+                document.getElementById('map-valid-time').textContent = `Valid: ${validTime}`;
+            }
+        } catch (error) {
+            console.error('Failed to load map:', error);
+        }
+    }
+    
+    async loadComparisonMaps() {
+        // Load current run map
+        await this.loadMapForRun(this.currentRun, 'current-run-map', 'current-label');
+        
+        // Load previous run map (if available)
+        if (this.availableRuns.length > 1) {
+            const previousRun = this.availableRuns[1];
+            await this.loadMapForRun(previousRun, 'previous-run-map', 'previous-label');
+        }
+    }
+    
+    async loadMapForRun(run, imgElementId, labelElementId) {
+        try {
+            const params = new URLSearchParams({
+                run_time: run.run_time,
+                variable: this.currentVariable,
+                forecast_hour: this.currentForecastHour
+            });
+            
+            const response = await fetch(`${this.apiBaseUrl}/api/maps?${params}`);
+            const data = await response.json();
+            
+            if (data.maps.length > 0) {
+                const map = data.maps[0];
+                document.getElementById(imgElementId).src = `${this.apiBaseUrl}${map.image_url}`;
+                document.getElementById(labelElementId).textContent = run.run_time_formatted;
+            }
+        } catch (error) {
+            console.error(`Failed to load map for ${run.run_time_formatted}:`, error);
+        }
+    }
+    
+    toggleComparisonView() {
+        const singleView = document.getElementById('single-map-view');
+        const comparisonView = document.getElementById('comparison-view');
+        
+        if (this.comparisonMode) {
+            singleView.style.display = 'none';
+            comparisonView.style.display = 'flex';
+            this.loadComparisonMaps();
+        } else {
+            singleView.style.display = 'block';
+            comparisonView.style.display = 'none';
+            this.loadSingleMap();
+        }
+    }
+    
+    calculateValidTime(runTime, forecastHour) {
+        // Convert ISO run time to Date
+        const runDate = new Date(runTime);
+        runDate.setHours(runDate.getHours() + forecastHour);
+        
+        // Format for display
+        return runDate.toLocaleString('en-US', {
+            month: 'short',
+            day: 'numeric',
+            hour: 'numeric',
+            minute: '2-digit',
+            timeZoneName: 'short'
+        });
+    }
+}
+
+// Initialize when page loads
+document.addEventListener('DOMContentLoaded', () => {
+    const viewer = new MapViewer('http://174.138.84.70:8000');
+    viewer.init();
+});
+```
+
+#### CSS Styling
+
+```css
+.map-viewer-container {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+.controls-panel {
+    display: flex;
+    gap: 20px;
+    margin-bottom: 20px;
+    padding: 15px;
+    background: #f5f5f5;
+    border-radius: 8px;
+    flex-wrap: wrap;
+}
+
+.control-group {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.control-group label {
+    font-weight: 600;
+    font-size: 14px;
+}
+
+.run-dropdown,
+#variable-selector {
+    padding: 8px 12px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 14px;
+    min-width: 200px;
+}
+
+.hour-slider {
+    display: flex;
+    gap: 10px;
+}
+
+.hour-slider button {
+    padding: 8px 16px;
+    border: 1px solid #ddd;
+    background: white;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.hour-slider button:hover {
+    background: #e0e0e0;
+}
+
+.hour-slider button.active {
+    background: #2196F3;
+    color: white;
+    border-color: #2196F3;
+}
+
+.map-display-area {
+    background: white;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 20px;
+}
+
+.map-container {
+    position: relative;
+    width: 100%;
+}
+
+.map-container img {
+    width: 100%;
+    height: auto;
+    border-radius: 4px;
+}
+
+.map-metadata {
+    margin-top: 10px;
+    display: flex;
+    justify-content: space-between;
+    font-size: 14px;
+    color: #666;
+}
+
+.comparison-container {
+    display: flex;
+    gap: 20px;
+}
+
+.comparison-container .map-container {
+    flex: 1;
+}
+
+.map-label {
+    margin-top: 10px;
+    font-weight: 600;
+    font-size: 14px;
+    text-align: center;
+}
+
+/* Mobile responsive */
+@media (max-width: 768px) {
+    .controls-panel {
+        flex-direction: column;
+    }
+    
+    .comparison-container {
+        flex-direction: column;
+    }
+}
+```
+
+---
+
+### User Experience Flow
+
+**1. Page Load:**
+```
+→ Fetch /api/runs
+→ Populate dropdown with last 4 runs
+→ Select latest run by default
+→ Load maps for latest run
+```
+
+**2. User Changes Run:**
+```
+User selects "18Z Jan 23" from dropdown
+→ Update currentRun
+→ Fetch maps: /api/maps?run_time=2026-01-23T18:00:00Z&variable=temp&forecast_hour=0
+→ Display map from 18Z run
+→ Update metadata labels
+```
+
+**3. User Enables Comparison:**
+```
+User checks "Compare with previous run"
+→ Switch to split-screen view
+→ Load current run map (left)
+→ Load previous run map (right)
+→ Display both side-by-side
+```
+
+**4. User Changes Variable:**
+```
+User selects "Precipitation"
+→ Reload maps for selected variable
+→ Update both panels if in comparison mode
+```
+
+---
+
+### Benefits
+
+✅ **Forecast Evolution** - See how predictions change run-to-run  
+✅ **Confidence Assessment** - Consistent forecasts = higher confidence  
+✅ **User Education** - Understand model uncertainty  
+✅ **Professional Feature** - Matches TropicalTidbits, Pivotal Weather  
+✅ **Storage Efficient** - Only ~22 MB for 4 complete runs  
+✅ **Auto-Cleanup** - No manual maintenance required  
+
+---
+
+### Implementation Priority
+
+**Phase 2A: Basic Dropdown** (3-4 hours)
+1. Fetch and display available runs in dropdown
+2. Load maps when run selection changes
+3. Show run metadata (time, age)
+
+**Phase 2B: Comparison View** (1-2 days)
+4. Side-by-side comparison interface
+5. Toggle between single/comparison views
+6. Sync variables and forecast hours across panels
+
+**Phase 2C: Advanced Features** (optional)
+7. Animation between runs to show forecast evolution
+8. Highlight differences between runs
+9. "Diff map" showing changes
+
+---
+
+**Backend is ready!** Frontend can be built any time in Phase 2.

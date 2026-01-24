@@ -28,3 +28,21 @@ class UpdateResponse(BaseModel):
     status: str
     job_id: str
     message: Optional[str] = None
+
+
+class GFSRun(BaseModel):
+    """Information about a GFS model run"""
+    run_time: str  # ISO format: "2026-01-24T00:00:00Z"
+    run_time_formatted: str  # Human readable: "00Z Jan 24"
+    date: str  # "2026-01-24"
+    hour: str  # "00Z"
+    is_latest: bool
+    maps_count: int
+    generated_at: str  # ISO format
+    age_hours: float  # Hours since run time
+
+
+class GFSRunListResponse(BaseModel):
+    """Response for GFS runs list endpoint"""
+    runs: List[GFSRun]
+    total_runs: int

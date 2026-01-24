@@ -5,25 +5,60 @@ from typing import Optional, List
 from pathlib import Path
 from datetime import datetime
 import os
+import logging
 
 from app.config import settings
-from app.models.schemas import MapInfo, MapListResponse, UpdateResponse
+from app.models.schemas import MapInfo, MapListResponse, UpdateResponse, GFSRun, GFSRunListResponse
 from app.services.map_generator import MapGenerator
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+
+def parse_run_time_from_filename(run_time_str: str) -> datetime:
+    """
+    Parse run time from filename format (YYYYMMDD_HH) to datetime.
+    Example: "20260124_00" -> datetime(2026, 1, 24, 0, 0, 0)
+    """
+    date_part = run_time_str.split('_')[0]
+    hour_part = run_time_str.split('_')[1]
+    return datetime.strptime(f"{date_part}_{hour_part}", "%Y%m%d_%H")
+
+
+def format_run_time_label(dt: datetime) -> str:
+    """
+    Format run time as human-readable label.
+    Example: datetime(2026, 1, 24, 0, 0, 0) -> "00Z Jan 24"
+    """
+    return dt.strftime("%HZ %b %d")
 
 
 @router.get("/maps", response_model=MapListResponse)
 async def get_maps(
     model: Optional[str] = Query(None, description="Filter by model (GFS, Graphcast)"),
     variable: Optional[str] = Query(None, description="Filter by variable"),
-    forecast_hour: Optional[int] = Query(None, description="Filter by forecast hour")
+    forecast_hour: Optional[int] = Query(None, description="Filter by forecast hour"),
+    run_time: Optional[str] = Query(None, description="Filter by run time (ISO format: 2026-01-24T00:00:00Z)")
 ):
-    """Get list of available maps"""
+    """
+    Get list of available maps.
+    
+    Supports filtering by model, variable, forecast_hour, and run_time.
+    If run_time is provided, only maps from that specific GFS run are returned.
+    """
     images_path = Path(settings.storage_path)
     
     if not images_path.exists():
         return MapListResponse(maps=[])
+    
+    # Convert ISO run_time to filename format if provided
+    run_time_filter = None
+    if run_time:
+        try:
+            dt = datetime.fromisoformat(run_time.replace('Z', '+00:00'))
+            run_time_filter = dt.strftime("%Y%m%d_%H")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid run_time format. Use ISO format: 2026-01-24T00:00:00Z")
     
     maps = []
     for image_file in images_path.glob("*.png"):
@@ -32,10 +67,12 @@ async def get_maps(
         try:
             parts = image_file.stem.split("_")
             if len(parts) >= 4:
+                file_run_time = f"{parts[1]}_{parts[2]}"
+                
                 map_info = MapInfo(
                     id=image_file.stem,
                     model=parts[0].upper(),
-                    run_time=f"{parts[1]}_{parts[2]}",
+                    run_time=file_run_time,
                     forecast_hour=int(parts[-1]),
                     variable="_".join(parts[3:-1]),
                     image_url=f"{settings.api_prefix}/images/{image_file.name}",
@@ -49,12 +86,87 @@ async def get_maps(
                     continue
                 if forecast_hour is not None and map_info.forecast_hour != forecast_hour:
                     continue
+                if run_time_filter and file_run_time != run_time_filter:
+                    continue
                 
                 maps.append(map_info)
         except (ValueError, IndexError):
             continue
     
     return MapListResponse(maps=maps)
+
+
+@router.get("/runs", response_model=GFSRunListResponse)
+async def get_runs(
+    model: Optional[str] = Query("GFS", description="Filter by model (default: GFS)")
+):
+    """
+    Get list of available GFS model runs.
+    
+    Returns the last 4 runs (24 hours) by default, sorted newest first.
+    Each run includes metadata about available maps and generation time.
+    """
+    images_path = Path(settings.storage_path)
+    
+    if not images_path.exists():
+        return GFSRunListResponse(runs=[], total_runs=0)
+    
+    # Parse all image filenames to extract unique run times
+    image_files = list(images_path.glob(f"{model.lower()}_*.png"))
+    
+    if not image_files:
+        return GFSRunListResponse(runs=[], total_runs=0)
+    
+    # Extract unique run times and count maps per run
+    run_data = {}  # {run_time_str: {'count': int, 'latest_mtime': float}}
+    
+    for img in image_files:
+        try:
+            parts = img.stem.split('_')
+            if len(parts) >= 3:
+                run_time_str = f"{parts[1]}_{parts[2]}"  # e.g., "20260124_00"
+                
+                if run_time_str not in run_data:
+                    run_data[run_time_str] = {'count': 0, 'latest_mtime': 0}
+                
+                run_data[run_time_str]['count'] += 1
+                mtime = img.stat().st_mtime
+                if mtime > run_data[run_time_str]['latest_mtime']:
+                    run_data[run_time_str]['latest_mtime'] = mtime
+        except Exception:
+            continue
+    
+    # Sort run times (newest first) and convert to GFSRun objects
+    sorted_runs = sorted(run_data.keys(), reverse=True)
+    
+    runs = []
+    now = datetime.utcnow()
+    
+    for i, run_time_str in enumerate(sorted_runs):
+        try:
+            # Parse run time
+            run_dt = parse_run_time_from_filename(run_time_str)
+            
+            # Calculate age
+            age_hours = (now - run_dt).total_seconds() / 3600
+            
+            # Create GFSRun object
+            run = GFSRun(
+                run_time=run_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                run_time_formatted=format_run_time_label(run_dt),
+                date=run_dt.strftime("%Y-%m-%d"),
+                hour=run_dt.strftime("%HZ"),
+                is_latest=(i == 0),
+                maps_count=run_data[run_time_str]['count'],
+                generated_at=datetime.fromtimestamp(run_data[run_time_str]['latest_mtime']).isoformat(),
+                age_hours=round(age_hours, 1)
+            )
+            runs.append(run)
+        except Exception as e:
+            logger.warning(f"Failed to parse run {run_time_str}: {e}")
+            continue
+    
+    return GFSRunListResponse(runs=runs, total_runs=len(runs))
 
 
 @router.get("/maps/{map_id}", response_model=MapInfo)

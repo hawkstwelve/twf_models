@@ -100,6 +100,15 @@ Based on TropicalTidbits GFS products:
   - "Latest" option
   - Historical runs (keep 7-10 days)
 
+- [ ] **Run Time Selection** (Backend ✅ Complete)
+  - Dropdown showing last 4 GFS runs (24 hours)
+  - Display format: "00Z Jan 24 (Latest)"
+  - Show relative age (e.g., "6h ago")
+  - API: `/api/runs` returns available runs
+  - API: `/api/maps?run_time=...` filters maps by run
+  - Auto-cleanup keeps last 4 runs only
+  - Enable forecast comparison between runs
+
 - [ ] **Region Selection**
   - PNW (default)
   - Pacific Northwest + BC
