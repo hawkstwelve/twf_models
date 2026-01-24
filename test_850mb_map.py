@@ -47,7 +47,7 @@ def test_850mb_map():
             
             # Generate map
             output_path = generator.generate_map(
-                ds, 
+                ds=ds, 
                 variable=variable,
                 forecast_hour=hour,
                 run_time=run_time
