@@ -1,11 +1,23 @@
 """Scheduled task scheduler"""
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
+import os
+import sys
 import logging
 import time
 import s3fs
 from datetime import datetime, timedelta
 from pathlib import Path
+
+# Add the current directory to sys.path to allow absolute imports from 'app'
+# This handles cases where the script is run from the root or the backend folder
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.append(current_dir)
+# Also add the parent directory (backend/) to sys.path
+parent_dir = os.path.dirname(current_dir)
+if parent_dir not in sys.path:
+    sys.path.append(parent_dir)
 
 from app.config import settings
 from app.services.map_generator import MapGenerator
