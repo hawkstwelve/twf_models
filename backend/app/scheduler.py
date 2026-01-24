@@ -2,7 +2,7 @@
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from app.config import settings
 from app.services.map_generator import MapGenerator
@@ -25,7 +25,18 @@ class ForecastScheduler:
         logger.info("Starting scheduled forecast map generation")
         
         try:
-            run_time = datetime.utcnow()
+            # Calculate the GFS run time to fetch
+            # Always fetch data from the PREVIOUS 6-hour cycle to ensure it's available
+            # GFS data becomes available 3-4 hours after run time
+            # So when we run at 06:00 UTC, we fetch 00Z data (which is now available)
+            now = datetime.utcnow()
+            run_hour = ((now.hour // 6) * 6) - 6  # Go back one 6-hour cycle
+            if run_hour < 0:
+                run_hour = 18
+                now = now - timedelta(days=1)
+            
+            run_time = now.replace(hour=run_hour, minute=0, second=0, microsecond=0)
+            logger.info(f"Fetching GFS data for run time: {run_time.strftime('%Y-%m-%d %H:00 UTC')}")
             
             for variable in self.variables:
                 for forecast_hour in settings.forecast_hours_list:
