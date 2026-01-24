@@ -156,7 +156,8 @@ class GFSDataFetcher:
             # Path structure: gfs.YYYYMMDD/HH/atmos/gfs.tHHz.atmfFFF.nc
             base_path = f"s3://noaa-gfs-bdp-pds/gfs.{date_str}/{run_hour_str}/atmos"
             nc_file_path = f"{base_path}/gfs.t{run_hour_str}z.atmf{hour_str}.nc"
-            grib_file_path = f"{base_path}/gfs.t{run_hour_str}z.pgrb2.0p50.f{hour_str}"
+            # Use configured resolution (0p25 for high-res, 0p50 for standard)
+            grib_file_path = f"{base_path}/gfs.t{run_hour_str}z.pgrb2.{settings.gfs_resolution}.f{hour_str}"
             
             logger.info(f"Variables needed: {variables}")
             logger.info(f"Subsetting region: {subset_region}")

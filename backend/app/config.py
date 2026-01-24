@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     # Data Sources
     data_source: str = "GFS"
     gfs_source: str = "aws"  # aws or nomads
+    gfs_resolution: str = "0p25"  # 0p25 (0.25°, high-res) or 0p50 (0.5°, standard)
     graphcast_api_key: Optional[str] = None
     
     # Storage
