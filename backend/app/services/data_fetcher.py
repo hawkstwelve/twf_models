@@ -350,9 +350,11 @@ class GFSDataFetcher:
                                 }},
                                 decode_timedelta=False
                             )
-                            if 'gh' in ds_gh_1000.data_vars:
-                                all_data_vars['gh_1000'] = ds_gh_1000['gh'].squeeze()
-                                logger.info("  Extracted gh at 1000mb")
+                            # GFS sometimes names the variable 'gh' or 'hgt'
+                            gh_key = 'gh' if 'gh' in ds_gh_1000.data_vars else 'hgt' if 'hgt' in ds_gh_1000.data_vars else None
+                            if gh_key:
+                                all_data_vars['gh_1000'] = ds_gh_1000[gh_key].squeeze()
+                                logger.info(f"  Extracted {gh_key} at 1000mb")
                         except Exception as e:
                             logger.warning(f"  Could not extract gh at 1000mb: {str(e)[:100]}")
                         
@@ -367,9 +369,10 @@ class GFSDataFetcher:
                                 }},
                                 decode_timedelta=False
                             )
-                            if 'gh' in ds_gh_500.data_vars:
-                                all_data_vars['gh_500'] = ds_gh_500['gh'].squeeze()
-                                logger.info("  Extracted gh at 500mb")
+                            gh_key = 'gh' if 'gh' in ds_gh_500.data_vars else 'hgt' if 'hgt' in ds_gh_500.data_vars else None
+                            if gh_key:
+                                all_data_vars['gh_500'] = ds_gh_500[gh_key].squeeze()
+                                logger.info(f"  Extracted {gh_key} at 500mb")
                         except Exception as e:
                             logger.warning(f"  Could not extract gh at 500mb: {str(e)[:100]}")
                         

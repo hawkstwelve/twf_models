@@ -223,18 +223,18 @@ class MapGenerator:
             thickness_data = self._process_thickness(ds) if has_gh else None
             data = precip_data  # Primary data for color-filling
             units = "mm/hr"  # For precipitation rate
-            # Precipitation color scheme (greens/blues) for mm/hr
+            # Precipitation color scheme (Cyans/Blues) to match reference
             from matplotlib.colors import LinearSegmentedColormap
             precip_colors = [
-                '#FFFFFF',  # 0.0 mm/hr - White (no precip)
-                '#C8E6C9',  # 0.1 mm/hr - Very light green
-                '#81C784',  # 0.5 mm/hr - Light green
-                '#4CAF50',  # 1.0 mm/hr - Green
-                '#388E3C',  # 2.0 mm/hr - Dark green
-                '#1976D2',  # 4.0 mm/hr - Blue
-                '#1565C0',  # 6.0 mm/hr - Darker blue
-                '#0D47A1',  # 8.0 mm/hr - Deep blue
-                '#8E24AA',  # 12.0 mm/hr - Purple (very heavy)
+                '#FFFFFF00', # 0.0 mm/hr - Transparent White
+                '#E0F7FA',  # 0.1 mm/hr - Pale Cyan
+                '#B2EBF2',  # 0.5 mm/hr - Light Cyan
+                '#4DD0E1',  # 1.0 mm/hr - Cyan
+                '#00BCD4',  # 2.0 mm/hr - Bright Cyan
+                '#0097A7',  # 4.0 mm/hr - Dark Cyan
+                '#1976D2',  # 6.0 mm/hr - Blue
+                '#1565C0',  # 8.0 mm/hr - Darker blue
+                '#0D47A1',  # 12.0 mm/hr - Deep blue
                 '#4A148C',  # 16.0+ mm/hr - Deep purple
             ]
             cmap = LinearSegmentedColormap.from_list('precipitation', precip_colors, N=256)
@@ -380,61 +380,83 @@ class MapGenerator:
                 local_min = minimum_filter(mslp_array, size=20) == mslp_array
                 
                 # Get map extent to check boundaries
+                # IMPORTANT: GFS longitude is 0-360, but our bounds are -180 to 180
+                # We need to detect which format the data is in
+                is_360 = lon_array.max() > 180
+                
                 if region_to_use == "pnw":
                     bounds = settings.map_region_bounds or {
                         "west": -125.0, "east": -110.0,
                         "south": 42.0, "north": 49.0
                     }
-                    # Add small margin to keep labels inside
-                    lon_min, lon_max = bounds["west"] + 1, bounds["east"] - 1
+                    west = bounds["west"] % 360 if is_360 else bounds["west"]
+                    east = bounds["east"] % 360 if is_360 else bounds["east"]
+                    # Handle wrapping if east < west (e.g. 350 to 10)
+                    lon_min, lon_max = (west, east) if west < east else (west, 360) 
                     lat_min, lat_max = bounds["south"] + 0.5, bounds["north"] - 0.5
                 else:
                     lon_min, lon_max = lon_array.min() + 2, lon_array.max() - 2
                     lat_min, lat_max = lat_array.min() + 1, lat_array.max() - 1
                 
                 # Label HIGHs and LOWs (only if within visible bounds)
-                for i in range(5, len(lat_array) - 5):  # Skip edges
-                    for j in range(5, len(lon_array) - 5):  # Skip edges
+                for i in range(5, len(lat_array) - 5):
+                    for j in range(5, len(lon_array) - 5):
                         lat_val = lat_array[i]
                         lon_val = lon_array[j]
                         
                         # Check if within map bounds
+                        # For 0-360 wrap around, we'd need more complex logic, 
+                        # but for PNW (235-250) this simple check works
                         if not (lon_min <= lon_val <= lon_max and lat_min <= lat_val <= lat_max):
                             continue
                         
-                        if local_max[i, j] and mslp_array[i, j] > 1013:
+                        val = mslp_array[i, j]
+                        if local_max[i, j] and val > 1013:
+                            # Plot 'H'
                             ax.text(lon_val, lat_val, 'H',
                                    transform=ccrs.PlateCarree(),
                                    fontsize=16, fontweight='bold',
                                    ha='center', va='center',
-                                   color='blue',
-                                   zorder=15)
-                        elif local_min[i, j] and mslp_array[i, j] < 1013:
+                                   color='blue', zorder=15)
+                            # Plot value below 'H'
+                            ax.text(lon_val, lat_val - 0.25, f'{int(val)}',
+                                   transform=ccrs.PlateCarree(),
+                                   fontsize=10, fontweight='bold',
+                                   ha='center', va='center',
+                                   color='blue', zorder=15)
+                        elif local_min[i, j] and val < 1013:
+                            # Plot 'L'
                             ax.text(lon_val, lat_val, 'L',
                                    transform=ccrs.PlateCarree(),
                                    fontsize=16, fontweight='bold',
                                    ha='center', va='center',
-                                   color='red',
-                                   zorder=15)
+                                   color='red', zorder=15)
+                            # Plot value below 'L'
+                            ax.text(lon_val, lat_val - 0.25, f'{int(val)}',
+                                   transform=ccrs.PlateCarree(),
+                                   fontsize=10, fontweight='bold',
+                                   ha='center', va='center',
+                                   color='red', zorder=15)
             except Exception as e:
                 logger.warning(f"Could not add HIGH/LOW labels: {e}")
             
             # Add 1000-500mb thickness contours if available
             if thickness_data is not None:
                 try:
-                    # Thickness contours every 6 dam (60 m), dashed green lines
+                    # Thickness contours every 6 dam (60 m), dashed blue lines per reference
                     thickness_levels = np.arange(480, 600, 6)
                     cs_thickness = ax.contour(
                         lon_coord, lat_coord, thickness_data,
                         levels=thickness_levels,
-                        colors='green',
-                        linewidths=1.0,
+                        colors='blue', # Changed from green to blue
+                        linewidths=1.2,
                         linestyles='dashed',
                         transform=ccrs.PlateCarree(),
-                        zorder=11
+                        zorder=11,
+                        alpha=0.7 # Slight transparency for background feel
                     )
                     # Label thickness contours
-                    ax.clabel(cs_thickness, inline=True, fontsize=7, fmt='%d', colors='green')
+                    ax.clabel(cs_thickness, inline=True, fontsize=8, fmt='%d', colors='blue')
                     logger.info("Added 1000-500mb thickness contours")
                 except Exception as e:
                     logger.warning(f"Could not add thickness contours: {e}")
