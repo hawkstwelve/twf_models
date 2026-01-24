@@ -150,6 +150,7 @@ class MapGenerator:
     
     def generate_map(
         self,
+        ds: xr.Dataset,
         variable: str,
         model: str = "GFS",
         run_time: Optional[datetime] = None,
@@ -158,31 +159,6 @@ class MapGenerator:
     ) -> Path:
         """Generate a map for a specific variable"""
         logger.info(f"Generating map: {variable} from {model}, forecast hour {forecast_hour}")
-        
-        # Fetch data - optimized to only get what we need
-        if model.upper() == "GFS":
-            # Determine which variables we need for this specific map
-            needed_vars = []
-            if variable in ["temperature_2m", "temp", "precipitation_type", "precip_type"]:
-                needed_vars = ['tmp2m', 'prate']  # Need temp and precip for precip type
-            elif variable in ["precipitation", "precip"]:
-                needed_vars = ['prate']
-            elif variable in ["wind_speed_10m", "wind_speed"]:
-                needed_vars = ['ugrd10m', 'vgrd10m']
-            elif variable in ["temp_850_wind_mslp", "850mb"]:
-                needed_vars = ['tmp_850', 'ugrd_850', 'vgrd_850', 'prmsl']
-            elif variable in ["mslp_precip", "mslp_pcpn"]:
-                needed_vars = ['prate', 'tp', 'prmsl', 'gh', 'cpofp', 'csnow', 'cicep', 'cfrzr', 'crain']  # Added categorical types and tp
-            
-            # Fetch only what we need, subset to PNW region
-            ds = self.data_fetcher.fetch_gfs_data(
-                run_time, 
-                forecast_hour,
-                variables=needed_vars,
-                subset_region=True  # Only fetch PNW region
-            )
-        else:
-            raise ValueError(f"Unsupported model: {model}")
         
         # Select variable and process
         is_mslp_precip = False
