@@ -803,12 +803,15 @@ class MapGenerator:
                 # For R <= 0.1 mm/h: use lower bound
                 import numpy as np
                 prate_values = prate.values if hasattr(prate, 'values') else prate
+                # Handle NaN and inf values
+                prate_values = np.nan_to_num(prate_values, nan=0.0, posinf=0.0, neginf=0.0)
                 # Avoid log of zero/negative
                 prate_values = np.maximum(prate_values, 0.01)  # Minimum 0.01 mm/h
                 z_factor = 200 * (prate_values ** 1.6)
                 dbz = 10 * np.log10(z_factor)
-                # Clamp to reasonable range (-10 to 70 dBZ)
+                # Clamp to reasonable range (-10 to 70 dBZ) and handle any remaining invalid values
                 dbz = np.clip(dbz, -10, 70)
+                dbz = np.nan_to_num(dbz, nan=-10.0, posinf=70.0, neginf=-10.0)
                 
                 # Create DataArray with same coordinates as prate
                 reflectivity = xr.DataArray(
