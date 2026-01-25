@@ -850,6 +850,19 @@ class MapGenerator:
         if 'tp' in ds:
             # tp is total precipitation (accumulated), already in mm
             precip = ds['tp']
+            
+            # Log metadata for debugging
+            logger.debug(f"tp variable found. Dims: {precip.dims}, Shape: {precip.shape}")
+            if hasattr(precip, 'attrs'):
+                logger.debug(f"tp attrs: {precip.attrs}")
+            
+            # Check if there's a step dimension (accumulation period)
+            if 'step' in precip.dims:
+                logger.info(f"tp has step dimension: {precip.step.values if hasattr(precip, 'step') else 'N/A'}")
+                # Select the appropriate step if multiple exist
+                # For total accumulation, we want the step that covers 0 to forecast_hour
+                precip = precip.isel(step=-1)  # Usually the last step is the total
+            
         elif 'prate' in ds:
             # For forecast hour 0 (analysis), tp might not exist, use prate
             # Convert kg/m²/s to mm/h, then treat as hourly accumulation
@@ -866,8 +879,20 @@ class MapGenerator:
             else:
                 raise ValueError("Could not find precipitation variable in dataset")
         
+        # Log value range before conversion
+        if hasattr(precip, 'values'):
+            precip_values = precip.values
+            if hasattr(precip_values, 'min') and hasattr(precip_values, 'max'):
+                logger.info(f"Precipitation range (mm): min={float(precip_values.min()):.4f}, max={float(precip_values.max()):.4f}, mean={float(precip_values.mean()):.4f}")
+        
         # Convert mm to inches for PNW users
         precip = precip / 25.4
+        
+        # Log value range after conversion
+        if hasattr(precip, 'values'):
+            precip_values = precip.values
+            if hasattr(precip_values, 'min') and hasattr(precip_values, 'max'):
+                logger.info(f"Precipitation range (inches): min={float(precip_values.min()):.4f}, max={float(precip_values.max()):.4f}, mean={float(precip_values.mean()):.4f}")
         
         return precip.isel(time=0) if 'time' in precip.dims else precip
     
