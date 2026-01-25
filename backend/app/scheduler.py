@@ -43,8 +43,16 @@ def generate_maps_for_hour(args):
         data_fetcher = GFSDataFetcher()
         
         # Determine all variables needed for this hour
+        # Note: For f000 (analysis), wind_speed may not be available, so we'll skip it
         all_needed_vars = set()
-        for variable in variables:
+        variables_to_generate = list(variables)  # Copy list to modify
+        
+        # Skip wind_speed for f000 since analysis files don't have 10m wind
+        if forecast_hour == 0 and "wind_speed" in variables_to_generate:
+            variables_to_generate.remove("wind_speed")
+            child_logger.info(f"  ⊙ f{forecast_hour:03d}: wind_speed skipped (not available in analysis file)")
+        
+        for variable in variables_to_generate:
             if variable == "temp":
                 all_needed_vars.update(['tmp2m', 'prate'])
             elif variable == "precip":
@@ -66,9 +74,31 @@ def generate_maps_for_hour(args):
             subset_region=True
         )
         
-        # Generate all maps
+        # Check which maps already exist for this run
+        run_str = run_time.strftime("%Y%m%d_%H")
+        images_path = Path(settings.storage_path)
+        existing_maps = set()
+        
+        if images_path.exists():
+            for var in variables_to_generate:
+                expected_filename = f"gfs_{run_str}_{var}_{forecast_hour}.png"
+                if (images_path / expected_filename).exists():
+                    existing_maps.add(var)
+                    child_logger.info(f"  ⊙ f{forecast_hour:03d}: {var} already exists, skipping")
+        
+        # Generate all maps - track success/failure per variable
+        results = {}
         success_count = 0
-        for variable in variables:
+        failed_variables = []
+        skipped_count = len(existing_maps)
+        
+        for variable in variables_to_generate:
+            # Skip if already exists
+            if variable in existing_maps:
+                results[variable] = True
+                success_count += 1
+                continue
+            
             try:
                 map_generator.generate_map(
                     ds=ds,
@@ -78,16 +108,31 @@ def generate_maps_for_hour(args):
                     forecast_hour=forecast_hour
                 )
                 child_logger.info(f"  ✓ f{forecast_hour:03d}: {variable}")
+                results[variable] = True
                 success_count += 1
             except Exception as e:
                 child_logger.error(f"  ✗ f{forecast_hour:03d}: {variable}: {e}")
+                results[variable] = False
+                failed_variables.append(variable)
         
         # Cleanup
         ds.close()
         del ds
         gc.collect()
         
-        return forecast_hour if success_count > 0 else None
+        # Only mark as complete if ALL maps exist (either pre-existing or newly generated)
+        # Note: variables_to_generate may be fewer than variables (e.g., wind_speed skipped for f000)
+        expected_count = len(variables_to_generate)
+        if success_count == expected_count:
+            if skipped_count > 0:
+                child_logger.info(f"✅ f{forecast_hour:03d}: All {expected_count} maps present ({skipped_count} existed, {expected_count - skipped_count} generated)")
+            else:
+                child_logger.info(f"✅ f{forecast_hour:03d}: All {expected_count} maps generated successfully")
+            return forecast_hour
+        else:
+            child_logger.warning(f"⚠️  f{forecast_hour:03d}: Only {success_count}/{expected_count} maps present. Failed: {failed_variables}")
+            # Return None to indicate incomplete - scheduler will retry this hour
+            return None
         
     except Exception as e:
         child_logger.error(f"❌ Worker failed for f{forecast_hour:03d}: {e}")

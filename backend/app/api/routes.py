@@ -59,6 +59,24 @@ async def get_maps(
             run_time_filter = dt.strftime("%Y%m%d_%H")
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid run_time format. Use ISO format: 2026-01-24T00:00:00Z")
+    else:
+        # If no run_time specified, default to latest run to avoid showing old maps
+        # Find the latest run by scanning all files
+        all_runs = set()
+        for image_file in images_path.glob("*.png"):
+            try:
+                parts = image_file.stem.split("_")
+                if len(parts) >= 3:
+                    file_run_time = f"{parts[1]}_{parts[2]}"
+                    all_runs.add(file_run_time)
+            except (ValueError, IndexError):
+                continue
+        
+        if all_runs:
+            # Sort runs (newest first) and use the latest
+            sorted_runs = sorted(all_runs, reverse=True)
+            run_time_filter = sorted_runs[0]
+            logger.debug(f"No run_time specified, defaulting to latest run: {run_time_filter}")
     
     maps = []
     for image_file in images_path.glob("*.png"):

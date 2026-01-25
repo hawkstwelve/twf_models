@@ -244,6 +244,11 @@ class MapGenerator:
             units = "in"  # Inches for PNW users
             cmap = "Blues"
         elif variable == "wind_speed_10m" or variable == "wind_speed":
+            # For forecast hour 0 (analysis), wind components may not be available
+            # Check if wind data exists before processing
+            has_wind = ('u10' in ds or 'ugrd10m' in ds) and ('v10' in ds or 'vgrd10m' in ds)
+            if not has_wind and forecast_hour == 0:
+                raise ValueError(f"Wind components not available in analysis file (f000) for {variable}. Skipping wind_speed map for forecast hour 0.")
             data = self._process_wind_speed(ds)
             units = "mph"  # MPH for PNW users
             cmap = "YlOrRd"
