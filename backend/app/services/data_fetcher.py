@@ -66,6 +66,7 @@ class GFSDataFetcher:
         """
         self._cleanup_old_cache()
         
+        # First check in-memory cache (fast path for same process)
         if grib_file_path in self._grib_cache:
             local_path, download_time = self._grib_cache[grib_file_path]
             if os.path.exists(local_path):
@@ -75,6 +76,21 @@ class GFSDataFetcher:
             else:
                 # File was deleted, remove from cache
                 del self._grib_cache[grib_file_path]
+        
+        # Check if file exists on disk (for multiprocessing - other workers may have downloaded it)
+        file_hash = hash(grib_file_path) % 10000
+        local_path = str(self._cache_dir / f"gfs_{file_hash}.grib2")
+        
+        if os.path.exists(local_path):
+            # File exists on disk, add to in-memory cache and use it
+            file_age_seconds = time.time() - os.path.getmtime(local_path)
+            age_minutes = file_age_seconds / 60
+            
+            # Only use if file is less than 6 hours old (stale files cleaned up separately)
+            if age_minutes < 360:
+                logger.info(f"✅ Using cached GRIB file from disk (age: {age_minutes:.1f} minutes)")
+                self._grib_cache[grib_file_path] = (local_path, os.path.getmtime(local_path))
+                return local_path
         
         return None
     
