@@ -109,16 +109,13 @@ class GFSDataFetcher:
         """Get the latest available GFS run time"""
         # GFS runs at 00, 06, 12, 18 UTC
         # Data is typically available 2-4 hours after run time
-        now = datetime.utcnow()
-        
-        # Try to find the most recent run that's likely available
-        # Go back to previous 6-hour cycle to ensure data is available
-        run_hour = ((now.hour // 6) * 6) - 6
-        if run_hour < 0:
-            run_hour = 18
-            now = now - timedelta(days=1)
-        
-        run_time = now.replace(hour=run_hour, minute=0, second=0, microsecond=0)
+        # Go back 3.5 hours to find which run should be finishing/available
+        # This matches the logic used in run_latest_now.py
+        from datetime import timezone
+        now = datetime.now(timezone.utc)
+        adjusted_now = now - timedelta(hours=3, minutes=30)
+        run_hour = (adjusted_now.hour // 6) * 6
+        run_time = adjusted_now.replace(hour=run_hour, minute=0, second=0, microsecond=0)
         
         return run_time
     
