@@ -729,7 +729,9 @@ class MapGenerator:
             # tp is total precipitation (accumulated), already in mm
             precip = ds['tp']
         elif 'prate' in ds:
-            precip = ds['prate'] * 3600  # Convert kg/m²/s to mm/h
+            # For forecast hour 0 (analysis), tp might not exist, use prate
+            # Convert kg/m²/s to mm/h, then treat as hourly accumulation
+            precip = ds['prate'] * 3600  # mm/h
         elif 'APCP_surface' in ds:
             precip = ds['APCP_surface']
         else:
@@ -748,11 +750,12 @@ class MapGenerator:
         return precip.isel(time=0) if 'time' in precip.dims else precip
     
     def _process_radar_reflectivity(self, ds: xr.Dataset) -> xr.DataArray:
-        """Process simulated radar reflectivity (composite reflectivity)"""
-        # Log available variables for debugging
-        available_vars = list(ds.data_vars)
-        logger.debug(f"Available variables in dataset: {available_vars}")
+        """Process simulated radar reflectivity (composite reflectivity)
         
+        If refc is not available, calculate simulated reflectivity from precipitation rate.
+        This is a workaround since GFS GRIB files don't always include refc.
+        """
+        # Try to find actual composite reflectivity first
         if 'refc' in ds:
             reflectivity = ds['refc']
         elif 'REFC' in ds:
@@ -764,12 +767,40 @@ class MapGenerator:
                 logger.info(f"Found reflectivity variable: {refc_vars[0]}")
                 reflectivity = ds[refc_vars[0]]
             else:
-                # Log what we have to help debug
-                logger.error(f"Could not find radar reflectivity variable (refc) in dataset")
-                logger.error(f"Available variables: {available_vars}")
-                raise ValueError(f"Could not find radar reflectivity variable (refc) in dataset. Available variables: {available_vars[:10]}")
+                # refc not available - calculate simulated reflectivity from precipitation
+                logger.warning("refc not available in GRIB file, calculating simulated reflectivity from precipitation")
+                
+                # Get precipitation rate (mm/h)
+                if 'prate' in ds:
+                    prate = ds['prate'] * 3600  # Convert kg/m²/s to mm/h
+                elif 'tp' in ds:
+                    # For accumulated, estimate hourly rate (rough approximation)
+                    prate = ds['tp'] / max(1, ds['tp'].attrs.get('step', 1))  # Divide by forecast hour
+                else:
+                    raise ValueError("Cannot calculate radar reflectivity: need prate or tp")
+                
+                # Convert precipitation rate (mm/h) to dBZ using Marshall-Palmer relationship
+                # Z = 200 * R^1.6, where Z is reflectivity factor and R is rain rate (mm/h)
+                # dBZ = 10 * log10(Z)
+                # For R > 0.1 mm/h: dBZ ≈ 10 * log10(200 * R^1.6)
+                # For R <= 0.1 mm/h: use lower bound
+                import numpy as np
+                prate_values = prate.values if hasattr(prate, 'values') else prate
+                # Avoid log of zero/negative
+                prate_values = np.maximum(prate_values, 0.01)  # Minimum 0.01 mm/h
+                z_factor = 200 * (prate_values ** 1.6)
+                dbz = 10 * np.log10(z_factor)
+                # Clamp to reasonable range (-10 to 70 dBZ)
+                dbz = np.clip(dbz, -10, 70)
+                
+                # Create DataArray with same coordinates as prate
+                reflectivity = xr.DataArray(
+                    dbz,
+                    coords=prate.coords,
+                    dims=prate.dims,
+                    attrs={'units': 'dBZ', 'long_name': 'Simulated radar reflectivity from precipitation'}
+                )
         
-        # Reflectivity is already in dBZ, no conversion needed
         # Handle time dimension if present
         return reflectivity.isel(time=0) if 'time' in reflectivity.dims else reflectivity
     

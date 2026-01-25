@@ -25,7 +25,8 @@ def force_latest_run():
     
     # Calculate the most likely available GFS run time
     # GFS runs at 00, 06, 12, 18 UTC
-    now = datetime.utcnow()
+    from datetime import timezone
+    now = datetime.now(timezone.utc)
     # Go back 3.5 hours to find which run should be finishing/available
     adjusted_now = now - timedelta(hours=3, minutes=30)
     run_hour = (adjusted_now.hour // 6) * 6
