@@ -240,7 +240,7 @@ class MapGenerator:
             
             cmap = LinearSegmentedColormap.from_list('temperature', temp_colors, N=256)
         elif variable == "precipitation" or variable == "precip":
-            data = self._process_precipitation(ds)
+            data = self._process_precipitation(ds, forecast_hour=forecast_hour)
             units = "in"  # Inches for PNW users
             # Custom colormap matching the known-good precipitation scale
             from matplotlib import colors
@@ -855,7 +855,7 @@ class MapGenerator:
         
         return temp.isel(time=0) if 'time' in temp.dims else temp
     
-    def _process_precipitation(self, ds: xr.Dataset) -> xr.DataArray:
+    def _process_precipitation(self, ds: xr.Dataset, forecast_hour: int = 0) -> xr.DataArray:
         """Process precipitation data"""
         if 'tp' in ds:
             # tp is total precipitation (accumulated), already in mm
