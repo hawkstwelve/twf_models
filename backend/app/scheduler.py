@@ -56,11 +56,8 @@ def generate_maps_for_hour(args):
             if variable == "temp":
                 all_needed_vars.update(['tmp2m', 'prate'])
             elif variable == "precip":
-                # For forecast hour 0, use prate (rate). For hours > 0, use tp (total accumulated)
-                if forecast_hour > 0:
-                    all_needed_vars.add('tp')
-                else:
-                    all_needed_vars.add('prate')
+                # Precipitation handled separately below - needs special summing
+                pass
             elif variable == "wind_speed":
                 all_needed_vars.update(['ugrd10m', 'vgrd10m'])
             elif variable == "temp_850_wind_mslp":
@@ -70,13 +67,33 @@ def generate_maps_for_hour(args):
             elif variable == "radar" or variable == "radar_reflectivity":
                 all_needed_vars.add('refc')
         
-        # Fetch data
+        # Fetch data for non-precipitation variables
         ds = data_fetcher.fetch_gfs_data(
             run_time, 
             forecast_hour,
             variables=list(all_needed_vars),
             subset_region=True
         )
+        
+        # For precipitation, fetch total accumulated precip (summed across all hours)
+        # This is done separately because it requires downloading multiple GRIB files
+        if "precip" in variables_to_generate:
+            try:
+                child_logger.info(f"  Fetching total precipitation (0-{forecast_hour}h)...")
+                total_precip = data_fetcher.fetch_total_precipitation(
+                    run_time=run_time,
+                    forecast_hour=forecast_hour,
+                    subset_region=True
+                )
+                # Add to dataset
+                ds['tp'] = total_precip
+                child_logger.info(f"  ✓ Total precipitation added to dataset")
+            except Exception as e:
+                child_logger.error(f"  ✗ Failed to fetch total precipitation: {e}")
+                # Remove precip from variables to skip it
+                if "precip" in variables_to_generate:
+                    variables_to_generate.remove("precip")
+                    child_logger.warning(f"  Skipping precip map due to fetch failure")
         
         # Check which maps already exist for this run
         run_str = run_time.strftime("%Y%m%d_%H")

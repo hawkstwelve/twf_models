@@ -856,61 +856,36 @@ class MapGenerator:
         return temp.isel(time=0) if 'time' in temp.dims else temp
     
     def _process_precipitation(self, ds: xr.Dataset, forecast_hour: int = 0) -> xr.DataArray:
-        """Process precipitation data"""
+        """
+        Process precipitation data.
+        
+        NOTE: This method is called from generate_map() which now receives a dataset
+        that already contains the correctly summed total precipitation (via
+        fetch_total_precipitation). We just need to extract and clean it.
+        
+        Args:
+            ds: Dataset containing total precipitation (already summed across forecast hours)
+            forecast_hour: Target forecast hour (used for logging)
+            
+        Returns:
+            Precipitation in inches
+        """
         if 'tp' in ds:
             # tp is total precipitation (accumulated), already in mm
+            # Dataset from fetch_total_precipitation already has correct total
             precip = ds['tp']
             
-            # Log metadata for debugging BEFORE any operations
+            # Log metadata for debugging
             logger.info(f"tp variable found. Dims: {precip.dims}, Shape: {precip.shape}")
             logger.info(f"tp coords: {list(precip.coords.keys())}")
             
-            # Check step coordinate values BEFORE squeezing
-            # In GFS GRIB files, step represents the accumulation period
-            # For f072 file, step should be 72 (total accumulation from 0-72 hours)
+            # Clean up any remaining time-related coordinates
+            # (fetch_total_precipitation should have already cleaned these)
             if 'step' in precip.coords:
                 step_val = precip.coords['step'].values
-                
-                # Convert to numpy array to handle both scalar and array cases
                 import numpy as np
                 step_array = np.atleast_1d(step_val)
-                
                 logger.info(f"tp step coordinate values: {step_array}")
-                
-                # If multiple steps exist, select the one matching forecast_hour
-                if len(step_array) > 1:
-                    # Multiple steps - select the one matching forecast_hour
-                    if forecast_hour > 0:
-                        # Try to find step matching forecast_hour
-                        matching_steps = step_array[step_array == forecast_hour]
-                        if len(matching_steps) > 0:
-                            precip = precip.sel(step=forecast_hour)
-                            logger.info(f"Selected step={forecast_hour} (total accumulation 0-{forecast_hour}h)")
-                        else:
-                            # Use max step (should be the total)
-                            max_step = int(step_array.max())
-                            precip = precip.sel(step=max_step)
-                            logger.info(f"Selected step={max_step} (max available, total accumulation)")
-                    else:
-                        # Use max step
-                        max_step = int(step_array.max())
-                        precip = precip.sel(step=max_step)
-                        logger.info(f"Selected step={max_step} (max available)")
-                
-                # Log the actual step value we're using
-                if 'step' in precip.coords:
-                    final_step_val = precip.coords['step'].values
-                    final_step_array = np.atleast_1d(final_step_val)
-                    if len(final_step_array) == 1:
-                        final_step = final_step_array[0]
-                        # Handle timedelta if that's what step is
-                        if hasattr(final_step, 'total_seconds'):
-                            final_step = int(final_step.total_seconds() / 3600)  # Convert to hours
-                        else:
-                            final_step = int(final_step)
-                        logger.info(f"Using tp with step={final_step} (accumulation period: 0-{final_step} hours)")
-                    else:
-                        logger.info(f"Using tp with step values: {final_step_array}")
             
             # Check for valid_time dimension
             if 'valid_time' in precip.coords:
@@ -928,28 +903,16 @@ class MapGenerator:
                     precip = precip.isel(time=0)
             
             if hasattr(precip, 'attrs'):
-                # Log key GRIB attributes that might tell us about accumulation period
+                # Log key GRIB attributes for debugging
                 grib_attrs = {
                     'GRIB_stepType': precip.attrs.get('GRIB_stepType', 'N/A'),
                     'GRIB_stepUnits': precip.attrs.get('GRIB_stepUnits', 'N/A'),
-                    'GRIB_NV': precip.attrs.get('GRIB_NV', 'N/A'),  # Number of values (accumulation period)
                     'units': precip.attrs.get('units', 'N/A'),
                     'long_name': precip.attrs.get('long_name', 'N/A')
                 }
                 logger.info(f"tp GRIB attrs: {grib_attrs}")
-                
-                # GRIB_NV indicates the accumulation period in hours
-                # NV=0 means accumulation from start of forecast (0 to forecast_hour)
-                # NV=6 means 6-hour accumulation ending at forecast_hour
-                nv = precip.attrs.get('GRIB_NV', None)
-                if nv is not None and nv != 'N/A':
-                    if nv == 0:
-                        logger.info(f"GRIB_NV=0: Total accumulation from 0 to {forecast_hour} hours")
-                    else:
-                        logger.warning(f"GRIB_NV={nv}: This is a {nv}-hour accumulation, not total from 0-{forecast_hour}h!")
-                        logger.warning(f"  This might explain why values are lower than expected")
             
-            # Squeeze out any single-element dimensions AFTER logging
+            # Squeeze out any single-element dimensions
             precip = precip.squeeze()
             
         elif 'prate' in ds:

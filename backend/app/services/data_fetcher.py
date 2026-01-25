@@ -119,6 +119,156 @@ class GFSDataFetcher:
         
         return run_time
     
+    def fetch_total_precipitation(
+        self,
+        run_time: Optional[datetime] = None,
+        forecast_hour: int = 72,
+        subset_region: bool = True
+    ) -> xr.DataArray:
+        """
+        Fetch total accumulated precipitation from hour 0 to target forecast_hour.
+        
+        GFS GRIB files contain incremental precipitation buckets (e.g., 66-72h for f072),
+        not total accumulation from hour 0. To get true total precipitation, we must
+        download and sum precipitation from all intermediate forecast files.
+        
+        For example, for 72-hour total precipitation:
+        - Total precip = sum(f006 + f012 + f018 + f024 + f030 + f036 + f042 + f048 + f054 + f060 + f066 + f072)
+        
+        Args:
+            run_time: GFS run time (defaults to latest)
+            forecast_hour: Target forecast hour (24, 48, 72, etc.)
+            subset_region: If True, only fetch PNW region data
+            
+        Returns:
+            xr.DataArray: Total accumulated precipitation in mm
+        """
+        if run_time is None:
+            run_time = self.get_latest_run_time()
+        
+        logger.info(f"Fetching total precipitation for 0-{forecast_hour}h accumulation")
+        logger.info(f"This requires downloading and summing multiple GRIB files")
+        
+        # GFS outputs precipitation in 6-hour buckets for forecast hours > 0
+        # Hour 0 (analysis) has no precipitation
+        # Hours 1-5 may have hourly buckets (depends on GFS version)
+        # Hours 6+ have 6-hour buckets (f006, f012, f018, f024, etc.)
+        
+        # Determine which forecast hours to fetch based on target hour
+        # For 0.25° GFS: outputs every 3 hours to 120h, then every 12h to 384h
+        # But precipitation accumulation is in 6-hour buckets
+        
+        if forecast_hour == 0:
+            logger.warning("Forecast hour 0 (analysis) has no precipitation accumulation")
+            # Return zeros - analysis has no accumulated precipitation
+            # We'll fetch f000 just to get the grid structure
+            ds = self.fetch_gfs_data(
+                run_time=run_time,
+                forecast_hour=0,
+                variables=['tp', 'prate'],
+                subset_region=subset_region
+            )
+            # Create a zero array with the same shape
+            if 'tp' in ds:
+                precip_total = ds['tp'] * 0.0
+            elif 'prate' in ds:
+                precip_total = ds['prate'] * 0.0
+            else:
+                raise ValueError("Could not find precipitation variable to determine grid shape")
+            return precip_total
+        
+        # For forecast hours > 0, we need to sum 6-hour buckets
+        # GFS precipitation buckets are at f006, f012, f018, f024, etc.
+        hours_to_fetch = list(range(6, forecast_hour + 1, 6))
+        
+        # Handle case where target hour is not divisible by 6
+        # e.g., if user requests 72h, we fetch [6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 66, 72]
+        # But if user requests 75h (future 3-hour increment), we need [6, 12, ..., 72, 75]
+        if forecast_hour % 6 != 0:
+            # Add intermediate hours if available (GFS has 3-hour outputs)
+            last_6h_bucket = (forecast_hour // 6) * 6
+            remaining_hours = forecast_hour - last_6h_bucket
+            
+            # For remaining hours, check if 3-hour increment exists
+            if remaining_hours == 3:
+                hours_to_fetch.append(forecast_hour)
+                logger.info(f"Including 3-hour increment: f{forecast_hour:03d}")
+        
+        logger.info(f"Fetching precipitation from hours: {hours_to_fetch}")
+        logger.info(f"Total files to download: {len(hours_to_fetch)}")
+        
+        precip_total = None
+        successful_hours = []
+        
+        for hour in hours_to_fetch:
+            try:
+                logger.info(f"  Fetching f{hour:03d}...")
+                
+                # Fetch just the precipitation variable for this hour
+                ds = self.fetch_gfs_data(
+                    run_time=run_time,
+                    forecast_hour=hour,
+                    variables=['tp', 'prate'],  # Only need precip
+                    subset_region=subset_region
+                )
+                
+                # Extract precipitation variable
+                if 'tp' in ds:
+                    precip = ds['tp']
+                elif 'prate' in ds:
+                    # prate is kg/m²/s, convert to mm by multiplying by seconds in bucket
+                    # For 6-hour bucket: prate * 6 * 3600 seconds
+                    bucket_hours = 6 if hour >= 6 else hour
+                    precip = ds['prate'] * (bucket_hours * 3600)
+                else:
+                    logger.warning(f"    No precipitation variable in f{hour:03d}, skipping")
+                    continue
+                
+                # Clean up dimensions
+                # Remove time, valid_time, step coordinates to avoid conflicts when summing
+                precip = precip.squeeze()
+                drop_coords = [c for c in ['time', 'valid_time', 'step'] if c in precip.coords]
+                if drop_coords:
+                    precip = precip.drop_vars(drop_coords)
+                
+                # Log the precipitation bucket value
+                precip_values = precip.values
+                if hasattr(precip_values, 'max'):
+                    logger.info(f"    f{hour:03d} bucket: max={float(precip_values.max()):.4f} mm, mean={float(precip_values.mean()):.4f} mm")
+                
+                # Add to total
+                if precip_total is None:
+                    # First hour - initialize
+                    precip_total = precip.copy(deep=True)
+                else:
+                    # Add to running total
+                    # Make sure coordinates match
+                    precip_total = precip_total + precip
+                
+                successful_hours.append(hour)
+                
+            except FileNotFoundError as e:
+                logger.warning(f"    f{hour:03d} not available yet: {e}")
+                # Don't fail entire request if one hour is missing
+                # This is common during progressive data availability
+                continue
+            except Exception as e:
+                logger.error(f"    Error fetching f{hour:03d}: {e}")
+                # Continue with other hours
+                continue
+        
+        if precip_total is None:
+            raise ValueError(f"Could not fetch precipitation data for any forecast hour up to {forecast_hour}")
+        
+        logger.info(f"Successfully summed precipitation from {len(successful_hours)} forecast hours: {successful_hours}")
+        
+        # Log final total
+        total_values = precip_total.values
+        if hasattr(total_values, 'max'):
+            logger.info(f"Total precipitation (0-{forecast_hour}h): max={float(total_values.max()):.4f} mm ({float(total_values.max())/25.4:.4f} in), mean={float(total_values.mean()):.4f} mm ({float(total_values.mean())/25.4:.4f} in)")
+        
+        return precip_total
+
     def _subset_dataset(self, ds: xr.Dataset) -> xr.Dataset:
         """Subset a dataset to the PNW region immediately after opening"""
         if ds is None:
