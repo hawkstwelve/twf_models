@@ -274,9 +274,15 @@ class MapGenerator:
             ax.set_global()
         
         # Add map features (zorder=0 to keep them below data)
-        land_color = '#ffffff' if is_mslp_precip or variable in ["precipitation", "precip"] else '#fbf5e7'
-        ocean_color = '#000000' if is_mslp_precip or variable in ["precipitation", "precip"] else '#e3f2fd'
-        border_color = '#333333' if not (is_mslp_precip or variable in ["precipitation", "precip"]) else '#666666'
+        # MSLP & Precip and Total Precip maps: all white with black borders
+        if is_mslp_precip or variable in ["precipitation", "precip"]:
+            land_color = '#ffffff'
+            ocean_color = '#ffffff'
+            border_color = '#000000'
+        else:
+            land_color = '#fbf5e7'
+            ocean_color = '#e3f2fd'
+            border_color = '#333333'
 
         ax.add_feature(cfeature.OCEAN, facecolor=ocean_color, zorder=0)
         ax.add_feature(cfeature.LAND, facecolor=land_color, zorder=0)
@@ -577,13 +583,20 @@ class MapGenerator:
                     
                     for station_name, station_data in stations.items():
                         try:
-                            # Extract u and v components
-                            u = ds['ugrd10m'].sel(
+                            # Extract u and v components (try both naming conventions)
+                            u_var = 'u10' if 'u10' in ds else 'ugrd10m' if 'ugrd10m' in ds else None
+                            v_var = 'v10' if 'v10' in ds else 'vgrd10m' if 'vgrd10m' in ds else None
+                            
+                            if u_var is None or v_var is None:
+                                logger.warning(f"Could not find wind components for station {station_name}")
+                                continue
+                            
+                            u = ds[u_var].sel(
                                 latitude=station_data['lat'],
                                 longitude=station_data['lon'],
                                 method='nearest'
                             ).values
-                            v = ds['vgrd10m'].sel(
+                            v = ds[v_var].sel(
                                 latitude=station_data['lat'],
                                 longitude=station_data['lon'],
                                 method='nearest'
@@ -627,7 +640,15 @@ class MapGenerator:
         filepath = self.storage_path / filename
         
         plt.savefig(filepath, dpi=settings.map_dpi, bbox_inches='tight', facecolor='white')
-        plt.close()
+        
+        # Aggressive memory cleanup
+        plt.clf()
+        plt.cla()
+        plt.close('all')
+        
+        # Force garbage collection for this specific map's objects
+        import gc
+        gc.collect()
         
         logger.info(f"Map saved to: {filepath}")
         return filepath
@@ -656,14 +677,20 @@ class MapGenerator:
     
     def _process_precipitation(self, ds: xr.Dataset) -> xr.DataArray:
         """Process precipitation data"""
-        if 'prate' in ds:
+        if 'tp' in ds:
+            # tp is total precipitation (accumulated), already in mm
+            precip = ds['tp']
+        elif 'prate' in ds:
             precip = ds['prate'] * 3600  # Convert kg/m²/s to mm/h
         elif 'APCP_surface' in ds:
             precip = ds['APCP_surface']
         else:
-            precip_vars = [v for v in ds.data_vars if 'prate' in v.lower() or 'precip' in v.lower()]
+            precip_vars = [v for v in ds.data_vars if 'prate' in v.lower() or 'precip' in v.lower() or v.lower() == 'tp']
             if precip_vars:
                 precip = ds[precip_vars[0]]
+                # If it's prate, convert from kg/m²/s to mm/h
+                if 'prate' in precip_vars[0].lower():
+                    precip = precip * 3600
             else:
                 raise ValueError("Could not find precipitation variable in dataset")
         
