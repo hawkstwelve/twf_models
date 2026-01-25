@@ -49,15 +49,36 @@ def test_precip_map():
     for hour in forecast_hours:
         print(f"\n🗺️  Generating precipitation map for +{hour}h...")
         try:
-            # Fetch data first
-            # For forecast hour 0, use prate (rate). For hours > 0, use tp (total accumulated)
-            precip_var = 'tp' if hour > 0 else 'prate'
-            ds = fetcher.fetch_gfs_data(
-                run_time=run_time,
-                forecast_hour=hour,
-                variables=[precip_var],
-                subset_region=True
-            )
+            # For precipitation, we need to use fetch_total_precipitation() which sums
+            # all forecast hours from 0 to the target hour (e.g., f006+f012+...+f072)
+            # because GFS GRIB files contain 6-hour buckets, not cumulative totals
+            
+            if hour == 0:
+                # Hour 0 (analysis) has no accumulated precipitation
+                # Fetch regular data with prate
+                ds = fetcher.fetch_gfs_data(
+                    run_time=run_time,
+                    forecast_hour=hour,
+                    variables=['prate'],
+                    subset_region=True
+                )
+            else:
+                # For hours > 0, fetch total accumulated precipitation
+                # This downloads and sums multiple files (f006, f012, ..., target_hour)
+                print(f"  Fetching total precipitation (0-{hour}h) by summing multiple files...")
+                total_precip = fetcher.fetch_total_precipitation(
+                    run_time=run_time,
+                    forecast_hour=hour,
+                    subset_region=True
+                )
+                
+                # Create dataset with the total precipitation
+                import xarray as xr
+                ds = xr.Dataset()
+                ds['tp'] = total_precip
+                # Copy coordinates
+                for coord in total_precip.coords:
+                    ds.coords[coord] = total_precip.coords[coord]
             
             # Generate map with dataset
             output_path = generator.generate_map(
