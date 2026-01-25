@@ -862,16 +862,31 @@ class MapGenerator:
             precip = ds['tp']
             
             # Log metadata for debugging
-            logger.debug(f"tp variable found. Dims: {precip.dims}, Shape: {precip.shape}")
+            logger.info(f"tp variable found. Dims: {precip.dims}, Shape: {precip.shape}")
+            logger.info(f"tp coords: {list(precip.coords.keys())}")
             if hasattr(precip, 'attrs'):
-                logger.debug(f"tp attrs: {precip.attrs}")
+                logger.info(f"tp attrs: {precip.attrs}")
             
-            # Check if there's a step dimension (accumulation period)
+            # Check for step dimension (accumulation period)
             if 'step' in precip.dims:
-                logger.info(f"tp has step dimension: {precip.step.values if hasattr(precip, 'step') else 'N/A'}")
+                step_vals = precip.step.values if hasattr(precip, 'step') else 'N/A'
+                logger.info(f"tp has step dimension with values: {step_vals}")
                 # Select the appropriate step if multiple exist
                 # For total accumulation, we want the step that covers 0 to forecast_hour
+                # The step dimension in GFS typically represents the accumulation period
+                # For f072, we want the step that represents 0-72 hour accumulation
                 precip = precip.isel(step=-1)  # Usually the last step is the total
+                logger.info(f"Selected step: {precip.step.values if hasattr(precip, 'step') else 'N/A'}")
+            
+            # Check for valid_time dimension
+            if 'valid_time' in precip.dims:
+                logger.info(f"tp has valid_time dimension: {precip.valid_time.values if hasattr(precip, 'valid_time') else 'N/A'}")
+                # Select the first valid_time if multiple exist
+                if len(precip.valid_time) > 1:
+                    precip = precip.isel(valid_time=0)
+            
+            # Squeeze out any single-element dimensions
+            precip = precip.squeeze()
             
         elif 'prate' in ds:
             # For forecast hour 0 (analysis), tp might not exist, use prate
