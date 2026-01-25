@@ -870,34 +870,47 @@ class MapGenerator:
             # For f072 file, step should be 72 (total accumulation from 0-72 hours)
             if 'step' in precip.coords:
                 step_val = precip.coords['step'].values
-                # Handle both scalar and array step values
-                if hasattr(step_val, '__len__') and not isinstance(step_val, str):
-                    if len(step_val) == 1:
-                        step_val = step_val[0]
+                
+                # Convert to numpy array to handle both scalar and array cases
+                import numpy as np
+                step_array = np.atleast_1d(step_val)
+                
+                logger.info(f"tp step coordinate values: {step_array}")
+                
+                # If multiple steps exist, select the one matching forecast_hour
+                if len(step_array) > 1:
+                    # Multiple steps - select the one matching forecast_hour
+                    if forecast_hour > 0:
+                        # Try to find step matching forecast_hour
+                        matching_steps = step_array[step_array == forecast_hour]
+                        if len(matching_steps) > 0:
+                            precip = precip.sel(step=forecast_hour)
+                            logger.info(f"Selected step={forecast_hour} (total accumulation 0-{forecast_hour}h)")
+                        else:
+                            # Use max step (should be the total)
+                            max_step = int(step_array.max())
+                            precip = precip.sel(step=max_step)
+                            logger.info(f"Selected step={max_step} (max available, total accumulation)")
                     else:
-                        # Multiple steps - select the one matching forecast_hour
-                        step_val = step_val[0]  # For now, log all
-                        logger.info(f"tp has multiple step values: {precip.coords['step'].values}")
-                        # Try to select step matching forecast_hour
-                        if forecast_hour > 0:
-                            step_array = precip.coords['step'].values
-                            if forecast_hour in step_array:
-                                precip = precip.sel(step=forecast_hour)
-                                logger.info(f"Selected step={forecast_hour} (total accumulation 0-{forecast_hour}h)")
-                            else:
-                                # Use max step
-                                max_step = int(step_array.max())
-                                precip = precip.sel(step=max_step)
-                                logger.info(f"Selected step={max_step} (max available)")
+                        # Use max step
+                        max_step = int(step_array.max())
+                        precip = precip.sel(step=max_step)
+                        logger.info(f"Selected step={max_step} (max available)")
                 
                 # Log the actual step value we're using
                 if 'step' in precip.coords:
-                    final_step = precip.coords['step'].values
-                    if hasattr(final_step, '__len__') and len(final_step) == 1:
-                        final_step = final_step[0]
-                    logger.info(f"Using tp with step={final_step} (accumulation period)")
-                else:
-                    logger.info(f"Step coordinate value: {step_val}")
+                    final_step_val = precip.coords['step'].values
+                    final_step_array = np.atleast_1d(final_step_val)
+                    if len(final_step_array) == 1:
+                        final_step = final_step_array[0]
+                        # Handle timedelta if that's what step is
+                        if hasattr(final_step, 'total_seconds'):
+                            final_step = int(final_step.total_seconds() / 3600)  # Convert to hours
+                        else:
+                            final_step = int(final_step)
+                        logger.info(f"Using tp with step={final_step} (accumulation period: 0-{final_step} hours)")
+                    else:
+                        logger.info(f"Using tp with step values: {final_step_array}")
             
             # Check for valid_time dimension
             if 'valid_time' in precip.coords:
