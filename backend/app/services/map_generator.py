@@ -607,8 +607,17 @@ class MapGenerator:
             else:
                 temp_levels = 20  # Auto levels for other variables
             
-            lon_vals = data.lon if hasattr(data, 'lat') else data.coords.get('lon', data.coords.get('longitude'))
-            lat_vals = data.lat if hasattr(data, 'lat') else data.coords.get('lat', data.coords.get('latitude'))
+            # Extract coordinates - handle both 'lon'/'lat' and 'longitude'/'latitude' naming
+            lon_coord_name = 'lon' if 'lon' in data.coords else 'longitude'
+            lat_coord_name = 'lat' if 'lat' in data.coords else 'latitude'
+            lon_vals = data.coords[lon_coord_name]
+            lat_vals = data.coords[lat_coord_name]
+            
+            # Log coordinate info for debugging
+            logger.debug(f"Using coordinates: {lon_coord_name}, {lat_coord_name}")
+            logger.debug(f"Lon range: {float(lon_vals.min()):.2f} to {float(lon_vals.max()):.2f}")
+            logger.debug(f"Lat range: {float(lat_vals.min()):.2f} to {float(lat_vals.max()):.2f}")
+            logger.debug(f"Data shape: {data.shape}, Lon shape: {lon_vals.shape}, Lat shape: {lat_vals.shape}")
             
             im = ax.contourf(
                 lon_vals, lat_vals, data,
@@ -884,6 +893,7 @@ class MapGenerator:
             precip_values = precip.values
             if hasattr(precip_values, 'min') and hasattr(precip_values, 'max'):
                 logger.info(f"Precipitation range (mm): min={float(precip_values.min()):.4f}, max={float(precip_values.max()):.4f}, mean={float(precip_values.mean()):.4f}")
+                logger.debug(f"Precipitation dims: {precip.dims}, coords: {list(precip.coords.keys())}")
         
         # Convert mm to inches for PNW users
         precip = precip / 25.4
