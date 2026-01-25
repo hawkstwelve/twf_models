@@ -27,6 +27,64 @@ class MapGenerator:
         self.storage_path = Path(settings.storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
     
+    def _setup_base_map(self, region: str = 'pnw', 
+                       land_color: str = '#fbf5e7',
+                       ocean_color: str = '#e3f2fd',
+                       border_color: str = '#333333',
+                       border_linewidth: float = 0.6,
+                       state_linewidth: float = 0.4):
+        """
+        Set up the base map with projection, extent, and geographic features.
+        
+        This is the foundation for all maps - provides consistent base styling
+        that can be customized per map type.
+        
+        Args:
+            region: Map region ('pnw', 'us', or 'global')
+            land_color: Color for land areas (default: light beige)
+            ocean_color: Color for ocean areas (default: light blue)
+            border_color: Color for borders/coastlines (default: dark gray)
+            border_linewidth: Width of coastline/border lines
+            state_linewidth: Width of state boundary lines
+            
+        Returns:
+            matplotlib axes object with base map configured
+        """
+        fig = plt.figure(figsize=(settings.map_width/100, settings.map_height/100), dpi=settings.map_dpi)
+        
+        # Set projection based on region
+        if region == "pnw":
+            # Pacific Northwest: WA, OR, ID
+            # Use Lambert Conformal optimized for PNW
+            ax = plt.axes(projection=ccrs.LambertConformal(
+                central_longitude=-117.5,  # Center of PNW
+                central_latitude=45.5,     # Center of PNW
+                standard_parallels=(43, 48)
+            ))
+            bounds = settings.map_region_bounds or {
+                "west": -125.0, "east": -110.0,
+                "south": 42.0, "north": 49.0
+            }
+            ax.set_extent(
+                [bounds["west"], bounds["east"], bounds["south"], bounds["north"]],
+                crs=ccrs.PlateCarree()
+            )
+        elif region == "us":
+            ax = plt.axes(projection=ccrs.LambertConformal(central_longitude=-95, central_latitude=35))
+            ax.set_extent([-130, -65, 20, 50], crs=ccrs.PlateCarree())
+        else:
+            ax = plt.axes(projection=ccrs.PlateCarree())
+            ax.set_global()
+        
+        # Add map features (zorder=0 to keep them below data)
+        ax.add_feature(cfeature.OCEAN, facecolor=ocean_color, zorder=0)
+        ax.add_feature(cfeature.LAND, facecolor=land_color, zorder=0)
+        ax.add_feature(cfeature.COASTLINE, linewidth=border_linewidth, edgecolor=border_color, zorder=2)
+        ax.add_feature(cfeature.BORDERS, linewidth=border_linewidth, edgecolor=border_color, zorder=2)
+        ax.add_feature(cfeature.STATES, linewidth=state_linewidth, edgecolor=border_color, linestyle=':', zorder=2)
+        
+        return fig, ax
+    
     def extract_station_values(self, ds: xr.Dataset, variable: str, region: str = 'pnw', 
                                priority_level: int = 2):
         """
@@ -283,51 +341,26 @@ class MapGenerator:
         else:
             raise ValueError(f"Unsupported variable: {variable}")
         
-        # Generate map
-        fig = plt.figure(figsize=(settings.map_width/100, settings.map_height/100), dpi=settings.map_dpi)
-        
-        # Set projection based on region
-        region_to_use = region or settings.map_region
-        
-        if region_to_use == "pnw":
-            # Pacific Northwest: WA, OR, ID
-            # Use Lambert Conformal optimized for PNW
-            ax = plt.axes(projection=ccrs.LambertConformal(
-                central_longitude=-117.5,  # Center of PNW
-                central_latitude=45.5,     # Center of PNW
-                standard_parallels=(43, 48)
-            ))
-            bounds = settings.map_region_bounds or {
-                "west": -125.0, "east": -110.0,
-                "south": 42.0, "north": 49.0
-            }
-            ax.set_extent(
-                [bounds["west"], bounds["east"], bounds["south"], bounds["north"]],
-                crs=ccrs.PlateCarree()
-            )
-        elif region_to_use == "us":
-            ax = plt.axes(projection=ccrs.LambertConformal(central_longitude=-95, central_latitude=35))
-            ax.set_extent([-130, -65, 20, 50], crs=ccrs.PlateCarree())
-        else:
-            ax = plt.axes(projection=ccrs.PlateCarree())
-            ax.set_global()
-        
-        # Add map features (zorder=0 to keep them below data)
+        # Determine base map colors based on variable type
         # MSLP & Precip, Total Precip, and Radar maps: all white with black borders
         if is_mslp_precip or variable in ["precipitation", "precip", "radar", "radar_reflectivity"]:
             land_color = '#ffffff'
             ocean_color = '#ffffff'
             border_color = '#000000'
         else:
+            # Default: light beige land, light blue ocean, gray borders
             land_color = '#fbf5e7'
             ocean_color = '#e3f2fd'
             border_color = '#333333'
-
-        ax.add_feature(cfeature.OCEAN, facecolor=ocean_color, zorder=0)
-        ax.add_feature(cfeature.LAND, facecolor=land_color, zorder=0)
-        ax.add_feature(cfeature.COASTLINE, linewidth=0.6, edgecolor=border_color, zorder=2)
-        ax.add_feature(cfeature.BORDERS, linewidth=0.6, edgecolor=border_color, zorder=2)
-        ax.add_feature(cfeature.STATES, linewidth=0.4, edgecolor=border_color, linestyle=':', zorder=2)
+        
+        # Generate base map using reusable function
+        region_to_use = region or settings.map_region
+        fig, ax = self._setup_base_map(
+            region=region_to_use,
+            land_color=land_color,
+            ocean_color=ocean_color,
+            border_color=border_color
+        )
         
         # Plot data
         # Handle precipitation type differently (discrete values)
