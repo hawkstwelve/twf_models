@@ -866,27 +866,38 @@ class MapGenerator:
             logger.info(f"tp coords: {list(precip.coords.keys())}")
             
             # Check step coordinate values BEFORE squeezing
+            # In GFS GRIB files, step represents the accumulation period
+            # For f072 file, step should be 72 (total accumulation from 0-72 hours)
             if 'step' in precip.coords:
-                step_vals = precip.coords['step'].values
-                logger.info(f"tp step coordinate values: {step_vals}")
-                # For total accumulation, we want the step that equals the forecast hour
-                # e.g., for f072, we want step=72 (total from 0-72 hours)
-                if hasattr(step_vals, '__len__') and len(step_vals) > 1:
-                    # Find the step that matches forecast_hour (total accumulation)
-                    # If forecast_hour is passed, use it; otherwise use the max step
-                    target_step = forecast_hour if forecast_hour > 0 else int(step_vals.max())
-                    if target_step in step_vals:
-                        precip = precip.sel(step=target_step)
-                        logger.info(f"Selected step={target_step} (total accumulation 0-{target_step}h)")
+                step_val = precip.coords['step'].values
+                # Handle both scalar and array step values
+                if hasattr(step_val, '__len__') and not isinstance(step_val, str):
+                    if len(step_val) == 1:
+                        step_val = step_val[0]
                     else:
-                        # Use the maximum step value (should be the total)
-                        max_step = int(step_vals.max())
-                        precip = precip.sel(step=max_step)
-                        logger.info(f"Selected step={max_step} (max available, total accumulation)")
-                elif 'step' in precip.dims:
-                    # If step is a dimension, select the last one (usually the total)
-                    precip = precip.isel(step=-1)
-                    logger.info(f"Selected last step from dimension")
+                        # Multiple steps - select the one matching forecast_hour
+                        step_val = step_val[0]  # For now, log all
+                        logger.info(f"tp has multiple step values: {precip.coords['step'].values}")
+                        # Try to select step matching forecast_hour
+                        if forecast_hour > 0:
+                            step_array = precip.coords['step'].values
+                            if forecast_hour in step_array:
+                                precip = precip.sel(step=forecast_hour)
+                                logger.info(f"Selected step={forecast_hour} (total accumulation 0-{forecast_hour}h)")
+                            else:
+                                # Use max step
+                                max_step = int(step_array.max())
+                                precip = precip.sel(step=max_step)
+                                logger.info(f"Selected step={max_step} (max available)")
+                
+                # Log the actual step value we're using
+                if 'step' in precip.coords:
+                    final_step = precip.coords['step'].values
+                    if hasattr(final_step, '__len__') and len(final_step) == 1:
+                        final_step = final_step[0]
+                    logger.info(f"Using tp with step={final_step} (accumulation period)")
+                else:
+                    logger.info(f"Step coordinate value: {step_val}")
             
             # Check for valid_time dimension
             if 'valid_time' in precip.coords:
