@@ -56,7 +56,11 @@ def generate_maps_for_hour(args):
             if variable == "temp":
                 all_needed_vars.update(['tmp2m', 'prate'])
             elif variable == "precip":
-                all_needed_vars.add('prate')
+                # For forecast hour 0, use prate (rate). For hours > 0, use tp (total accumulated)
+                if forecast_hour > 0:
+                    all_needed_vars.add('tp')
+                else:
+                    all_needed_vars.add('prate')
             elif variable == "wind_speed":
                 all_needed_vars.update(['ugrd10m', 'vgrd10m'])
             elif variable == "temp_850_wind_mslp":

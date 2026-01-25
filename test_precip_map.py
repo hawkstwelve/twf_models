@@ -50,10 +50,12 @@ def test_precip_map():
         print(f"\n🗺️  Generating precipitation map for +{hour}h...")
         try:
             # Fetch data first
+            # For forecast hour 0, use prate (rate). For hours > 0, use tp (total accumulated)
+            precip_var = 'tp' if hour > 0 else 'prate'
             ds = fetcher.fetch_gfs_data(
                 run_time=run_time,
                 forecast_hour=hour,
-                variables=['prate'],
+                variables=[precip_var],
                 subset_region=True
             )
             
