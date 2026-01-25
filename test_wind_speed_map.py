@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Test script for 850mb Temperature, Wind, and MSLP map generation.
+Test script for Wind Speed map generation.
 
-Tests the 850mb temperature shading with wind arrows and MSLP contours.
+Tests the 10m wind speed map with station overlays.
+Note: Wind speed is skipped for forecast hour 0 (analysis file).
 """
 
 import os
@@ -26,10 +27,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def test_850mb_map():
-    """Test 850mb temperature, wind, and MSLP map generation"""
+def test_wind_speed_map():
+    """Test wind speed map generation"""
     print("=" * 70)
-    print("TEST: 850mb Temperature, Wind, and MSLP Map Generation")
+    print("TEST: Wind Speed Map Generation")
     print("=" * 70)
     
     generator = MapGenerator()
@@ -39,18 +40,19 @@ def test_850mb_map():
     run_time = fetcher.get_latest_run_time()
     
     print(f"\nRun Time: {run_time.strftime('%Y-%m-%d %H:00 UTC')}")
-    print(f"Forecast Hours: 0, 24, 48, 72")
-    print(f"Map Type: 850mb Temperature, Wind Arrows, MSLP Contours")
+    print(f"Forecast Hours: 24, 48, 72 (wind_speed skipped for f000)")
+    print(f"Map Type: Wind Speed (10m)")
     print("-" * 70)
     
-    forecast_hours = [0, 24, 48, 72]
+    # Wind speed is not available in analysis file (f000)
+    forecast_hours = [24, 48, 72]
     success_count = 0
     
     for hour in forecast_hours:
-        print(f"\n🗺️  Generating 850mb map for +{hour}h...")
+        print(f"\n🗺️  Generating wind speed map for +{hour}h...")
         try:
             output_path = generator.generate_map(
-                variable='temp_850_wind_mslp',
+                variable='wind_speed',
                 model='GFS',
                 run_time=run_time,
                 forecast_hour=hour,
@@ -71,9 +73,10 @@ def test_850mb_map():
     print("=" * 70)
     
     if success_count == len(forecast_hours):
-        print("\n✅ All 850mb maps generated successfully!")
+        print("\n✅ All wind speed maps generated successfully!")
     else:
         print(f"\n⚠️  {len(forecast_hours) - success_count} map(s) failed")
 
+
 if __name__ == "__main__":
-    test_850mb_map()
+    test_wind_speed_map()

@@ -242,7 +242,43 @@ class MapGenerator:
         elif variable == "precipitation" or variable == "precip":
             data = self._process_precipitation(ds)
             units = "in"  # Inches for PNW users
-            cmap = "Blues"
+            # Custom colormap matching the 22-segment precipitation scale
+            from matplotlib.colors import LinearSegmentedColormap
+            # Define colors at specific precipitation boundaries (in inches)
+            # Each color represents the start of a new segment
+            precip_colors = [
+                (0.0, '#FFFFFF'),    # < 0.01: White
+                (0.01, '#E0E0E0'),   # 0.01-0.05: Light Grey
+                (0.05, '#B0B0B0'),   # 0.05-0.1: Medium Grey
+                (0.1, '#808080'),    # 0.1-0.2: Dark Grey
+                (0.2, '#C8E6C9'),    # 0.2-0.3: Very Light Green
+                (0.3, '#81C784'),    # 0.3-0.5: Light Green
+                (0.5, '#4CAF50'),    # 0.5-0.7: Medium Green
+                (0.7, '#2E7D32'),    # 0.7-0.9: Dark Green
+                (0.9, '#64B5F6'),    # 0.9-1.2: Sky Blue
+                (1.2, '#1976D2'),    # 1.2-1.6: Royal Blue
+                (1.6, '#0D47A1'),    # 1.6-2.0: Dark Blue
+                (2.0, '#FFF9C4'),    # 2.0-3.0: Pale Yellow
+                (3.0, '#FFB74D'),    # 3.0-4.0: Golden Orange
+                (4.0, '#FF6F00'),    # 4.0-6.0: Burnt Orange
+                (6.0, '#C62828'),    # 6.0-8.0: Dark Red
+                (8.0, '#8B0000'),    # 8.0-10.0: Maroon/Burgundy
+                (10.0, '#5D4037'),   # 10.0-12.0: Dark Sepia/Brown
+                (12.0, '#D7CCC8'),   # 12.0-14.0: Light Taupe/Beige
+                (14.0, '#CE93D8'),   # 14.0-16.0: Light Lavender
+                (16.0, '#9C27B0'),   # 16.0-18.0: Medium Violet
+                (18.0, '#6A1B9A'),   # 18.0-20.0: Dark Violet
+                (20.0, '#FF00FF')    # >= 20.0: Bright Magenta
+            ]
+            # Normalize colors to [0, 1] range for colormap
+            # Use max value of 25 inches to ensure all colors are properly mapped
+            min_val = 0.0
+            max_val = 25.0
+            norm_colors = []
+            for val, hex_code in precip_colors:
+                pos = (val - min_val) / (max_val - min_val)
+                norm_colors.append((max(0, min(1, pos)), hex_code))
+            cmap = LinearSegmentedColormap.from_list('precipitation', norm_colors, N=256)
         elif variable == "wind_speed_10m" or variable == "wind_speed":
             # For forecast hour 0 (analysis), wind components may not be available
             # Check if wind data exists before processing
@@ -553,8 +589,8 @@ class MapGenerator:
                 # while keeping labels consistent with your 5-degree target
                 temp_levels = np.arange(-40, 122.5, 2.5)
             elif variable in ["precipitation", "precip"]:
-                # Fixed precipitation levels for inches
-                temp_levels = [0.0, 0.01, 0.05, 0.10, 0.25, 0.50, 0.75, 1.0, 1.5, 2.0, 2.5, 3.0]
+                # Fixed precipitation levels matching the 22-segment color scale (in inches)
+                temp_levels = [0.0, 0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.2, 1.6, 2, 3, 4, 6, 8, 10, 12, 14, 16, 18, 20, 25]
             else:
                 temp_levels = 20  # Auto levels for other variables
             
@@ -619,6 +655,13 @@ class MapGenerator:
         elif variable == "radar" or variable == "radar_reflectivity":
             cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40)
             cbar.set_label("Simulated Composite Radar Reflectivity (dBZ)")
+        elif variable in ["precipitation", "precip"]:
+            # Custom colorbar with specific tick labels matching the increments
+            cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40)
+            # Set tick positions at the boundaries between color segments
+            tick_positions = [0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.2, 1.6, 2, 3, 4, 6, 8, 10, 12, 14, 16, 18, 20]
+            cbar.set_ticks(tick_positions)
+            cbar.set_label("Total Precipitation (inches)")
         else:
             cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40)
             cbar.set_label(f"{variable.replace('_', ' ').title()} ({units})")
@@ -629,8 +672,13 @@ class MapGenerator:
         
         # Add title
         run_str = run_time.strftime("%Y-%m-%d %H:00 UTC") if run_time else "Latest"
-        plt.title(f"{model} {variable.replace('_', ' ').title()} - {run_str} +{forecast_hour}h", 
-                 fontsize=14, fontweight='bold')
+        # Custom title for precipitation maps
+        if variable in ["precipitation", "precip"]:
+            plt.title(f"GFS Total Precip (in) - {run_str} +{forecast_hour}h", 
+                     fontsize=14, fontweight='bold')
+        else:
+            plt.title(f"{model} {variable.replace('_', ' ').title()} - {run_str} +{forecast_hour}h", 
+                     fontsize=14, fontweight='bold')
         
         # Add station overlays if enabled
         if settings.station_overlays and variable not in ["precipitation_type", "precip_type", "radar", "radar_reflectivity"]:
@@ -660,15 +708,21 @@ class MapGenerator:
                                     for k, v in station_values.items()}
                     
                 elif variable in ["precipitation", "precip"]:
-                    extract_var = 'prate'
+                    # Use 'tp' (total precipitation accumulated) instead of 'prate' (rate)
+                    extract_var = 'tp' if 'tp' in ds else 'prate'
                     station_values = self.extract_station_values(
                         ds, extract_var, 
                         region=region_to_use,
                         priority_level=settings.station_priority
                     )
-                    # Convert kg/m²/s to inches (hourly accumulation)
-                    station_values = {k: v * 3600 * 0.0393701 
-                                    for k, v in station_values.items()}
+                    # Convert based on variable type
+                    if extract_var == 'tp':
+                        # tp is already in mm, just convert to inches
+                        station_values = {k: v / 25.4 for k, v in station_values.items()}
+                    else:
+                        # prate is in kg/m²/s, convert to inches (hourly accumulation)
+                        station_values = {k: v * 3600 * 0.0393701 
+                                        for k, v in station_values.items()}
                     
                 elif variable in ["wind_speed_10m", "wind_speed"]:
                     # Wind speed requires calculating magnitude from u and v components
