@@ -242,50 +242,37 @@ class MapGenerator:
         elif variable == "precipitation" or variable == "precip":
             data = self._process_precipitation(ds)
             units = "in"  # Inches for PNW users
-            # Custom colormap matching the 22-segment precipitation scale
-            from matplotlib.colors import LinearSegmentedColormap
-            # Define colors at specific precipitation boundaries (in inches)
-            # Each color represents the start of a new segment
+            # Custom colormap matching the known-good precipitation scale
+            from matplotlib import colors
+            
+            # Define the specific hex colors for each interval
+            # Following the known-good map: Grey -> Green -> Blue -> Yellow -> Orange -> Red -> Purple
             precip_colors = [
-                (0.0, '#FFFFFF'),    # < 0.01: White
-                (0.01, '#E0E0E0'),   # 0.01-0.05: Light Grey
-                (0.05, '#B0B0B0'),   # 0.05-0.1: Medium Grey
-                (0.1, '#808080'),    # 0.1-0.2: Dark Grey
-                (0.2, '#C8E6C9'),    # 0.2-0.3: Very Light Green
-                (0.3, '#81C784'),    # 0.3-0.5: Light Green
-                (0.5, '#4CAF50'),    # 0.5-0.7: Medium Green
-                (0.7, '#2E7D32'),    # 0.7-0.9: Dark Green
-                (0.9, '#64B5F6'),    # 0.9-1.2: Sky Blue
-                (1.2, '#1976D2'),    # 1.2-1.6: Royal Blue
-                (1.6, '#0D47A1'),    # 1.6-2.0: Dark Blue
-                (2.0, '#FFF9C4'),    # 2.0-3.0: Pale Yellow
-                (3.0, '#FFB74D'),    # 3.0-4.0: Golden Orange
-                (4.0, '#FF6F00'),    # 4.0-6.0: Burnt Orange
-                (6.0, '#C62828'),    # 6.0-8.0: Dark Red
-                (8.0, '#8B0000'),    # 8.0-10.0: Maroon/Burgundy
-                (10.0, '#5D4037'),   # 10.0-12.0: Dark Sepia/Brown
-                (12.0, '#D7CCC8'),   # 12.0-14.0: Light Taupe/Beige
-                (14.0, '#CE93D8'),   # 14.0-16.0: Light Lavender
-                (16.0, '#9C27B0'),   # 16.0-18.0: Medium Violet
-                (18.0, '#6A1B9A'),   # 18.0-20.0: Dark Violet
-                (20.0, '#FF00FF')    # >= 20.0: Bright Magenta
+                '#FFFFFF', '#C0C0C0', '#909090', '#606060', # 0.00, 0.01, 0.05, 0.1
+                '#B0F090', '#80E060', '#50C040',            # 0.2, 0.3, 0.5
+                '#3070F0', '#5090F0', '#80B0F0', '#B0D0F0', # 0.7, 0.9, 1.2, 1.6
+                '#FFFF80', '#FFD060', '#FFA040',            # 2.0, 3.0, 4.0
+                '#FF6030', '#E03020', '#A01010', '#700000', # 6.0, 8.0, 10.0, 12.0
+                '#D0B0E0', '#B080D0', '#9050C0', '#7020A0', # 14.0, 16.0, 18.0, 20.0
+                '#C040C0'                                   # 25.0+
             ]
-            # Normalize colors to [0, 1] range for colormap
-            # Use max value of 25 inches to ensure all colors are properly mapped
-            min_val = 0.0
-            max_val = 25.0
-            norm_colors = []
-            for val, hex_code in precip_colors:
-                pos = (val - min_val) / (max_val - min_val)
-                norm_colors.append((max(0, min(1, pos)), hex_code))
             
-            # Ensure first position is exactly 0.0 and last is exactly 1.0
-            if norm_colors[0][0] != 0.0:
-                norm_colors[0] = (0.0, norm_colors[0][1])
-            if norm_colors[-1][0] != 1.0:
-                norm_colors[-1] = (1.0, norm_colors[-1][1])
+            # Define exact non-linear boundaries (increments)
+            # These must match the length of color list minus any 'extend' colors
+            precip_levels = [0.0, 0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.2, 1.6, 
+                             2.0, 3.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0, 25.0]
             
-            cmap = LinearSegmentedColormap.from_list('precipitation', norm_colors, N=256)
+            # Create the discrete colormap
+            # ListedColormap is best for these fixed categories
+            # Number of colors = number of levels - 1 (one color per interval)
+            custom_precip_cmap = colors.ListedColormap(precip_colors[:len(precip_levels)-1])
+            custom_precip_cmap.set_over(precip_colors[-1])  # Use last color for values > 25.0
+            custom_precip_cmap.set_under('#FFFFFF')         # Explicitly white for < 0.01
+            
+            # Use BoundaryNorm to map the data to these uneven levels
+            precip_norm = colors.BoundaryNorm(precip_levels, custom_precip_cmap.N)
+            
+            cmap = custom_precip_cmap
         elif variable == "wind_speed_10m" or variable == "wind_speed":
             # For forecast hour 0 (analysis), wind components may not be available
             # Check if wind data exists before processing
@@ -602,8 +589,9 @@ class MapGenerator:
                 # while keeping labels consistent with your 5-degree target
                 temp_levels = np.arange(-40, 122.5, 2.5)
             elif variable in ["precipitation", "precip"]:
-                # Fixed precipitation levels matching the 22-segment color scale (in inches)
-                temp_levels = [0.0, 0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.2, 1.6, 2, 3, 4, 6, 8, 10, 12, 14, 16, 18, 20, 25]
+                # Fixed precipitation levels matching the known-good color scale (in inches)
+                # These levels are defined above in the colormap section
+                temp_levels = precip_levels
             else:
                 temp_levels = 20  # Auto levels for other variables
             
@@ -619,14 +607,26 @@ class MapGenerator:
             logger.debug(f"Lat range: {float(lat_vals.min()):.2f} to {float(lat_vals.max()):.2f}")
             logger.debug(f"Data shape: {data.shape}, Lon shape: {lon_vals.shape}, Lat shape: {lat_vals.shape}")
             
-            im = ax.contourf(
-                lon_vals, lat_vals, data,
-                transform=ccrs.PlateCarree(),
-                cmap=cmap,
-                levels=temp_levels,
-                extend='both',
-                zorder=1
-            )
+            # For precipitation, use BoundaryNorm for discrete color mapping
+            if variable in ["precipitation", "precip"]:
+                im = ax.contourf(
+                    lon_vals, lat_vals, data,
+                    transform=ccrs.PlateCarree(),
+                    cmap=cmap,
+                    norm=precip_norm,
+                    levels=temp_levels,
+                    extend='both',
+                    zorder=1
+                )
+            else:
+                im = ax.contourf(
+                    lon_vals, lat_vals, data,
+                    transform=ccrs.PlateCarree(),
+                    cmap=cmap,
+                    levels=temp_levels,
+                    extend='both',
+                    zorder=1
+                )
         
         # Add shared HIGH/LOW labels if MSLP data is available
         if 'mslp_data_to_label' in locals() and mslp_data_to_label is not None:
@@ -679,7 +679,8 @@ class MapGenerator:
             cbar.set_label("Simulated Composite Radar Reflectivity (dBZ)")
         elif variable in ["precipitation", "precip"]:
             # Custom colorbar with specific tick labels matching the increments
-            cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40)
+            # Use the same norm for the colorbar
+            cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40, norm=precip_norm)
             # Set tick positions at the boundaries between color segments
             tick_positions = [0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.2, 1.6, 2, 3, 4, 6, 8, 10, 12, 14, 16, 18, 20]
             cbar.set_ticks(tick_positions)
