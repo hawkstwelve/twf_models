@@ -497,6 +497,7 @@ class GFSDataFetcher:
                 'ugrd_850': ['ugrd_850'],
                 'vgrd_850': ['vgrd_850'],
                 'crain': ['crain', 'CRAIN_surface'],
+                'refc': ['refc', 'REFC', 'refc_surface', 'REFC_surface', 'Composite_reflectivity'],
                 'csnow': ['csnow', 'CSNOW_surface'],
                 'cicep': ['cicep', 'CICEP_surface'],
                 'cfrzr': ['cfrzr', 'CFRZR_surface'],

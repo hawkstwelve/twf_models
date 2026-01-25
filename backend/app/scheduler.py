@@ -55,6 +55,8 @@ def generate_maps_for_hour(args):
                 all_needed_vars.update(['tmp_850', 'ugrd_850', 'vgrd_850', 'prmsl'])
             elif variable == "mslp_precip":
                 all_needed_vars.update(['prate', 'tp', 'prmsl', 'gh', 'gh_1000', 'gh_500', 'crain', 'csnow', 'cicep', 'cfrzr'])
+            elif variable == "radar" or variable == "radar_reflectivity":
+                all_needed_vars.add('refc')
         
         # Fetch data
         ds = data_fetcher.fetch_gfs_data(
@@ -99,7 +101,7 @@ class ForecastScheduler:
         self.map_generator = MapGenerator()
         self.data_fetcher = GFSDataFetcher()
         # PNW-focused variables
-        self.variables = ['temp', 'precip', 'wind_speed', 'mslp_precip', 'temp_850_wind_mslp']
+        self.variables = ['temp', 'precip', 'wind_speed', 'mslp_precip', 'temp_850_wind_mslp', 'radar']
         # Initialize S3 filesystem for data availability checks
         self.s3 = s3fs.S3FileSystem(anon=True)
     

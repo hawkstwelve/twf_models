@@ -34,6 +34,11 @@ const CONFIG = {
             label: '850mb Temp',
             units: '°C / mph / mb',
             description: '850mb Temperature, Wind, and MSLP'
+        },
+        'radar': {
+            label: 'Radar',
+            units: 'dBZ',
+            description: 'Simulated Composite Radar Reflectivity'
         }
     },
     

@@ -240,6 +240,36 @@ class MapGenerator:
             cmap = "Greens" # Default, though we plot layers below
             # Mark as categorical for special plotting below
             is_mslp_precip = True
+        elif variable == "radar" or variable == "radar_reflectivity":
+            # Simulated Radar Reflectivity (Composite Reflectivity)
+            data = self._process_radar_reflectivity(ds)
+            units = "dBZ"
+            # Standard radar colormap (similar to NWS/NEXRAD)
+            from matplotlib.colors import LinearSegmentedColormap
+            # Radar colors: light blue -> green -> yellow -> orange -> red -> purple
+            radar_colors = [
+                (-10, '#000000'),  # Below detectable (transparent/black)
+                (5, '#00CCFF'),    # Light blue (5 dBZ)
+                (10, '#0099FF'),   # Blue (10 dBZ)
+                (15, '#00FF00'),   # Green (15 dBZ)
+                (20, '#00CC00'),   # Dark green (20 dBZ)
+                (25, '#FFFF00'),   # Yellow (25 dBZ)
+                (30, '#FFCC00'),   # Orange (30 dBZ)
+                (35, '#FF9900'),   # Dark orange (35 dBZ)
+                (40, '#FF0000'),   # Red (40 dBZ)
+                (45, '#CC0000'),   # Dark red (45 dBZ)
+                (50, '#FF00FF'),   # Magenta (50 dBZ)
+                (55, '#CC00CC'),   # Purple (55 dBZ)
+                (60, '#9900CC'),   # Dark purple (60 dBZ)
+                (65, '#FFFFFF')    # White (65+ dBZ)
+            ]
+            norm_colors = []
+            min_val = -10
+            max_val = 70
+            for val, hex_code in radar_colors:
+                pos = (val - min_val) / (max_val - min_val)
+                norm_colors.append((max(0, min(1, pos)), hex_code))
+            cmap = LinearSegmentedColormap.from_list('radar', norm_colors, N=256)
         # Note: wind_gusts removed for initial release, can be added later
         else:
             raise ValueError(f"Unsupported variable: {variable}")
@@ -453,6 +483,21 @@ class MapGenerator:
             
             # Set this so the H/L labeling logic runs
             mslp_data_to_label = mslp_data
+        elif variable == "radar" or variable == "radar_reflectivity":
+            # Radar reflectivity with standard dBZ levels
+            lon_vals = data.coords.get('lon', data.coords.get('longitude'))
+            lat_vals = data.coords.get('lat', data.coords.get('latitude'))
+            # Standard radar reflectivity levels (dBZ)
+            radar_levels = np.arange(-10, 70, 5)  # -10 to 65 dBZ in 5 dBZ increments
+            
+            im = ax.contourf(
+                lon_vals, lat_vals, data,
+                transform=ccrs.PlateCarree(),
+                cmap=cmap,
+                levels=radar_levels,
+                extend='max',
+                zorder=1
+            )
         else:
             # Continuous data
             # For temperature, use fixed levels for consistent colors across all maps
@@ -524,6 +569,9 @@ class MapGenerator:
         elif is_850mb_map:
             cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40)
             cbar.set_label("850mb Temperature (°F), Wind (arrows, mph), MSLP (hPa)")
+        elif variable == "radar" or variable == "radar_reflectivity":
+            cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40)
+            cbar.set_label("Simulated Composite Radar Reflectivity (dBZ)")
         else:
             cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40)
             cbar.set_label(f"{variable.replace('_', ' ').title()} ({units})")
@@ -538,7 +586,7 @@ class MapGenerator:
                  fontsize=14, fontweight='bold')
         
         # Add station overlays if enabled
-        if settings.station_overlays and variable not in ["precipitation_type", "precip_type"]:
+        if settings.station_overlays and variable not in ["precipitation_type", "precip_type", "radar", "radar_reflectivity"]:
             try:
                 station_values = None
                 
@@ -698,6 +746,24 @@ class MapGenerator:
         precip = precip / 25.4
         
         return precip.isel(time=0) if 'time' in precip.dims else precip
+    
+    def _process_radar_reflectivity(self, ds: xr.Dataset) -> xr.DataArray:
+        """Process simulated radar reflectivity (composite reflectivity)"""
+        if 'refc' in ds:
+            reflectivity = ds['refc']
+        elif 'REFC' in ds:
+            reflectivity = ds['REFC']
+        else:
+            # Try to find reflectivity variable
+            refc_vars = [v for v in ds.data_vars if 'refc' in v.lower() or 'reflectivity' in v.lower()]
+            if refc_vars:
+                reflectivity = ds[refc_vars[0]]
+            else:
+                raise ValueError("Could not find radar reflectivity variable (refc) in dataset")
+        
+        # Reflectivity is already in dBZ, no conversion needed
+        # Handle time dimension if present
+        return reflectivity.isel(time=0) if 'time' in reflectivity.dims else reflectivity
     
     def _process_wind_speed(self, ds: xr.Dataset) -> xr.DataArray:
         """Process wind speed data"""
