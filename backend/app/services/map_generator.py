@@ -268,7 +268,16 @@ class MapGenerator:
             max_val = 70
             for val, hex_code in radar_colors:
                 pos = (val - min_val) / (max_val - min_val)
-                norm_colors.append((max(0, min(1, pos)), hex_code))
+                # Ensure positions are in [0, 1] range and first/last are exactly 0 and 1
+                pos = max(0.0, min(1.0, pos))
+                norm_colors.append((pos, hex_code))
+            
+            # Ensure first position is exactly 0.0 and last is exactly 1.0
+            if norm_colors[0][0] != 0.0:
+                norm_colors[0] = (0.0, norm_colors[0][1])
+            if norm_colors[-1][0] != 1.0:
+                norm_colors[-1] = (1.0, norm_colors[-1][1])
+            
             cmap = LinearSegmentedColormap.from_list('radar', norm_colors, N=256)
         # Note: wind_gusts removed for initial release, can be added later
         else:
