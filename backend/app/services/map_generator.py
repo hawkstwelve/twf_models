@@ -313,8 +313,8 @@ class MapGenerator:
             ax.set_global()
         
         # Add map features (zorder=0 to keep them below data)
-        # MSLP & Precip and Total Precip maps: all white with black borders
-        if is_mslp_precip or variable in ["precipitation", "precip"]:
+        # MSLP & Precip, Total Precip, and Radar maps: all white with black borders
+        if is_mslp_precip or variable in ["precipitation", "precip", "radar", "radar_reflectivity"]:
             land_color = '#ffffff'
             ocean_color = '#ffffff'
             border_color = '#000000'
