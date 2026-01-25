@@ -122,6 +122,47 @@ class GFSDataFetcher:
         
         return run_time
     
+    def _subset_dataset(self, ds: xr.Dataset) -> xr.Dataset:
+        """Subset a dataset to the PNW region immediately after opening"""
+        if ds is None:
+            return ds
+            
+        # Define bounds
+        bounds = settings.map_region_bounds or {
+            "west": -125.0, "east": -110.0,
+            "south": 42.0, "north": 49.0
+        }
+        buffer = 2.0  # degrees
+        
+        # Detect coordinate names
+        if 'lon' in ds.coords:
+            lon_name, lat_name = 'lon', 'lat'
+        elif 'longitude' in ds.coords:
+            lon_name, lat_name = 'longitude', 'latitude'
+        else:
+            return ds
+            
+        # Handle 0-360 longitude
+        lon_vals = ds.coords[lon_name].values
+        if lon_vals.min() >= 0 and lon_vals.max() > 180:
+            west = bounds["west"] % 360
+            east = bounds["east"] % 360
+        else:
+            west = bounds["west"]
+            east = bounds["east"]
+            
+        # Handle latitude direction
+        lat_vals = ds.coords[lat_name].values
+        lat_decreasing = lat_vals[0] > lat_vals[-1]
+        
+        lon_slice = slice(west - buffer, east + buffer)
+        if lat_decreasing:
+            lat_slice = slice(bounds["north"] + buffer, bounds["south"] - buffer)
+        else:
+            lat_slice = slice(bounds["south"] - buffer, bounds["north"] + buffer)
+            
+        return ds.sel({lon_name: lon_slice, lat_name: lat_slice})
+
     def fetch_gfs_data(
         self,
         run_time: Optional[datetime] = None,
@@ -238,6 +279,7 @@ class GFSDataFetcher:
                                 }},
                                 decode_timedelta=False
                             )
+                            ds_surf_instant = self._subset_dataset(ds_surf_instant)
                             surface_datasets.append(ds_surf_instant)
                             logger.info(f"    Instant stepType variables: {list(ds_surf_instant.data_vars)}")
                         except Exception as e:
@@ -254,6 +296,7 @@ class GFSDataFetcher:
                                 }},
                                 decode_timedelta=False
                             )
+                            ds_surf_accum = self._subset_dataset(ds_surf_accum)
                             surface_datasets.append(ds_surf_accum)
                             logger.info(f"    Accumulated stepType variables: {list(ds_surf_accum.data_vars)}")
                         except Exception as e:
@@ -266,6 +309,7 @@ class GFSDataFetcher:
                             backend_kwargs={'filter_by_keys': {'typeOfLevel': 'surface'}},
                             decode_timedelta=False
                         )
+                        ds_surface = self._subset_dataset(ds_surface)
                         surface_datasets.append(ds_surface)
                     
                     # Extract variables from all surface datasets
@@ -301,6 +345,7 @@ class GFSDataFetcher:
                         backend_kwargs={'filter_by_keys': {'typeOfLevel': 'heightAboveGround', 'level': 2}},
                         decode_timedelta=False  # Avoid timedelta decoding issues
                     )
+                    ds_2m = self._subset_dataset(ds_2m)
                     for var in ds_2m.data_vars:
                         # Drop heightAboveGround coordinate to avoid conflicts
                         var_data = ds_2m[var].drop_vars(['heightAboveGround'], errors='ignore')
@@ -322,6 +367,7 @@ class GFSDataFetcher:
                         backend_kwargs={'filter_by_keys': {'typeOfLevel': 'heightAboveGround', 'level': 10}},
                         decode_timedelta=False  # Avoid timedelta decoding issues
                     )
+                    ds_10m = self._subset_dataset(ds_10m)
                     for var in ds_10m.data_vars:
                         # Drop heightAboveGround coordinate to avoid conflicts
                         var_data = ds_10m[var].drop_vars(['heightAboveGround'], errors='ignore')
@@ -343,6 +389,7 @@ class GFSDataFetcher:
                         backend_kwargs={'filter_by_keys': {'typeOfLevel': 'meanSea'}},
                         decode_timedelta=False
                     )
+                    ds_msl = self._subset_dataset(ds_msl)
                     for var in ds_msl.data_vars:
                         all_data_vars[var] = ds_msl[var]
                     if coords is None:
@@ -373,6 +420,7 @@ class GFSDataFetcher:
                                     }},
                                     decode_timedelta=False
                                 )
+                                ds_level = self._subset_dataset(ds_level)
                                 
                                 # GFS variable naming varies
                                 for v in ds_level.data_vars:
@@ -496,63 +544,6 @@ class GFSDataFetcher:
             else:
                 logger.warning("No matching variables found, using all available variables")
                 logger.info(f"Available variables: {available_vars[:10]}...")
-            
-            # Subset to PNW region if requested
-            if subset_region and settings.map_region == "pnw":
-                # Log coordinate info before subsetting
-                logger.info(f"Dataset coordinates: {list(ds.coords.keys())}")
-                for coord_name in ['lon', 'longitude', 'lat', 'latitude']:
-                    if coord_name in ds.coords:
-                        coord_vals = ds.coords[coord_name].values
-                        logger.info(f"  {coord_name}: range={coord_vals.min():.2f} to {coord_vals.max():.2f}, shape={coord_vals.shape}")
-                
-                bounds = settings.map_region_bounds or {
-                    "west": -125.0, "east": -110.0,
-                    "south": 42.0, "north": 49.0
-                }
-                
-                # Add buffer for better map edges
-                buffer = 2.0  # degrees
-                
-                # Detect coordinate names and handle longitude wrapping (0-360 vs -180 to 180)
-                if 'lon' in ds.coords:
-                    lon_name, lat_name = 'lon', 'lat'
-                elif 'longitude' in ds.coords:
-                    lon_name, lat_name = 'longitude', 'latitude'
-                else:
-                    logger.warning("Could not find lon/lat coordinates for subsetting")
-                    lon_name, lat_name = None, None
-                
-                if lon_name and lat_name:
-                    # Check if longitudes are in 0-360 range
-                    lon_vals = ds.coords[lon_name].values
-                    if lon_vals.min() >= 0 and lon_vals.max() > 180:
-                        # Convert our bounds to 0-360 range
-                        west = bounds["west"] % 360  # -125 -> 235
-                        east = bounds["east"] % 360  # -110 -> 250
-                        logger.info(f"Converting longitude bounds from ({bounds['west']}, {bounds['east']}) to ({west}, {east})")
-                    else:
-                        west = bounds["west"]
-                        east = bounds["east"]
-                    
-                    # Check if latitude is decreasing (common in GFS: 90 to -90)
-                    lat_vals = ds.coords[lat_name].values
-                    lat_decreasing = lat_vals[0] > lat_vals[-1]
-                    
-                    lon_slice = slice(west - buffer, east + buffer)
-                    
-                    # If latitude is decreasing, reverse the slice bounds
-                    if lat_decreasing:
-                        lat_slice = slice(bounds["north"] + buffer, bounds["south"] - buffer)
-                        logger.info(f"Latitude is decreasing, reversing slice order")
-                    else:
-                        lat_slice = slice(bounds["south"] - buffer, bounds["north"] + buffer)
-                    
-                    logger.info(f"Subsetting to PNW: lon={lon_slice}, lat={lat_slice}")
-                    ds = ds.sel(
-                        {lon_name: lon_slice, lat_name: lat_slice}
-                    )
-                    logger.info(f"After subsetting: dims={dict(ds.dims)}")
             
             # Load only what we need into memory
             logger.info(f"Dataset size before load: {ds.nbytes / 1024 / 1024:.2f} MB")

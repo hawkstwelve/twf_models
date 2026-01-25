@@ -7,6 +7,7 @@ import logging
 import time
 import s3fs
 import gc
+from multiprocessing import Pool
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -27,6 +28,68 @@ from app.services.data_fetcher import GFSDataFetcher
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
+def generate_maps_for_hour(args):
+    """Standalone function for parallel map generation"""
+    run_time, forecast_hour, variables = args
+    
+    # Configure logging for the child process
+    child_logger = logging.getLogger(f"f{forecast_hour:03d}")
+    
+    try:
+        child_logger.info(f"🚀 Worker starting for f{forecast_hour:03d}")
+        
+        # Each process needs its own generator and fetcher
+        map_generator = MapGenerator()
+        data_fetcher = GFSDataFetcher()
+        
+        # Determine all variables needed for this hour
+        all_needed_vars = set()
+        for variable in variables:
+            if variable == "temp":
+                all_needed_vars.update(['tmp2m', 'prate'])
+            elif variable == "precip":
+                all_needed_vars.add('prate')
+            elif variable == "wind_speed":
+                all_needed_vars.update(['ugrd10m', 'vgrd10m'])
+            elif variable == "temp_850_wind_mslp":
+                all_needed_vars.update(['tmp_850', 'ugrd_850', 'vgrd_850', 'prmsl'])
+            elif variable == "mslp_precip":
+                all_needed_vars.update(['prate', 'tp', 'prmsl', 'gh', 'gh_1000', 'gh_500', 'crain', 'csnow', 'cicep', 'cfrzr'])
+        
+        # Fetch data
+        ds = data_fetcher.fetch_gfs_data(
+            run_time, 
+            forecast_hour,
+            variables=list(all_needed_vars),
+            subset_region=True
+        )
+        
+        # Generate all maps
+        success_count = 0
+        for variable in variables:
+            try:
+                map_generator.generate_map(
+                    ds=ds,
+                    variable=variable,
+                    model="GFS",
+                    run_time=run_time,
+                    forecast_hour=forecast_hour
+                )
+                child_logger.info(f"  ✓ f{forecast_hour:03d}: {variable}")
+                success_count += 1
+            except Exception as e:
+                child_logger.error(f"  ✗ f{forecast_hour:03d}: {variable}: {e}")
+        
+        # Cleanup
+        ds.close()
+        del ds
+        gc.collect()
+        
+        return forecast_hour if success_count > 0 else None
+        
+    except Exception as e:
+        child_logger.error(f"❌ Worker failed for f{forecast_hour:03d}: {e}")
+        return None
 
 class ForecastScheduler:
     """Schedules forecast map generation"""
@@ -140,72 +203,32 @@ class ForecastScheduler:
             logger.info(f"🔍 Check #{check_count} (elapsed: {elapsed_minutes:.1f} min)")
             
             # Check each forecast hour we haven't generated yet
-            newly_generated = []
-            
+            available_now = []
             for forecast_hour in settings.forecast_hours_list:
                 if forecast_hour > settings.max_forecast_hour:
                     continue
-                    
                 if forecast_hour in generated_hours:
-                    continue  # Already generated
-                
-                # Check if data is available for this forecast hour
+                    continue
                 if self.check_data_available(run_time, forecast_hour):
-                    logger.info(f"✅ f{forecast_hour:03d} data available! Generating maps...")
-                    
-                    # Generate all variables for this forecast hour
-                    success_count = 0
-                    
-                    # Fetch data once for all variables in this forecast hour
-                    try:
-                        # Determine all variables needed for this hour
-                        all_needed_vars = set()
-                        for variable in self.variables:
-                            if variable in ["temp", "precip_type"]:
-                                all_needed_vars.update(['tmp2m', 'prate'])
-                            elif variable == "precip":
-                                all_needed_vars.add('prate')
-                            elif variable == "wind_speed":
-                                all_needed_vars.update(['ugrd10m', 'vgrd10m'])
-                            elif variable == "temp_850_wind_mslp":
-                                all_needed_vars.update(['tmp_850', 'ugrd_850', 'vgrd_850', 'prmsl'])
-                            elif variable == "mslp_precip":
-                                all_needed_vars.update(['prate', 'tp', 'prmsl', 'gh', 'gh_1000', 'gh_500', 'crain', 'csnow', 'cicep', 'cfrzr'])
-                        
-                        ds = self.data_fetcher.fetch_gfs_data(
-                            run_time, 
-                            forecast_hour,
-                            variables=list(all_needed_vars),
-                            subset_region=True
-                        )
-                        
-                        for variable in self.variables:
-                            try:
-                                self.map_generator.generate_map(
-                                    ds=ds,
-                                    variable=variable,
-                                    model="GFS",
-                                    run_time=run_time,
-                                    forecast_hour=forecast_hour
-                                )
-                                logger.info(f"  ✓ {variable}")
-                                success_count += 1
-                            except Exception as e:
-                                logger.error(f"  ✗ {variable}: {e}")
-                        
-                        # Explicitly clear memory after each forecast hour
-                        ds.close()
-                        del ds
-                        gc.collect()
-                    except Exception as e:
-                        logger.error(f"  ✗ Failed to fetch data for f{forecast_hour:03d}: {e}")
-                    
-                    if success_count > 0:
-                        generated_hours.add(forecast_hour)
-                        newly_generated.append(forecast_hour)
-                        logger.info(f"🎉 +{forecast_hour}h complete! Progress: {len(generated_hours)}/{total_forecast_hours} forecast hours")
-                else:
-                    logger.debug(f"⏳ f{forecast_hour:03d} not available yet")
+                    available_now.append(forecast_hour)
+            
+            if available_now:
+                logger.info(f"✅ Found {len(available_now)} new forecast hours: {available_now}")
+                
+                # Use Pool with maxtasksperchild to prevent memory leaks
+                pool_args = [(run_time, hour, self.variables) for hour in available_now]
+                
+                # Use 4 processes to balance speed and memory on 8vCPU/16GB
+                with Pool(processes=4, maxtasksperchild=5) as pool:
+                    results = pool.map(generate_maps_for_hour, pool_args)
+                
+                # Update generated_hours set
+                for hour in results:
+                    if hour is not None:
+                        generated_hours.add(hour)
+                        newly_generated.append(hour)
+            else:
+                logger.debug(f"⏳ No new data available yet")
             
             # Check if all forecast hours are complete
             if len(generated_hours) == total_forecast_hours:
