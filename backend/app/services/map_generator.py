@@ -861,31 +861,52 @@ class MapGenerator:
             # tp is total precipitation (accumulated), already in mm
             precip = ds['tp']
             
-            # Log metadata for debugging
+            # Log metadata for debugging BEFORE any operations
             logger.info(f"tp variable found. Dims: {precip.dims}, Shape: {precip.shape}")
             logger.info(f"tp coords: {list(precip.coords.keys())}")
-            if hasattr(precip, 'attrs'):
-                logger.info(f"tp attrs: {precip.attrs}")
             
-            # Check for step dimension (accumulation period)
-            if 'step' in precip.dims:
-                step_vals = precip.step.values if hasattr(precip, 'step') else 'N/A'
-                logger.info(f"tp has step dimension with values: {step_vals}")
-                # Select the appropriate step if multiple exist
-                # For total accumulation, we want the step that covers 0 to forecast_hour
-                # The step dimension in GFS typically represents the accumulation period
-                # For f072, we want the step that represents 0-72 hour accumulation
-                precip = precip.isel(step=-1)  # Usually the last step is the total
-                logger.info(f"Selected step: {precip.step.values if hasattr(precip, 'step') else 'N/A'}")
+            # Check step coordinate values BEFORE squeezing
+            if 'step' in precip.coords:
+                step_vals = precip.coords['step'].values
+                logger.info(f"tp step coordinate values: {step_vals}")
+                # For total accumulation, we want the step that equals the forecast hour
+                # e.g., for f072, we want step=72 (total from 0-72 hours)
+                if hasattr(step_vals, '__len__') and len(step_vals) > 1:
+                    # Find the step that matches forecast_hour (total accumulation)
+                    # If forecast_hour is passed, use it; otherwise use the max step
+                    target_step = forecast_hour if forecast_hour > 0 else int(step_vals.max())
+                    if target_step in step_vals:
+                        precip = precip.sel(step=target_step)
+                        logger.info(f"Selected step={target_step} (total accumulation 0-{target_step}h)")
+                    else:
+                        # Use the maximum step value (should be the total)
+                        max_step = int(step_vals.max())
+                        precip = precip.sel(step=max_step)
+                        logger.info(f"Selected step={max_step} (max available, total accumulation)")
+                elif 'step' in precip.dims:
+                    # If step is a dimension, select the last one (usually the total)
+                    precip = precip.isel(step=-1)
+                    logger.info(f"Selected last step from dimension")
             
             # Check for valid_time dimension
-            if 'valid_time' in precip.dims:
-                logger.info(f"tp has valid_time dimension: {precip.valid_time.values if hasattr(precip, 'valid_time') else 'N/A'}")
-                # Select the first valid_time if multiple exist
-                if len(precip.valid_time) > 1:
+            if 'valid_time' in precip.coords:
+                valid_times = precip.coords['valid_time'].values
+                logger.info(f"tp valid_time coordinate values: {valid_times}")
+                if hasattr(valid_times, '__len__') and len(valid_times) > 1:
                     precip = precip.isel(valid_time=0)
+                    logger.info(f"Selected first valid_time")
             
-            # Squeeze out any single-element dimensions
+            # Check for time dimension
+            if 'time' in precip.coords:
+                time_vals = precip.coords['time'].values
+                logger.info(f"tp time coordinate values: {time_vals}")
+                if hasattr(time_vals, '__len__') and len(time_vals) > 1:
+                    precip = precip.isel(time=0)
+            
+            if hasattr(precip, 'attrs'):
+                logger.info(f"tp attrs (key ones): stepType={precip.attrs.get('GRIB_stepType', 'N/A')}, units={precip.attrs.get('units', 'N/A')}")
+            
+            # Squeeze out any single-element dimensions AFTER logging
             precip = precip.squeeze()
             
         elif 'prate' in ds:
