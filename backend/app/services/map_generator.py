@@ -698,6 +698,14 @@ class MapGenerator:
         
         plt.savefig(filepath, dpi=settings.map_dpi, bbox_inches='tight', facecolor='white')
         
+        # Verify file was created and has content
+        if not filepath.exists():
+            raise IOError(f"Failed to save map file: {filepath}")
+        file_size = filepath.stat().st_size
+        if file_size == 0:
+            raise IOError(f"Map file is empty: {filepath}")
+        logger.debug(f"Map file saved: {filepath} ({file_size} bytes)")
+        
         # Aggressive memory cleanup
         plt.clf()
         plt.cla()
