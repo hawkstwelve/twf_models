@@ -39,13 +39,14 @@ def test_wind_speed_map():
     # Get the latest available run time (00Z, 06Z, 12Z, or 18Z)
     run_time = fetcher.get_latest_run_time()
     
+    # Use configured forecast hours (6-hour increments), but skip f000 (not available for wind)
+    forecast_hours = [h for h in settings.forecast_hours_list if h > 0]
+    
     print(f"\nRun Time: {run_time.strftime('%Y-%m-%d %H:00 UTC')}")
-    print(f"Forecast Hours: 24, 48, 72 (wind_speed skipped for f000)")
+    print(f"Forecast Hours: {', '.join(map(str, forecast_hours))} (wind_speed skipped for f000)")
     print(f"Map Type: Wind Speed (10m)")
     print("-" * 70)
     
-    # Wind speed is not available in analysis file (f000)
-    forecast_hours = [24, 48, 72]
     success_count = 0
     
     for hour in forecast_hours:

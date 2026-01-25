@@ -38,12 +38,14 @@ def test_temp_map():
     # Get the latest available run time (00Z, 06Z, 12Z, or 18Z)
     run_time = fetcher.get_latest_run_time()
     
+    # Use configured forecast hours (6-hour increments)
+    forecast_hours = settings.forecast_hours_list
+    
     print(f"\nRun Time: {run_time.strftime('%Y-%m-%d %H:00 UTC')}")
-    print(f"Forecast Hours: 0, 24, 48, 72")
+    print(f"Forecast Hours: {', '.join(map(str, forecast_hours))}")
     print(f"Map Type: Temperature (2m)")
     print("-" * 70)
     
-    forecast_hours = [0, 24, 48, 72]
     success_count = 0
     
     for hour in forecast_hours:
