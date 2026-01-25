@@ -928,7 +928,26 @@ class MapGenerator:
                     precip = precip.isel(time=0)
             
             if hasattr(precip, 'attrs'):
-                logger.info(f"tp attrs (key ones): stepType={precip.attrs.get('GRIB_stepType', 'N/A')}, units={precip.attrs.get('units', 'N/A')}")
+                # Log key GRIB attributes that might tell us about accumulation period
+                grib_attrs = {
+                    'GRIB_stepType': precip.attrs.get('GRIB_stepType', 'N/A'),
+                    'GRIB_stepUnits': precip.attrs.get('GRIB_stepUnits', 'N/A'),
+                    'GRIB_NV': precip.attrs.get('GRIB_NV', 'N/A'),  # Number of values (accumulation period)
+                    'units': precip.attrs.get('units', 'N/A'),
+                    'long_name': precip.attrs.get('long_name', 'N/A')
+                }
+                logger.info(f"tp GRIB attrs: {grib_attrs}")
+                
+                # GRIB_NV indicates the accumulation period in hours
+                # NV=0 means accumulation from start of forecast (0 to forecast_hour)
+                # NV=6 means 6-hour accumulation ending at forecast_hour
+                nv = precip.attrs.get('GRIB_NV', None)
+                if nv is not None and nv != 'N/A':
+                    if nv == 0:
+                        logger.info(f"GRIB_NV=0: Total accumulation from 0 to {forecast_hour} hours")
+                    else:
+                        logger.warning(f"GRIB_NV={nv}: This is a {nv}-hour accumulation, not total from 0-{forecast_hour}h!")
+                        logger.warning(f"  This might explain why values are lower than expected")
             
             # Squeeze out any single-element dimensions AFTER logging
             precip = precip.squeeze()
