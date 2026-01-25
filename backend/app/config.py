@@ -51,6 +51,12 @@ class Settings(BaseSettings):
     # Security
     admin_api_key: Optional[str] = None
     
+    # HTTP Caching
+    cache_images_seconds: int = 604800  # 7 days - images are immutable
+    cache_maps_list_seconds: int = 300  # 5 minutes - list changes as new maps generate
+    cache_runs_list_seconds: int = 300  # 5 minutes - runs list changes as new runs generate
+    enable_etag: bool = True  # Enable ETag support for conditional requests
+    
     @property
     def forecast_hours_list(self) -> List[int]:
         """Parse forecast hours string into list"""

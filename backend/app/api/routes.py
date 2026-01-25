@@ -1,9 +1,9 @@
 """API routes"""
-from fastapi import APIRouter, HTTPException, Query, Header
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, HTTPException, Query, Header, Response
+from fastapi.responses import FileResponse, JSONResponse
 from typing import Optional, List
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 import logging
 
@@ -35,6 +35,7 @@ def format_run_time_label(dt: datetime) -> str:
 
 @router.get("/maps", response_model=MapListResponse)
 async def get_maps(
+    response: Response,
     model: Optional[str] = Query(None, description="Filter by model (GFS, Graphcast)"),
     variable: Optional[str] = Query(None, description="Filter by variable"),
     forecast_hour: Optional[int] = Query(None, description="Filter by forecast hour"),
@@ -46,6 +47,9 @@ async def get_maps(
     Supports filtering by model, variable, forecast_hour, and run_time.
     If run_time is provided, only maps from that specific GFS run are returned.
     """
+    # Cache for configured duration - maps list changes as new maps are generated
+    response.headers["Cache-Control"] = f"public, max-age={settings.cache_maps_list_seconds}"
+    
     images_path = Path(settings.storage_path)
     
     if not images_path.exists():
@@ -116,6 +120,7 @@ async def get_maps(
 
 @router.get("/runs", response_model=GFSRunListResponse)
 async def get_runs(
+    response: Response,
     model: Optional[str] = Query("GFS", description="Filter by model (default: GFS)")
 ):
     """
@@ -124,6 +129,9 @@ async def get_runs(
     Returns the last 4 runs (24 hours) by default, sorted newest first.
     Each run includes metadata about available maps and generation time.
     """
+    # Cache for configured duration - runs list changes as new runs are generated
+    response.headers["Cache-Control"] = f"public, max-age={settings.cache_runs_list_seconds}"
+    
     images_path = Path(settings.storage_path)
     
     if not images_path.exists():
@@ -218,18 +226,49 @@ async def get_map(map_id: str):
 
 
 @router.get("/images/{filename}")
-async def get_image(filename: str):
-    """Get map image file"""
+async def get_image(
+    filename: str,
+    if_none_match: Optional[str] = Header(None)
+):
+    """
+    Get map image file with proper caching headers.
+    
+    - Images are immutable once created (filename includes timestamp)
+    - Cache for configured duration (default: 7 days, maps are historical data)
+    - Support ETag for efficient cache validation
+    """
     images_path = Path(settings.storage_path)
     image_file = images_path / filename
     
     if not image_file.exists():
         raise HTTPException(status_code=404, detail="Image not found")
     
+    # Generate ETag from file modification time and size (if enabled)
+    stat = image_file.stat()
+    etag = f'"{stat.st_mtime}-{stat.st_size}"' if settings.enable_etag else None
+    
+    # Check if client has valid cached version
+    if etag and if_none_match and if_none_match == etag:
+        from fastapi.responses import Response
+        return Response(status_code=304)  # Not Modified
+    
+    # Calculate expiration date
+    expires = (datetime.utcnow().replace(tzinfo=None) + 
+               timedelta(seconds=settings.cache_images_seconds)).strftime("%a, %d %b %Y %H:%M:%S GMT")
+    
+    headers = {
+        "Cache-Control": f"public, max-age={settings.cache_images_seconds}, immutable",
+        "Expires": expires
+    }
+    
+    if etag:
+        headers["ETag"] = etag
+    
     return FileResponse(
         path=str(image_file),
         media_type="image/png",
-        filename=filename
+        filename=filename,
+        headers=headers
     )
 
 
