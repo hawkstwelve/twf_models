@@ -43,14 +43,35 @@ def generate_maps_for_hour(args):
         data_fetcher = GFSDataFetcher()
         
         # Determine all variables needed for this hour
-        # Note: For f000 (analysis), wind_speed may not be available, so we'll skip it
+        # Note: For f000 (analysis), some variables are not available
         all_needed_vars = set()
         variables_to_generate = list(variables)  # Copy list to modify
         
-        # Skip wind_speed for f000 since analysis files don't have 10m wind
-        if forecast_hour == 0 and "wind_speed" in variables_to_generate:
-            variables_to_generate.remove("wind_speed")
-            child_logger.info(f"  ⊙ f{forecast_hour:03d}: wind_speed skipped (not available in analysis file)")
+        # Skip variables not available in f000 (analysis) files
+        if forecast_hour == 0:
+            skip_vars = []
+            # Analysis files don't have 10m wind
+            if "wind_speed" in variables_to_generate:
+                variables_to_generate.remove("wind_speed")
+                skip_vars.append("wind_speed")
+            # Analysis files don't have accumulated precipitation
+            if "precip" in variables_to_generate:
+                variables_to_generate.remove("precip")
+                skip_vars.append("precip")
+            # MSLP+precip map requires precipitation
+            if "mslp_precip" in variables_to_generate:
+                variables_to_generate.remove("mslp_precip")
+                skip_vars.append("mslp_precip")
+            # Radar requires precipitation
+            if "radar" in variables_to_generate:
+                variables_to_generate.remove("radar")
+                skip_vars.append("radar")
+            if "radar_reflectivity" in variables_to_generate:
+                variables_to_generate.remove("radar_reflectivity")
+                skip_vars.append("radar_reflectivity")
+            
+            if skip_vars:
+                child_logger.info(f"  ⊙ f{forecast_hour:03d}: Skipping {', '.join(skip_vars)} (not available in analysis file)")
         
         for variable in variables_to_generate:
             if variable == "temp":
