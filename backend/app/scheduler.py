@@ -192,6 +192,7 @@ class ForecastScheduler:
         total_forecast_hours = len([h for h in settings.forecast_hours_list if h <= settings.max_forecast_hour])
         
         check_count = 0
+        newly_generated = []  # Initialize here to avoid NameError
         
         while True:
             check_count += 1
@@ -224,6 +225,8 @@ class ForecastScheduler:
                 with Pool(processes=4, maxtasksperchild=5) as pool:
                     results = pool.map(generate_maps_for_hour, pool_args)
                 
+                # Track newly generated hours for this check
+                newly_generated = []
                 # Update generated_hours set
                 for hour in results:
                     if hour is not None:

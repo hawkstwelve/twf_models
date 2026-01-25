@@ -749,17 +749,25 @@ class MapGenerator:
     
     def _process_radar_reflectivity(self, ds: xr.Dataset) -> xr.DataArray:
         """Process simulated radar reflectivity (composite reflectivity)"""
+        # Log available variables for debugging
+        available_vars = list(ds.data_vars)
+        logger.debug(f"Available variables in dataset: {available_vars}")
+        
         if 'refc' in ds:
             reflectivity = ds['refc']
         elif 'REFC' in ds:
             reflectivity = ds['REFC']
         else:
-            # Try to find reflectivity variable
+            # Try to find reflectivity variable (case-insensitive)
             refc_vars = [v for v in ds.data_vars if 'refc' in v.lower() or 'reflectivity' in v.lower()]
             if refc_vars:
+                logger.info(f"Found reflectivity variable: {refc_vars[0]}")
                 reflectivity = ds[refc_vars[0]]
             else:
-                raise ValueError("Could not find radar reflectivity variable (refc) in dataset")
+                # Log what we have to help debug
+                logger.error(f"Could not find radar reflectivity variable (refc) in dataset")
+                logger.error(f"Available variables: {available_vars}")
+                raise ValueError(f"Could not find radar reflectivity variable (refc) in dataset. Available variables: {available_vars[:10]}")
         
         # Reflectivity is already in dBZ, no conversion needed
         # Handle time dimension if present
