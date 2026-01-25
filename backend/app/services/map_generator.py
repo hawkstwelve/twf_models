@@ -278,6 +278,13 @@ class MapGenerator:
             for val, hex_code in precip_colors:
                 pos = (val - min_val) / (max_val - min_val)
                 norm_colors.append((max(0, min(1, pos)), hex_code))
+            
+            # Ensure first position is exactly 0.0 and last is exactly 1.0
+            if norm_colors[0][0] != 0.0:
+                norm_colors[0] = (0.0, norm_colors[0][1])
+            if norm_colors[-1][0] != 1.0:
+                norm_colors[-1] = (1.0, norm_colors[-1][1])
+            
             cmap = LinearSegmentedColormap.from_list('precipitation', norm_colors, N=256)
         elif variable == "wind_speed_10m" or variable == "wind_speed":
             # For forecast hour 0 (analysis), wind components may not be available
@@ -328,6 +335,12 @@ class MapGenerator:
             for val, hex_code in colors:
                 pos = (val - min_val) / (max_val - min_val)
                 norm_colors.append((max(0, min(1, pos)), hex_code))
+            
+            # Ensure first position is exactly 0.0 and last is exactly 1.0
+            if norm_colors[0][0] != 0.0:
+                norm_colors[0] = (0.0, norm_colors[0][1])
+            if norm_colors[-1][0] != 1.0:
+                norm_colors[-1] = (1.0, norm_colors[-1][1])
 
             cmap = LinearSegmentedColormap.from_list('weatherbell_c', norm_colors, N=256)
             is_850mb_map = True
