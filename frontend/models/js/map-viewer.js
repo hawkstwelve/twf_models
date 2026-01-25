@@ -120,10 +120,17 @@ class MapViewer {
         // Set image source
         const imageUrl = this.apiClient.getImageUrl(map.image_url);
         mapImg.src = imageUrl;
-        mapImg.alt = `${CONFIG.VARIABLES[map.variable].label} - Forecast Hour ${map.forecast_hour}`;
+        
+        // Get variable info with fallback for unknown variables
+        const varInfo = CONFIG.VARIABLES[map.variable] || {
+            label: map.variable.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()),
+            units: '',
+            description: map.variable
+        };
+        
+        mapImg.alt = `${varInfo.label} - Forecast Hour ${map.forecast_hour}`;
         
         // Update title
-        const varInfo = CONFIG.VARIABLES[map.variable];
         mapTitle.textContent = `${varInfo.label} - ${this.formatForecastHour(map.forecast_hour)}`;
         
         // Update metadata
