@@ -49,7 +49,17 @@ def test_precip_map():
     for hour in forecast_hours:
         print(f"\n🗺️  Generating precipitation map for +{hour}h...")
         try:
+            # Fetch data first
+            ds = fetcher.fetch_gfs_data(
+                run_time=run_time,
+                forecast_hour=hour,
+                variables=['prate'],
+                subset_region=True
+            )
+            
+            # Generate map with dataset
             output_path = generator.generate_map(
+                ds=ds,
                 variable='precip',
                 model='GFS',
                 run_time=run_time,

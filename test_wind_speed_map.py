@@ -51,7 +51,17 @@ def test_wind_speed_map():
     for hour in forecast_hours:
         print(f"\n🗺️  Generating wind speed map for +{hour}h...")
         try:
+            # Fetch data first
+            ds = fetcher.fetch_gfs_data(
+                run_time=run_time,
+                forecast_hour=hour,
+                variables=['ugrd10m', 'vgrd10m'],
+                subset_region=True
+            )
+            
+            # Generate map with dataset
             output_path = generator.generate_map(
+                ds=ds,
                 variable='wind_speed',
                 model='GFS',
                 run_time=run_time,

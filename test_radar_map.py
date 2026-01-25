@@ -49,7 +49,17 @@ def test_radar_map():
     for hour in forecast_hours:
         print(f"\n🗺️  Generating radar map for +{hour}h...")
         try:
+            # Fetch data first
+            ds = fetcher.fetch_gfs_data(
+                run_time=run_time,
+                forecast_hour=hour,
+                variables=['refc'],
+                subset_region=True
+            )
+            
+            # Generate map with dataset
             output_path = generator.generate_map(
+                ds=ds,
                 variable='radar',
                 model='GFS',
                 run_time=run_time,

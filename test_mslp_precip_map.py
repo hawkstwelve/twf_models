@@ -53,7 +53,17 @@ def test_mslp_precip():
     for hour in forecast_hours:
         print(f"\n🗺️  Generating MSLP & Precip map for +{hour}h...")
         try:
+            # Fetch data first
+            ds = fetcher.fetch_gfs_data(
+                run_time=run_time,
+                forecast_hour=hour,
+                variables=['prate', 'tp', 'prmsl', 'gh', 'gh_1000', 'gh_500', 'crain', 'csnow', 'cicep', 'cfrzr'],
+                subset_region=True
+            )
+            
+            # Generate map with dataset
             output_path = generator.generate_map(
+                ds=ds,
                 variable='mslp_precip',
                 model='GFS',
                 run_time=run_time,

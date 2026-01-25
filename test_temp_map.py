@@ -49,7 +49,17 @@ def test_temp_map():
     for hour in forecast_hours:
         print(f"\n🗺️  Generating temperature map for +{hour}h...")
         try:
+            # Fetch data first
+            ds = fetcher.fetch_gfs_data(
+                run_time=run_time,
+                forecast_hour=hour,
+                variables=['tmp2m', 'prate'],
+                subset_region=True
+            )
+            
+            # Generate map with dataset
             output_path = generator.generate_map(
+                ds=ds,
                 variable='temp',
                 model='GFS',
                 run_time=run_time,

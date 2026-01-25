@@ -49,7 +49,17 @@ def test_850mb_map():
     for hour in forecast_hours:
         print(f"\n🗺️  Generating 850mb map for +{hour}h...")
         try:
+            # Fetch data first
+            ds = fetcher.fetch_gfs_data(
+                run_time=run_time,
+                forecast_hour=hour,
+                variables=['tmp_850', 'ugrd_850', 'vgrd_850', 'prmsl'],
+                subset_region=True
+            )
+            
+            # Generate map with dataset
             output_path = generator.generate_map(
+                ds=ds,
                 variable='temp_850_wind_mslp',
                 model='GFS',
                 run_time=run_time,
