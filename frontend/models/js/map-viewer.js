@@ -15,11 +15,44 @@ class MapViewer {
      * Initialize the map viewer
      */
     async init() {
+        this.generateForecastHourButtons();
         this.setupEventListeners();
         await this.loadMap();
         
         // Auto-refresh every minute to check for new maps
         setInterval(() => this.loadMap(), CONFIG.REFRESH_INTERVAL);
+    }
+
+    /**
+     * Generate forecast hour buttons dynamically from config
+     */
+    generateForecastHourButtons() {
+        const container = document.getElementById('forecast-hour-buttons');
+        if (!container) return;
+        
+        // Clear existing buttons
+        container.innerHTML = '';
+        
+        // Generate button for each forecast hour
+        CONFIG.FORECAST_HOURS.forEach((hour, index) => {
+            const button = document.createElement('button');
+            button.className = 'btn hour-btn';
+            button.dataset.hour = hour;
+            
+            // First button is active by default
+            if (index === 0) {
+                button.classList.add('active');
+            }
+            
+            // Format label
+            if (hour === 0) {
+                button.textContent = 'Now';
+            } else {
+                button.textContent = `+${hour}h`;
+            }
+            
+            container.appendChild(button);
+        });
     }
 
     /**
@@ -34,13 +67,16 @@ class MapViewer {
             });
         });
 
-        // Forecast hour buttons
-        document.querySelectorAll('.hour-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                const hour = parseInt(e.target.dataset.hour);
-                this.selectForecastHour(hour);
+        // Forecast hour buttons (use event delegation since buttons are dynamic)
+        const forecastContainer = document.getElementById('forecast-hour-buttons');
+        if (forecastContainer) {
+            forecastContainer.addEventListener('click', (e) => {
+                if (e.target.classList.contains('hour-btn')) {
+                    const hour = parseInt(e.target.dataset.hour);
+                    this.selectForecastHour(hour);
+                }
             });
-        });
+        }
     }
 
     /**

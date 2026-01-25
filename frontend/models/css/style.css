@@ -85,6 +85,13 @@ body {
     flex-wrap: wrap;
 }
 
+/* Specific styling for forecast hour buttons to make them more compact */
+#forecast-hour-buttons .hour-btn {
+    padding: 8px 16px;
+    min-width: 70px;
+    font-size: 13px;
+}
+
 .btn {
     padding: 10px 20px;
     border: 2px solid var(--border-color);

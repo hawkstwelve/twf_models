@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     # Processing
     update_interval: int = 6  # hours
     max_forecast_hour: int = 120
-    forecast_hours: str = "0,24,48,72"  # Key forecast hours for initial release
+    forecast_hours: str = "0,6,12,18,24,30,36,42,48,54,60,66,72"  # 6-hour increments for smooth temporal resolution
     progressive_generation: bool = True  # Generate by forecast hour (f000 first) vs by variable
     
     # Map Generation

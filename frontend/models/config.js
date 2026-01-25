@@ -42,8 +42,8 @@ const CONFIG = {
         }
     },
     
-    // Forecast hours
-    FORECAST_HOURS: [0, 24, 48, 72],
+    // Forecast hours (6-hour increments for smooth temporal resolution)
+    FORECAST_HOURS: [0, 6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 66, 72],
     
     // Refresh interval when waiting for new maps (milliseconds)
     REFRESH_INTERVAL: 60000, // 1 minute
