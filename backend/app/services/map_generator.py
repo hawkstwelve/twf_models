@@ -221,6 +221,7 @@ class MapGenerator:
         # Select variable and process
         is_mslp_precip = False
         is_850mb_map = False
+        is_wind_speed_map = False
         if variable == "temperature_2m" or variable == "temp":
             data = self._process_temperature(ds)
             units = "°F"
@@ -281,7 +282,49 @@ class MapGenerator:
                 raise ValueError(f"Wind components not available in analysis file (f000) for {variable}. Skipping wind_speed map for forecast hour 0.")
             data = self._process_wind_speed(ds)
             units = "mph"  # MPH for PNW users
-            cmap = "YlOrRd"
+            
+            # Custom wind speed colormap matching WeatherBell style
+            from matplotlib.colors import LinearSegmentedColormap
+            wind_colors = [
+                (0, '#FFFFFF'),      # 0 mph - White
+                (4, '#E6F2FF'),      # Light blue
+                (6, '#CCE5FF'),      
+                (8, '#99CCFF'),      # Blue
+                (9, '#66B2FF'),      
+                (10, '#3399FF'),     
+                (12, '#66FF66'),     # Light green
+                (14, '#33FF33'),     
+                (16, '#00FF00'),     # Green
+                (20, '#CCFF33'),     # Yellow-green
+                (22, '#FFFF00'),     # Yellow
+                (24, '#FFCC00'),     
+                (26, '#FF9900'),     # Orange
+                (30, '#FF6600'),     
+                (34, '#FF3300'),     # Red-orange
+                (36, '#FF0000'),     # Red
+                (40, '#CC0000'),     # Dark red
+                (44, '#990000'),     
+                (48, '#800000'),     
+                (52, '#660033'),     # Dark maroon
+                (58, '#660066'),     # Purple
+                (64, '#800080'),     
+                (70, '#990099'),     
+                (75, '#B300B3'),     
+                (85, '#CC00CC'),     
+                (95, '#E600E6'),     
+                (100, '#680868')     # Dark purple
+            ]
+            
+            # Normalize positions
+            min_val = 0
+            max_val = 100
+            norm_colors = []
+            for val, hex_code in wind_colors:
+                pos = (val - min_val) / (max_val - min_val)
+                norm_colors.append((pos, hex_code))
+            
+            cmap = LinearSegmentedColormap.from_list('wind_speed', norm_colors, N=256)
+            is_wind_speed_map = True
         elif variable == "temp_850_wind_mslp" or variable == "850mb":
             # 850mb Temperature shading, Wind Arrows, and MSLP Contours
             data = ds['tmp_850']
@@ -581,6 +624,74 @@ class MapGenerator:
                 extend='max',
                 zorder=1
             )
+        elif is_wind_speed_map:
+            # Wind Speed with Streamlines
+            lon_vals = data.coords.get('lon', data.coords.get('longitude'))
+            lat_vals = data.coords.get('lat', data.coords.get('latitude'))
+            
+            # Wind speed levels matching the screenshot (0-100 mph)
+            wind_levels = [0, 4, 6, 8, 9, 10, 12, 14, 16, 20, 22, 24, 26, 30, 34, 36, 40, 44, 48, 52, 58, 64, 70, 75, 85, 95, 100]
+            
+            # Plot filled contours for wind speed
+            im = ax.contourf(
+                lon_vals, lat_vals, data,
+                transform=ccrs.PlateCarree(),
+                cmap=cmap,
+                levels=wind_levels,
+                extend='max',
+                zorder=1
+            )
+            
+            # Add contour lines with labels for key wind speeds
+            contour_levels = [3, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80, 90]
+            cs = ax.contour(
+                lon_vals, lat_vals, data,
+                levels=contour_levels,
+                colors='black',
+                linewidths=0.5,
+                alpha=0.6,
+                transform=ccrs.PlateCarree(),
+                zorder=3
+            )
+            # Add labels to contour lines
+            ax.clabel(cs, inline=True, fontsize=8, fmt='%d', zorder=4)
+            
+            # Get wind components for streamlines
+            u_var = None
+            v_var = None
+            
+            if 'u10' in ds:
+                u_var = ds['u10']
+                v_var = ds['v10']
+            elif 'ugrd10m' in ds and 'vgrd10m' in ds:
+                u_var = ds['ugrd10m']
+                v_var = ds['vgrd10m']
+            else:
+                # Try to find wind variables
+                u_vars = [v for v in ds.data_vars if 'u' in v.lower() and '10' in v.lower()]
+                v_vars = [v for v in ds.data_vars if 'v' in v.lower() and '10' in v.lower()]
+                if u_vars and v_vars:
+                    u_var = ds[u_vars[0]]
+                    v_var = ds[v_vars[0]]
+            
+            if u_var is not None and v_var is not None:
+                # Extract u and v components
+                u = u_var.isel(time=0) if 'time' in u_var.dims else u_var
+                v = v_var.isel(time=0) if 'time' in v_var.dims else v_var
+                
+                # Add streamlines to show wind direction
+                # Use a moderate density for clarity
+                ax.streamplot(
+                    lon_vals.values, lat_vals.values, 
+                    u.values, v.values,
+                    transform=ccrs.PlateCarree(),
+                    color='black',
+                    linewidth=0.6,
+                    density=1.5,
+                    arrowsize=0.8,
+                    arrowstyle='->',
+                    zorder=2
+                )
         else:
             # Continuous data
             # For temperature, use fixed levels for consistent colors across all maps
@@ -674,6 +785,12 @@ class MapGenerator:
         elif is_850mb_map:
             cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40)
             cbar.set_label("850mb Temperature (°F), Wind (arrows, mph), MSLP (hPa)")
+        elif is_wind_speed_map:
+            cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40)
+            # Set tick positions for wind speed colorbar to match the screenshot
+            tick_positions = [0, 4, 6, 8, 10, 12, 14, 16, 20, 22, 24, 26, 30, 34, 36, 40, 44, 48, 52, 58, 64, 70, 75, 85, 95, 100]
+            cbar.set_ticks(tick_positions)
+            cbar.set_label("10m Wind Speed + Streamlines (mph)")
         elif variable == "radar" or variable == "radar_reflectivity":
             cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40)
             cbar.set_label("Simulated Composite Radar Reflectivity (dBZ)")
@@ -753,6 +870,14 @@ class MapGenerator:
                     stations = get_stations_for_region(region_to_use, settings.station_priority)
                     station_values = {}
                     
+                    # Detect coordinate names in dataset
+                    lat_coord_name = 'latitude' if 'latitude' in ds.coords else 'lat'
+                    lon_coord_name = 'longitude' if 'longitude' in ds.coords else 'lon'
+                    
+                    # Detect if dataset uses 0-360 longitude format
+                    lon_vals = ds.coords[lon_coord_name].values
+                    uses_360_format = lon_vals.min() >= 0 and lon_vals.max() > 180
+                    
                     for station_name, station_data in stations.items():
                         try:
                             # Extract u and v components (try both naming conventions)
@@ -763,16 +888,21 @@ class MapGenerator:
                                 logger.warning(f"Could not find wind components for station {station_name}")
                                 continue
                             
-                            u = ds[u_var].sel(
-                                latitude=station_data['lat'],
-                                longitude=station_data['lon'],
-                                method='nearest'
-                            ).values
-                            v = ds[v_var].sel(
-                                latitude=station_data['lat'],
-                                longitude=station_data['lon'],
-                                method='nearest'
-                            ).values
+                            station_lat = station_data['lat']
+                            station_lon = station_data['lon']
+                            
+                            # Convert longitude to match dataset format if needed
+                            if uses_360_format and station_lon < 0:
+                                station_lon = station_lon % 360
+                            
+                            # Build selector dictionary dynamically
+                            selector = {
+                                lat_coord_name: station_lat,
+                                lon_coord_name: station_lon
+                            }
+                            
+                            u = ds[u_var].sel(**selector, method='nearest').values
+                            v = ds[v_var].sel(**selector, method='nearest').values
                             
                             # Handle numpy arrays
                             if hasattr(u, 'item'):
