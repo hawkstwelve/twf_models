@@ -974,6 +974,33 @@ class MapGenerator:
             if hasattr(precip_values, 'min') and hasattr(precip_values, 'max'):
                 logger.info(f"Precipitation range (mm): min={float(precip_values.min()):.4f}, max={float(precip_values.max()):.4f}, mean={float(precip_values.mean()):.4f}")
                 logger.debug(f"Precipitation dims: {precip.dims}, coords: {list(precip.coords.keys())}")
+                
+                # Log a few sample values at specific coordinates for comparison
+                # Known-good map shows peak around 125°W, 48°N with value 3.03"
+                try:
+                    lon_coord = 'lon' if 'lon' in precip.coords else 'longitude'
+                    lat_coord = 'lat' if 'lat' in precip.coords else 'latitude'
+                    
+                    # Try to get value near known peak location (125°W, 48°N)
+                    test_lon = -125.0
+                    test_lat = 48.0
+                    
+                    # Handle 0-360 longitude format
+                    lon_vals = precip.coords[lon_coord].values
+                    if lon_vals.min() >= 0 and lon_vals.max() > 180:
+                        test_lon = test_lon % 360
+                    
+                    sample_value = precip.sel(
+                        {lon_coord: test_lon, lat_coord: test_lat},
+                        method='nearest'
+                    ).values
+                    
+                    if hasattr(sample_value, 'item'):
+                        sample_value = sample_value.item()
+                    sample_inches = float(sample_value) / 25.4
+                    logger.info(f"Sample value at ~125°W, 48°N: {float(sample_value):.4f} mm = {sample_inches:.4f} inches (known-good shows ~3.03\" here)")
+                except Exception as e:
+                    logger.debug(f"Could not get sample value: {e}")
         
         # Convert mm to inches for PNW users
         precip = precip / 25.4
