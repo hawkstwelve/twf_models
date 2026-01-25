@@ -981,26 +981,75 @@ class MapGenerator:
                     lon_coord = 'lon' if 'lon' in precip.coords else 'longitude'
                     lat_coord = 'lat' if 'lat' in precip.coords else 'latitude'
                     
+                    lon_vals = precip.coords[lon_coord].values
+                    lat_vals = precip.coords[lat_coord].values
+                    
+                    # Handle 0-360 longitude format
+                    lon_is_0_360 = lon_vals.min() >= 0 and lon_vals.max() > 180
+                    
+                    # Find where the maximum value actually is
+                    max_idx = np.unravel_index(np.argmax(precip.values), precip.shape)
+                    max_lon = float(lon_vals[max_idx[1] if len(max_idx) > 1 else max_idx[0]])
+                    max_lat = float(lat_vals[max_idx[0] if len(max_idx) > 1 else max_idx[1]])
+                    max_val_mm = float(precip.values[max_idx])
+                    max_val_inches = max_val_mm / 25.4
+                    
+                    # Convert to -180 to 180 if needed
+                    if lon_is_0_360 and max_lon > 180:
+                        max_lon = max_lon - 360
+                    
+                    logger.info(f"Maximum precipitation location: {max_lon:.2f}°W, {max_lat:.2f}°N = {max_val_mm:.4f} mm = {max_val_inches:.4f} inches")
+                    
                     # Try to get value near known peak location (125°W, 48°N)
                     test_lon = -125.0
                     test_lat = 48.0
                     
-                    # Handle 0-360 longitude format
-                    lon_vals = precip.coords[lon_coord].values
-                    if lon_vals.min() >= 0 and lon_vals.max() > 180:
-                        test_lon = test_lon % 360
+                    if lon_is_0_360:
+                        test_lon_sel = test_lon % 360
+                    else:
+                        test_lon_sel = test_lon
                     
                     sample_value = precip.sel(
-                        {lon_coord: test_lon, lat_coord: test_lat},
+                        {lon_coord: test_lon_sel, lat_coord: test_lat},
                         method='nearest'
                     ).values
                     
                     if hasattr(sample_value, 'item'):
                         sample_value = sample_value.item()
                     sample_inches = float(sample_value) / 25.4
-                    logger.info(f"Sample value at ~125°W, 48°N: {float(sample_value):.4f} mm = {sample_inches:.4f} inches (known-good shows ~3.03\" here)")
+                    
+                    # Get the actual coordinates of the selected point
+                    actual_lon = float(precip.sel({lon_coord: test_lon_sel, lat_coord: test_lat}, method='nearest').coords[lon_coord].values)
+                    actual_lat = float(precip.sel({lon_coord: test_lon_sel, lat_coord: test_lat}, method='nearest').coords[lat_coord].values)
+                    if lon_is_0_360 and actual_lon > 180:
+                        actual_lon = actual_lon - 360
+                    
+                    logger.info(f"Sample value at requested ~125°W, 48°N (actual: {actual_lon:.2f}°W, {actual_lat:.2f}°N): {float(sample_value):.4f} mm = {sample_inches:.4f} inches (known-good shows ~3.03\" at 125°W, 48°N)")
+                    
+                    # Check a few more locations for comparison
+                    test_points = [
+                        (-123.0, 47.0, "Seattle area"),
+                        (-122.0, 45.5, "Portland area"),
+                        (-120.0, 46.0, "Central WA"),
+                    ]
+                    for test_lon_pt, test_lat_pt, label in test_points:
+                        if lon_is_0_360:
+                            test_lon_sel_pt = test_lon_pt % 360
+                        else:
+                            test_lon_sel_pt = test_lon_pt
+                        try:
+                            pt_value = precip.sel(
+                                {lon_coord: test_lon_sel_pt, lat_coord: test_lat_pt},
+                                method='nearest'
+                            ).values
+                            if hasattr(pt_value, 'item'):
+                                pt_value = pt_value.item()
+                            pt_inches = float(pt_value) / 25.4
+                            logger.debug(f"  {label} ({test_lon_pt:.1f}°W, {test_lat_pt:.1f}°N): {pt_inches:.4f}\"")
+                        except:
+                            pass
                 except Exception as e:
-                    logger.debug(f"Could not get sample value: {e}")
+                    logger.debug(f"Could not get sample values: {e}")
         
         # Convert mm to inches for PNW users
         precip = precip / 25.4
