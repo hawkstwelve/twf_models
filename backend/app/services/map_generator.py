@@ -2,13 +2,14 @@
 import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend
 import matplotlib.pyplot as plt
+from matplotlib import colors
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 from cartopy.mpl.gridliner import LONGITUDE_FORMATTER, LATITUDE_FORMATTER
 import xarray as xr
 import numpy as np
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 from typing import Optional
 
@@ -22,10 +23,53 @@ logger = logging.getLogger(__name__)
 class MapGenerator:
     """Generates weather forecast maps"""
     
+    # Precipitation type configuration with levels and colors
+    RAIN_LEVELS = [0, 0.1, 0.5, 1.5, 2.5, 4, 6, 10, 16, 24]
+    WINTER_LEVELS = [0, 0.1, 0.5, 1, 2, 3, 4, 6, 10, 14]
+    
+    PRECIP_CONFIG = {
+        'rain': {
+            'levels': RAIN_LEVELS,
+            'colors': ['#FFFFFF', '#00FF00', '#00C800', '#008000', '#FFFF00', '#FFD700', '#FFA500', '#FF0000', '#B22222', '#FF00FF']
+        },
+        'frzr': {
+            'levels': WINTER_LEVELS,
+            'colors': ['#FFFFFF', '#FFC0CB', '#FF69B4', '#FF1493', '#C71585', '#931040', '#B03060', '#D20000', '#FF2400', '#FF4500']
+        },
+        'sleet': {
+            'levels': WINTER_LEVELS,
+            'colors': ['#FFFFFF', '#E0FFFF', '#ADD8E6', '#9370DB', '#8A2BE2', '#9400D3', '#800080', '#4B0082', '#8B008B', '#B22222']
+        },
+        'snow': {
+            'levels': WINTER_LEVELS,
+            'colors': ['#FFFFFF', '#F0FFFF', '#00FFFF', '#00BFFF', '#1E90FF', '#0000FF', '#0000CD', '#00008B', '#483D8B', '#FF007F']
+        }
+    }
+    
     def __init__(self):
         self.data_fetcher = GFSDataFetcher()
         self.storage_path = Path(settings.storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
+    
+    def get_precip_cmap(self, p_type):
+        """
+        Get colormap and normalization for precipitation type.
+        
+        Args:
+            p_type: Precipitation type ('rain', 'frzr', 'sleet', 'snow')
+        
+        Returns:
+            tuple: (cmap, norm, levels) for the precipitation type
+        """
+        config = self.PRECIP_CONFIG[p_type]
+        
+        # Create the discrete colormap
+        cmap = colors.ListedColormap(config['colors'])
+        
+        # Create the normalization based on the boundaries
+        norm = colors.BoundaryNorm(config['levels'], cmap.N)
+        
+        return cmap, norm, config['levels']
     
     def _setup_base_map(self, region: str = 'pnw', 
                        land_color: str = '#fbf5e7',
@@ -475,52 +519,74 @@ class MapGenerator:
             has_gh = ('gh_1000' in ds and 'gh_500' in ds) or 'gh' in ds or any('gh' in str(v).lower() for v in ds.data_vars)
             thickness_data = self._process_thickness(ds) if has_gh else None
             
-            # Define specific levels for QPF (mm/hr) - matching screenshot
-            qpf_levels = [0.1, 0.5, 1, 2.5, 4, 6, 10, 14, 16, 18]
-            
-            # Plot Categorical Precipitation Layers
-            # Map GRIB variables to colormaps
-            precip_types = [
-                {'key': 'crain', 'cmap': 'Greens'},
-                {'key': 'csnow', 'cmap': 'Blues'},
-                {'key': 'cicep', 'cmap': 'Oranges'},
-                {'key': 'cfrzr', 'cmap': 'RdPu'}
-            ]
-            
             lon_vals = data.coords.get('lon', data.coords.get('longitude'))
             lat_vals = data.coords.get('lat', data.coords.get('latitude'))
+            
+            # Plot ALL precipitation types - always create all 4 colorbars
+            # Map GRIB variables to precipitation types
+            precip_type_map = {
+                'crain': 'rain',
+                'cfrzr': 'frzr',
+                'cicep': 'sleet',
+                'csnow': 'snow'
+            }
             
             # Store all precipitation type contourf plots for colorbars
             precip_contours = {}
             
-            for ptype in precip_types:
-                # Try both standard and alias names for categorical types
-                # Note: data_fetcher should have these loaded
-                var_key = ptype['key']
+            for var_key, p_type in precip_type_map.items():
+                # Get colormap and levels for this precipitation type
+                cmap, norm, levels = self.get_precip_cmap(p_type)
+                
                 if var_key in ds:
                     mask = ds[var_key].isel(time=0) if 'time' in ds[var_key].dims else ds[var_key]
-                    # Shade if type is active (value > 0.5)
-                    type_data = data.where(mask > 0.5)
+                    
+                    # Use the mask values directly (0-1) to weight precipitation
+                    # This creates smoother transitions than hard cutoff at 0.5
+                    type_data = data * mask
                     
                     if float(type_data.max()) > 0.005:
+                        # Plot actual data with smooth gradients
                         contour = ax.contourf(
                             lon_vals, lat_vals, type_data,
                             transform=ccrs.PlateCarree(),
-                            cmap=ptype['cmap'],
-                            levels=qpf_levels,
+                            cmap=cmap,
+                            norm=norm,
+                            levels=levels,
                             extend='max',
                             zorder=1,
-                            alpha=0.8
+                            alpha=0.85
                         )
-                        precip_contours[var_key] = (contour, ptype['cmap'])
+                    else:
+                        # No data but create invisible contour for colorbar
+                        contour = ax.contourf(
+                            lon_vals, lat_vals, data.where(data < 0),
+                            transform=ccrs.PlateCarree(),
+                            cmap=cmap,
+                            norm=norm,
+                            levels=levels,
+                            extend='max',
+                            zorder=1,
+                            alpha=0
+                        )
+                else:
+                    # Variable not in dataset, create invisible contour for colorbar
+                    contour = ax.contourf(
+                        lon_vals, lat_vals, data.where(data < 0),
+                        transform=ccrs.PlateCarree(),
+                        cmap=cmap,
+                        norm=norm,
+                        levels=levels,
+                        extend='max',
+                        zorder=1,
+                        alpha=0
+                    )
+                
+                # Always store the contour for colorbar display
+                precip_contours[p_type] = (contour, cmap, norm, levels)
             
             # Set im to the first available contour for compatibility with later code
             im = list(precip_contours.values())[0][0] if precip_contours else None
-            
-            # Placeholder if no precip
-            if im is None:
-                im = ax.contourf(lon_vals, lat_vals, data.where(data < 0), 
-                                 levels=qpf_levels, cmap='Greens', transform=ccrs.PlateCarree(), zorder=1)
             
             # Plot MSLP Contours
             cs_mslp = ax.contour(
@@ -786,39 +852,53 @@ class MapGenerator:
             cbar.set_ticklabels(['No Precip', 'Rain', 'Snow', 'Freezing'])
             cbar.set_label("Precipitation Type")
         elif is_mslp_precip:
-            # Create colorbars for each precipitation type that has data
+            # Create colorbars for ALL precipitation types (always show all 4)
             if 'precip_contours' in locals() and precip_contours:
-                # Define precipitation type labels
+                # Define precipitation type labels in desired order
+                precip_order = ['rain', 'frzr', 'sleet', 'snow']
                 precip_labels = {
-                    'crain': 'Rain',
-                    'csnow': 'Snow',
-                    'cicep': 'Sleet',
-                    'cfrzr': 'FrzR'
+                    'rain': 'Rain',
+                    'frzr': 'Freezing Rain',
+                    'sleet': 'Sleet',
+                    'snow': 'Snow'
                 }
                 
-                # Calculate the number of colorbars needed
-                num_cbars = len(precip_contours)
+                # Always create 4 colorbars
+                num_cbars = 4
                 
                 # Create multiple colorbars side by side
-                # Adjust the position and size to fit all colorbars
-                cbar_width = 0.85 / num_cbars  # Divide available space
+                cbar_width = 0.20  # Fixed width for each
                 cbar_height = 0.03
-                cbar_bottom = 0.08
-                cbar_spacing = 0.02
+                cbar_bottom = 0.06
+                cbar_spacing = 0.01
                 
-                idx = 0
-                for var_key, (contour, cmap_name) in precip_contours.items():
+                # Calculate starting position to center all colorbars
+                total_width = (num_cbars * cbar_width) + ((num_cbars - 1) * cbar_spacing)
+                left_start = (1.0 - total_width) / 2
+                
+                for idx, p_type in enumerate(precip_order):
                     # Calculate position for this colorbar
-                    left_position = 0.10 + idx * (cbar_width + cbar_spacing)
+                    left_position = left_start + idx * (cbar_width + cbar_spacing)
                     
                     # Create axes for colorbar
                     cbar_ax = fig.add_axes([left_position, cbar_bottom, cbar_width, cbar_height])
                     
+                    # Get contour data for this type
+                    contour, cmap, norm, levels = precip_contours[p_type]
+                    
                     # Create colorbar
-                    cbar = plt.colorbar(contour, cax=cbar_ax, orientation='horizontal')
-                    tick_positions = [0.1, 0.5, 1, 2.5, 4, 6, 10, 14, 16, 18]
+                    cbar = plt.colorbar(contour, cax=cbar_ax, orientation='horizontal', 
+                                       cmap=cmap, norm=norm)
+                    
+                    # Set appropriate tick positions based on type
+                    if p_type == 'rain':
+                        tick_positions = [0.1, 0.5, 1.5, 2.5, 4, 6, 10, 16, 24]
+                    else:
+                        tick_positions = [0.1, 0.5, 1, 2, 3, 4, 6, 10, 14]
+                    
                     cbar.set_ticks(tick_positions)
-                    cbar.set_label(f"{precip_labels.get(var_key, var_key)} (mm/hr)", fontsize=9)
+                    cbar.set_label(f"{precip_labels[p_type]} (mm/hr)", fontsize=9)
+                    cbar.ax.tick_params(labelsize=7)
                     cbar.ax.tick_params(labelsize=8)
                     
                     idx += 1
@@ -856,18 +936,37 @@ class MapGenerator:
         gl = ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=False,
                          linewidth=0.5, color='gray', alpha=0.5, linestyle='--')
         
-        # Add title
-        run_str = run_time.strftime("%Y-%m-%d %H:00 UTC") if run_time else "Latest"
-        # Custom title for precipitation maps
+        # Add title at the TOP of the figure with Init/Forecast/Valid info
+        # Format times
+        init_time = run_time.strftime("%Hz %b %d %Y") if run_time else "Latest"
+        valid_time = (run_time + timedelta(hours=forecast_hour)) if run_time else None
+        valid_str = valid_time.strftime("%Hz %a, %b %d %Y") if valid_time else ""
+        
+        # Build title based on map type
         if variable in ["precipitation", "precip"]:
-            plt.title(f"GFS Total Precip (in) - {run_str} +{forecast_hour}h", 
-                     fontsize=14, fontweight='bold')
+            map_title = "GFS Total Precip (in)"
         elif is_mslp_precip:
-            plt.title(f"GFS 6-hour Averaged Precip Rate (mm/hr), MSLP (hPa), & 1000-500mb Thick (dam)", 
-                     fontsize=14, fontweight='bold')
+            map_title = "GFS 6-hour Averaged Precip Rate (mm/hr), MSLP (hPa), & 1000-500mb Thick (dam)"
+        elif is_850mb_map:
+            map_title = "GFS 850mb Temperature (°F), Wind, & MSLP (hPa)"
+        elif is_wind_speed_map:
+            map_title = "GFS 10m Wind Speed (mph) & Streamlines"
+        elif variable == "radar" or variable == "radar_reflectivity":
+            map_title = "GFS Simulated Composite Radar Reflectivity (dBZ)"
+        elif variable in ["temperature_2m", "temp"]:
+            map_title = "GFS 2m Temperature (°F)"
         else:
-            plt.title(f"{model} {variable.replace('_', ' ').title()} - {run_str} +{forecast_hour}h", 
-                     fontsize=14, fontweight='bold')
+            map_title = f"{model} {variable.replace('_', ' ').title()}"
+        
+        # Add second line with Init/Forecast/Valid info
+        info_line = f"Init: {init_time}   Forecast Hour: [{forecast_hour}]  valid at {valid_str}"
+        title_text = f"{map_title}\n{info_line}"
+        
+        # Adjust figure layout to make title nearly flush with map
+        plt.subplots_adjust(top=0.96)  # Significantly reduce top margin
+        
+        # Add title with explicit position very close to map
+        fig.suptitle(title_text, fontsize=12, fontweight='bold', y=0.995)
         
         # Add station overlays if enabled
         if settings.station_overlays and variable not in ["precipitation_type", "precip_type", "radar", "radar_reflectivity"]:
@@ -1401,7 +1500,7 @@ class MapGenerator:
     
     def _process_precipitation_mmhr(self, ds: xr.Dataset) -> xr.DataArray:
         """Process precipitation data in mm/hr (6-hour average rate)"""
-        # Try common precipitation variable names
+               # Try common precipitation variable names
         precip = None
         
         # Check for 'tp' (Total Precipitation) - often used for accumulated precip
