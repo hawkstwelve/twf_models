@@ -189,39 +189,67 @@ class ForecastScheduler:
         self.data_fetcher = GFSDataFetcher()
         # PNW-focused variables
         self.variables = ['temp', 'precip', 'wind_speed', 'mslp_precip', 'temp_850_wind_mslp', 'radar']
-        # Initialize S3 filesystem for data availability checks
-        self.s3 = s3fs.S3FileSystem(anon=True)
+        # Initialize S3 filesystem only if using AWS
+        self.s3 = None
+        if settings.gfs_source == "aws":
+            self.s3 = s3fs.S3FileSystem(anon=True)
     
     def check_data_available(self, run_time, forecast_hour):
         """
-        Check if GFS data is available on S3 for a specific forecast hour.
+        Check if GFS data is available (AWS S3 or NOMADS).
         
         Args:
             run_time: GFS run time (datetime)
             forecast_hour: Forecast hour (int)
             
         Returns:
-            bool: True if data exists on S3
+            bool: True if data exists
         """
         try:
             date_str = run_time.strftime('%Y%m%d')
             hour_str = run_time.strftime('%H')
             hour_padded = f"{forecast_hour:03d}"
             
-            # Check GRIB file (primary data source)
-            # Use '000' for forecast hour 0, but GFS sometimes uses 'anl' for analysis
-            grib_path = f"noaa-gfs-bdp-pds/gfs.{date_str}/{hour_str}/atmos/gfs.t{hour_str}z.pgrb2.{settings.gfs_resolution}.f{hour_padded}"
-            
-            exists = self.s3.exists(grib_path)
-            
-            # If f000 doesn't exist, try 'anl' (some GFS versions use this for hour 0)
-            if not exists and forecast_hour == 0:
-                anl_path = f"noaa-gfs-bdp-pds/gfs.{date_str}/{hour_str}/atmos/gfs.t{hour_str}z.pgrb2.{settings.gfs_resolution}.anl"
-                exists = self.s3.exists(anl_path)
-                if exists:
-                    logger.info(f"Found analysis file (anl) for f000")
-            
-            return exists
+            if settings.gfs_source == "aws":
+                # Check AWS S3
+                grib_path = f"noaa-gfs-bdp-pds/gfs.{date_str}/{hour_str}/atmos/gfs.t{hour_str}z.pgrb2.{settings.gfs_resolution}.f{hour_padded}"
+                
+                exists = self.s3.exists(grib_path)
+                
+                # If f000 doesn't exist, try 'anl'
+                if not exists and forecast_hour == 0:
+                    anl_path = f"noaa-gfs-bdp-pds/gfs.{date_str}/{hour_str}/atmos/gfs.t{hour_str}z.pgrb2.{settings.gfs_resolution}.anl"
+                    exists = self.s3.exists(anl_path)
+                    if exists:
+                        logger.info(f"Found analysis file (anl) for f000")
+                
+                return exists
+                
+            elif settings.gfs_source == "nomads":
+                # Check NOMADS via HTTP HEAD request
+                import requests
+                
+                url = f"https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/gfs.{date_str}/{hour_str}/atmos/gfs.t{hour_str}z.pgrb2.{settings.gfs_resolution}.f{hour_padded}"
+                
+                # Try HEAD request (faster than GET)
+                try:
+                    response = requests.head(url, timeout=10)
+                    exists = response.status_code == 200
+                    
+                    # If f000 doesn't exist, try 'anl'
+                    if not exists and forecast_hour == 0:
+                        anl_url = f"https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/gfs.{date_str}/{hour_str}/atmos/gfs.t{hour_str}z.pgrb2.{settings.gfs_resolution}.anl"
+                        response = requests.head(anl_url, timeout=10)
+                        exists = response.status_code == 200
+                        if exists:
+                            logger.info(f"Found analysis file (anl) for f000")
+                    
+                    return exists
+                except requests.exceptions.RequestException:
+                    return False
+            else:
+                logger.warning(f"Unknown GFS source: {settings.gfs_source}")
+                return False
             
         except Exception as e:
             logger.debug(f"Error checking data availability for f{forecast_hour:03d}: {e}")

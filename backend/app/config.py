@@ -12,6 +12,11 @@ class Settings(BaseSettings):
     gfs_resolution: str = "0p25"  # 0p25 (0.25°, high-res) or 0p50 (0.5°, standard)
     graphcast_api_key: Optional[str] = None
     
+    # NOMADS-specific settings
+    nomads_use_filter: bool = True  # Use NOMADS filter to download only needed variables/region
+    nomads_timeout: int = 120  # Timeout in seconds for NOMADS downloads
+    nomads_max_retries: int = 3  # Number of retries for failed downloads
+    
     # Storage
     storage_path: str = "./images"
     storage_type: str = "local"  # local, s3, spaces

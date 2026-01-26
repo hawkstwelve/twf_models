@@ -232,7 +232,7 @@ class GFSDataFetcher:
                 if 'tp' in ds:
                     precip = ds['tp']
                 elif 'prate' in ds:
-                    # prate is kg/m²/s, convert to mm by multiplying by seconds in bucket
+                    # prate is kg/m²/s, convert to mm by multiplying with seconds in bucket
                     # For 6-hour bucket: prate * 6 * 3600 seconds
                     bucket_hours = 6 if hour >= 6 else hour
                     precip = ds['prate'] * (bucket_hours * 3600)
@@ -718,20 +718,453 @@ class GFSDataFetcher:
             return ds
         
         elif settings.gfs_source == "nomads":
-            # NOMADS HTTP access
-            run_str = run_time.strftime("%Y%m%d%H")
-            base_url = f"https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/gfs.{date_str}/{run_str}/atmos"
-            file_url = f"{base_url}/gfs.t{run_str[-2:]}z.pgrb2.0p25.f{hour_str}"
+            # NOMADS HTTP access with optional filtering
+            logger.info(f"Fetching GFS data from NOMADS...")
             
-            logger.info(f"Fetching GFS data from: {file_url}")
+            # Use the same logic as AWS for opening GRIB files
+            import cfgrib
+            import requests
             
-            # Download and open
-            # This is a simplified version - you may need to handle multiple files
-            raise NotImplementedError("NOMADS fetching not yet implemented")
+            run_hour_str = run_time.strftime("%H")
+            
+            if settings.nomads_use_filter and subset_region and variables:
+                # Use NOMADS filter to download only what we need (much faster!)
+                logger.info("Using NOMADS filter for selective download")
+                file_url = self._build_nomads_filter_url(
+                    date_str=date_str,
+                    run_hour=run_hour_str,
+                    forecast_hour=hour_str,
+                    variables=variables,
+                    subset_region=subset_region
+                )
+            else:
+                # Download full GRIB file (fallback)
+                logger.info("Downloading full GRIB file from NOMADS")
+                file_url = f"https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/gfs.{date_str}/{run_hour_str}/atmos/gfs.t{run_hour_str}z.pgrb2.{settings.gfs_resolution}.f{hour_str}"
+            
+            logger.info(f"NOMADS URL: {file_url}")
+            
+            # Check cache first
+            cache_key = f"nomads_{date_str}_{run_hour_str}_f{hour_str}"
+            tmp_path = self._get_cached_grib_path(cache_key)
+            cache_hit = tmp_path is not None
+            
+            if not cache_hit:
+                # Download from NOMADS
+                tmp_path = self._download_from_nomads(file_url, cache_key)
+            
+            try:
+                # Open GRIB file using same logic as AWS
+                logger.info("Opening GRIB file with cfgrib...")
+                
+                all_data_vars = {}
+                coords = None
+                
+                # Try surface level
+                try:
+                    logger.info("Opening surface level...")
+                    surface_datasets = []
+                    
+                    if forecast_hour > 0:
+                        # Try instant stepType
+                        try:
+                            ds_surf_instant = xr.open_dataset(
+                                tmp_path,
+                                engine='cfgrib',
+                                backend_kwargs={'filter_by_keys': {
+                                    'typeOfLevel': 'surface',
+                                    'stepType': 'instant'
+                                }},
+                                decode_timedelta=False
+                            )
+                            ds_surf_instant = self._subset_dataset(ds_surf_instant)
+                            surface_datasets.append(ds_surf_instant)
+                            logger.info(f"    Instant stepType variables: {list(ds_surf_instant.data_vars)}")
+                        except Exception as e:
+                            logger.info(f"    Instant stepType not available: {str(e)[:80]}")
+                        
+                        # Try accumulated stepType
+                        try:
+                            ds_surf_accum = xr.open_dataset(
+                                tmp_path,
+                                engine='cfgrib',
+                                backend_kwargs={'filter_by_keys': {
+                                    'typeOfLevel': 'surface',
+                                    'stepType': 'accum'
+                                }},
+                                decode_timedelta=False
+                            )
+                            ds_surf_accum = self._subset_dataset(ds_surf_accum)
+                            surface_datasets.append(ds_surf_accum)
+                            logger.info(f"    Accumulated stepType variables: {list(ds_surf_accum.data_vars)}")
+                        except Exception as e:
+                            logger.info(f"    Accumulated stepType not available: {str(e)[:80]}")
+                    else:
+                        ds_surface = xr.open_dataset(
+                            tmp_path,
+                            engine='cfgrib',
+                            backend_kwargs={'filter_by_keys': {'typeOfLevel': 'surface'}},
+                            decode_timedelta=False
+                        )
+                        ds_surface = self._subset_dataset(ds_surface)
+                        surface_datasets.append(ds_surface)
+                    
+                    for ds_surf in surface_datasets:
+                        for var in ds_surf.data_vars:
+                            if var in all_data_vars:
+                                continue
+                            var_data = ds_surf[var].drop_vars(['heightAboveGround'], errors='ignore')
+                            all_data_vars[var] = var_data
+                        if coords is None:
+                            coords = {k: v for k, v in ds_surf.coords.items() if k != 'heightAboveGround'}
+                        ds_surf.close()
+                        
+                except Exception as e:
+                    logger.warning(f"  Surface level failed: {str(e)[:100]}")
+                
+                # Try 2m height (temperature)
+                try:
+                    logger.info("Opening 2m heightAboveGround...")
+                    ds_2m = xr.open_dataset(
+                        tmp_path,
+                        engine='cfgrib',
+                        backend_kwargs={'filter_by_keys': {'typeOfLevel': 'heightAboveGround', 'level': 2}},
+                        decode_timedelta=False
+                    )
+                    ds_2m = self._subset_dataset(ds_2m)
+                    for var in ds_2m.data_vars:
+                        var_data = ds_2m[var].drop_vars(['heightAboveGround'], errors='ignore')
+                        all_data_vars[var] = var_data
+                    if coords is None:
+                        coords = {k: v for k, v in ds_2m.coords.items() if k != 'heightAboveGround'}
+                    logger.info(f"  2m variables: {list(ds_2m.data_vars)}")
+                    ds_2m.close()
+                except Exception as e:
+                    logger.warning(f"  2m level failed: {str(e)[:100]}")
+                
+                # Try 10m height (wind)
+                try:
+                    logger.info("Opening 10m heightAboveGround...")
+                    ds_10m = xr.open_dataset(
+                        tmp_path,
+                        engine='cfgrib',
+                        backend_kwargs={'filter_by_keys': {'typeOfLevel': 'heightAboveGround', 'level': 10}},
+                        decode_timedelta=False
+                    )
+                    ds_10m = self._subset_dataset(ds_10m)
+                    for var in ds_10m.data_vars:
+                        var_data = ds_10m[var].drop_vars(['heightAboveGround'], errors='ignore')
+                        all_data_vars[var] = var_data
+                    if coords is None:
+                        coords = {k: v for k, v in ds_10m.coords.items() if k != 'heightAboveGround'}
+                    logger.info(f"  10m variables: {list(ds_10m.data_vars)}")
+                    ds_10m.close()
+                except Exception as e:
+                    logger.warning(f"  10m level failed: {str(e)[:100]}")
+                
+                # Try meanSea level (MSLP)
+                try:
+                    logger.info("Opening meanSea level...")
+                    ds_msl = xr.open_dataset(
+                        tmp_path,
+                        engine='cfgrib',
+                        backend_kwargs={'filter_by_keys': {'typeOfLevel': 'meanSea'}},
+                        decode_timedelta=False
+                    )
+                    ds_msl = self._subset_dataset(ds_msl)
+                    for var in ds_msl.data_vars:
+                        all_data_vars[var] = ds_msl[var]
+                    if coords is None:
+                        coords = {k: v for k, v in ds_msl.coords.items()}
+                    logger.info(f"  meanSea variables: {list(ds_msl.data_vars)}")
+                    ds_msl.close()
+                except Exception as e:
+                    logger.warning(f"  meanSea level failed: {str(e)[:100]}")
+                
+                # Try isobaricInhPa levels
+                needed_levels = []
+                if 'gh' in variables or 'gh_1000' in variables: needed_levels.append(1000)
+                if 'gh' in variables or 'gh_500' in variables: needed_levels.append(500)
+                if any(v in variables for v in ['tmp_850', 'ugrd_850', 'vgrd_850']): needed_levels.append(850)
+                
+                if needed_levels:
+                    try:
+                        logger.info(f"Opening isobaricInhPa levels: {list(set(needed_levels))}")
+                        for level in set(needed_levels):
+                            try:
+                                logger.info(f"  Extracting level {level}mb...")
+                                ds_level = xr.open_dataset(
+                                    tmp_path,
+                                    engine='cfgrib',
+                                    backend_kwargs={'filter_by_keys': {
+                                        'typeOfLevel': 'isobaricInhPa',
+                                        'level': level
+                                    }},
+                                    decode_timedelta=False
+                                )
+                                ds_level = self._subset_dataset(ds_level)
+                                
+                                for v in ds_level.data_vars:
+                                    if level == 1000 and v in ['gh', 'hgt']:
+                                        all_data_vars['gh_1000'] = ds_level[v].squeeze()
+                                    elif level == 500 and v in ['gh', 'hgt']:
+                                        all_data_vars['gh_500'] = ds_level[v].squeeze()
+                                    elif level == 850:
+                                        if v in ['t', 'tmp']: all_data_vars['tmp_850'] = ds_level[v].squeeze()
+                                        if v in ['u', 'ugrd']: all_data_vars['ugrd_850'] = ds_level[v].squeeze()
+                                        if v in ['v', 'vgrd']: all_data_vars['vgrd_850'] = ds_level[v].squeeze()
+                                
+                                if coords is None:
+                                    coords = {k: v for k, v in ds_level.coords.items() if k not in ['isobaricInhPa', 'level']}
+                                ds_level.close()
+                            except Exception as e:
+                                logger.warning(f"  Could not extract gh at {level}mb: {str(e)[:100]}")
+                    except Exception as e:
+                        logger.warning(f"  isobaricInhPa level extraction failed: {str(e)[:100]}")
+                
+                if not all_data_vars:
+                    raise ValueError("Could not extract any variables from GRIB file")
+                
+                if coords is None:
+                    raise ValueError("Could not get coordinates from any dataset")
+                
+                # Create combined dataset
+                logger.info("Combining extracted variables into dataset...")
+                ds = xr.Dataset(coords=coords)
+                
+                for var_name, var_data in all_data_vars.items():
+                    var_clean = var_data.drop_vars(['heightAboveGround'], errors='ignore')
+                    var_clean = var_clean.drop_vars([c for c in var_clean.coords if c not in coords], errors='ignore')
+                    ds[var_name] = var_clean
+                
+                logger.info("GRIB file opened and variables extracted successfully")
+                logger.info(f"Available variables: {list(ds.data_vars)[:20]}...")
+                
+                # Load data into memory
+                logger.info("Loading GRIB data into memory...")
+                ds = ds.load()
+                logger.info(f"GRIB data loaded: {ds.nbytes / 1024 / 1024:.2f} MB")
+                
+            finally:
+                # Keep cached files for reuse
+                if not cache_hit:
+                    logger.info("GRIB file cached for reuse")
+            
+            # Continue with variable selection (same as AWS path)
+            # Map our variable names to possible GRIB/NetCDF names
+            variable_map = {
+                'tmp2m': ['t2m', 'tmp2m', 'TMP_2maboveground', '2t', 'Temperature_surface', 'TMP_P0_L103_GLL0'],
+                'prate': ['tp', 'prate', 'prcp', 'APCP_surface', 'Total_precipitation', 'PRATE_P0_L1_GLL0'],
+                'ugrd10m': ['u10', 'ugrd10m', 'UGRD_10maboveground', '10u', 'u-component_of_wind_height_above_ground', 'UGRD_P0_L103_GLL0'],
+                'vgrd10m': ['v10', 'vgrd10m', 'VGRD_10maboveground', '10v', 'v-component_of_wind_height_above_ground', 'VGRD_P0_L103_GLL0'],
+                'prmsl': ['prmsl', 'msl', 'PRMSL_meansealevel', 'MSL_meansealevel', 'Mean_sea_level_pressure', 'PRES_P0_L101_GLL0'],
+                'tp': ['tp', 'Total_precipitation', 'APCP_surface'],
+                'gh': ['gh', 'Geopotential_height_isobaric', 'HGT_isobaric', 'z'],
+                'gh_1000': ['gh_1000'],
+                'gh_500': ['gh_500'],
+                'tmp_850': ['tmp_850'],
+                'ugrd_850': ['ugrd_850'],
+                'vgrd_850': ['vgrd_850'],
+                'crain': ['crain', 'CRAIN_surface'],
+                'refc': ['refc', 'REFC', 'refc_surface', 'REFC_surface', 'Composite_reflectivity'],
+                'csnow': ['csnow', 'CSNOW_surface'],
+                'cicep': ['cicep', 'CICEP_surface'],
+                'cfrzr': ['cfrzr', 'CFRZR_surface'],
+            }
+            
+            # Find matching variables
+            available_vars = list(ds.data_vars)
+            selected_vars = []
+            
+            # Ensure precip is requested for MSLP & Precip maps
+            if variables is not None and ('mslp_precip' in variables or 'mslp_pcpn' in variables):
+                for v in ['prate', 'tp', 'prmsl', 'gh', 'gh_1000', 'gh_500', 'crain', 'csnow', 'cicep', 'cfrzr']:
+                    if v not in variables:
+                        variables.append(v)
+            
+            # If gh is requested, we need both 1000mb and 500mb for thickness
+            if variables is not None and 'gh' in variables:
+                if 'gh_1000' not in variables: variables.append('gh_1000')
+                if 'gh_500' not in variables: variables.append('gh_500')
+
+            for our_var in variables:
+                possible_names = variable_map.get(our_var, [our_var])
+                found = False
+                for name in possible_names:
+                    if name in available_vars:
+                        selected_vars.append(name)
+                        found = True
+                        break
+                    for av in available_vars:
+                        if name.lower() in av.lower() or av.lower() in name.lower():
+                            selected_vars.append(av)
+                            found = True
+                            break
+                    if found:
+                        break
+                
+                if not found:
+                    logger.warning(f"Variable {our_var} not found in dataset")
+            
+            if selected_vars:
+                ds = ds[selected_vars]
+                logger.info(f"Selected variables: {selected_vars}")
+            else:
+                logger.warning("No matching variables found, using all available variables")
+                logger.info(f"Available variables: {available_vars[:10]}...")
+            
+            return ds
         
         else:
             raise ValueError(f"Unknown GFS source: {settings.gfs_source}")
-
+    
+    def _build_nomads_filter_url(
+        self,
+        date_str: str,
+        run_hour: str,
+        forecast_hour: str,
+        variables: list,
+        subset_region: bool = True
+    ) -> str:
+        """
+        Build NOMADS filter URL to download only needed variables and region.
+        
+        NOMADS filter allows selective download, saving bandwidth and time.
+        Example: https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl?
+                 dir=%2Fgfs.20260126%2F00%2Fatmos&
+                 file=gfs.t00z.pgrb2.0p25.f006&
+                 var_TMP=on&lev_2_m_above_ground=on&
+                 subregion=&leftlon=-125&rightlon=-110&toplat=49&bottomlat=42
+        
+        Args:
+            date_str: Date string YYYYMMDD
+            run_hour: Run hour HH
+            forecast_hour: Forecast hour FFF
+            variables: List of variables needed
+            subset_region: If True, subset to PNW region
+            
+        Returns:
+            Filtered NOMADS URL
+        """
+        # Base filter URL
+        if settings.gfs_resolution == "0p25":
+            base_url = "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl"
+        else:
+            base_url = "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p50.pl"
+        
+        # Directory and file
+        dir_path = f"/gfs.{date_str}/{run_hour}/atmos"
+        file_name = f"gfs.t{run_hour}z.pgrb2.{settings.gfs_resolution}.f{forecast_hour}"
+        
+        # Build URL parameters
+        params = {
+            'dir': dir_path,
+            'file': file_name,
+        }
+        
+        # Map our variable names to NOMADS variable names
+        nomads_var_map = {
+            'tmp2m': ('TMP', '2_m_above_ground'),
+            'prate': ('PRATE', 'surface'),
+            'tp': ('APCP', 'surface'),
+            'ugrd10m': ('UGRD', '10_m_above_ground'),
+            'vgrd10m': ('VGRD', '10_m_above_ground'),
+            'prmsl': ('PRMSL', 'mean_sea_level'),
+            'gh_1000': ('HGT', '1000_mb'),
+            'gh_500': ('HGT', '500_mb'),
+            'tmp_850': ('TMP', '850_mb'),
+            'ugrd_850': ('UGRD', '850_mb'),
+            'vgrd_850': ('VGRD', '850_mb'),
+            'crain': ('CRAIN', 'surface'),
+            'csnow': ('CSNOW', 'surface'),
+            'cicep': ('CICEP', 'surface'),
+            'cfrzr': ('CFRZR', 'surface'),
+            'refc': ('REFC', 'entire_atmosphere'),
+        }
+        
+        # Add variables
+        for var in variables:
+            if var in nomads_var_map:
+                var_name, level = nomads_var_map[var]
+                params[f'var_{var_name}'] = 'on'
+                params[f'lev_{level}'] = 'on'
+        
+        # Add region subset if requested
+        if subset_region and settings.map_region_bounds:
+            bounds = settings.map_region_bounds
+            params['subregion'] = ''
+            params['leftlon'] = str(bounds["west"])
+            params['rightlon'] = str(bounds["east"])
+            params['toplat'] = str(bounds["north"])
+            params['bottomlat'] = str(bounds["south"])
+        else:
+            # Download full file
+            params['all_var'] = 'on'
+            params['all_lev'] = 'on'
+        
+        # Build query string
+        import urllib.parse
+        query_string = urllib.parse.urlencode(params)
+        full_url = f"{base_url}?{query_string}"
+        
+        logger.info(f"NOMADS filter URL built with {len([k for k in params if k.startswith('var_')])} variables")
+        
+        return full_url
+    
+    def _download_from_nomads(self, url: str, cache_key: str) -> str:
+        """
+        Download GRIB file from NOMADS with retry logic.
+        
+        Args:
+            url: NOMADS URL (direct or filtered)
+            cache_key: Cache key for storing locally
+            
+        Returns:
+            Path to downloaded file
+        """
+        import requests
+        
+        # Create cache file path
+        file_hash = hash(cache_key) % 10000
+        local_path = str(self._cache_dir / f"gfs_nomads_{file_hash}.grib2")
+        
+        logger.info(f"Downloading from NOMADS to cache...")
+        logger.info(f"Cache file: {local_path}")
+        
+        # Download with retry logic
+        for attempt in range(settings.nomads_max_retries):
+            try:
+                response = requests.get(
+                    url,
+                    timeout=settings.nomads_timeout,
+                    stream=True
+                )
+                response.raise_for_status()
+                
+                # Write to file
+                with open(local_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                
+                # Verify file was downloaded
+                if not os.path.exists(local_path):
+                    raise FileNotFoundError(f"Download completed but file not found: {local_path}")
+                
+                file_size_mb = os.path.getsize(local_path) / 1024 / 1024
+                logger.info(f"✅ Downloaded {file_size_mb:.1f} MB from NOMADS")
+                
+                # Add to cache
+                self._grib_cache[cache_key] = (local_path, time.time())
+                
+                return local_path
+                
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"Download attempt {attempt + 1}/{settings.nomads_max_retries} failed: {e}")
+                if attempt < settings.nomads_max_retries - 1:
+                    time.sleep(5)  # Wait 5 seconds before retry
+                else:
+                    raise Exception(f"Failed to download from NOMADS after {settings.nomads_max_retries} attempts: {e}")
+        
 
 class GraphcastDataFetcher:
     """Fetches Graphcast data"""
