@@ -1021,11 +1021,10 @@ class MapGenerator:
             except Exception as e:
                 logger.warning(f"Error labeling H/L: {e}")
         
-        
-        # Add colorbar
+        # Add colorbar (shrink=0.6 makes it 60% width, centered on the map)
         if variable in ["precipitation_type", "precip_type"]:
             cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40, 
-                               ticks=[0, 1, 2, 3])
+                               shrink=0.6, ticks=[0, 1, 2, 3])
             cbar.set_ticklabels(['No Precip', 'Rain', 'Snow', 'Freezing'])
             cbar.set_label("Precipitation Type")
         elif is_mslp_precip:
@@ -1087,15 +1086,15 @@ class MapGenerator:
                     idx += 1
             else:
                 # Fallback to single colorbar if no precipitation types detected
-                cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40)
+                cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40, shrink=0.6)
                 tick_positions = [0.1, 0.5, 1, 2.5, 4, 6, 10, 14, 16, 18]
                 cbar.set_ticks(tick_positions)
                 cbar.set_label("6-hour Averaged Precip Rate (mm/hr), MSLP (hPa), & 1000-500mb Thick (dam)")
         elif is_850mb_map:
-            cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40)
+            cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40, shrink=0.6)
             cbar.set_label("850mb Temperature (°C)")
         elif is_wind_speed_map:
-            cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40)
+            cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40, shrink=0.6)
             # Set tick positions for wind speed colorbar to match the screenshot
             tick_positions = [0, 4, 6, 8, 10, 12, 14, 16, 20, 22, 24, 26, 30, 34, 36, 40, 44, 48, 52, 58, 64, 70, 75, 85, 95, 100]
             cbar.set_ticks(tick_positions)
@@ -1149,13 +1148,13 @@ class MapGenerator:
         elif variable in ["precipitation", "precip"]:
             # Custom colorbar with specific tick labels matching the increments
             # Use the same norm for the colorbar
-            cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40, norm=precip_norm)
+            cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40, shrink=0.6, norm=precip_norm)
             # Set tick positions at the boundaries between color segments
             tick_positions = [0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.2, 1.6, 2, 3, 4, 6, 8, 10, 12, 14, 16, 18, 20]
             cbar.set_ticks(tick_positions)
             cbar.set_label("Total Precipitation (inches)")
         else:
-            cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40)
+            cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40, shrink=0.6)
             cbar.set_label(f"{variable.replace('_', ' ').title()} ({units})")
         
         # Add gridlines

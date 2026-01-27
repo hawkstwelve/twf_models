@@ -508,7 +508,7 @@ class MapViewer {
     }
 
     /**
-     * Format date/time for display
+     * Format date/time for display in user's local timezone
      */
     formatDateTime(date) {
         const options = {
@@ -516,7 +516,6 @@ class MapViewer {
             day: 'numeric',
             hour: '2-digit',
             minute: '2-digit',
-            timeZone: 'UTC',
             timeZoneName: 'short'
         };
         return date.toLocaleString('en-US', options);
