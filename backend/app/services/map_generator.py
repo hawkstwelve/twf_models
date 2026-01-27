@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from matplotlib import colors
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
+from cartopy.feature import NaturalEarthFeature
 from cartopy.mpl.gridliner import LONGITUDE_FORMATTER, LATITUDE_FORMATTER
 import xarray as xr
 import numpy as np
@@ -24,25 +25,85 @@ class MapGenerator:
     """Generates weather forecast maps"""
     
     # Precipitation type configuration with levels and colors
-    RAIN_LEVELS = [0, 0.1, 0.5, 1.5, 2.5, 4, 6, 10, 16, 24]
-    WINTER_LEVELS = [0, 0.1, 0.5, 1, 2, 3, 4, 6, 10, 14]
+    # Rain levels: 0.01, 0.1, 0.25, 0.5, 1.0, 1.5, 2.5, 4, 6, 10, 16, 24 mm/hr
+    RAIN_LEVELS = [0.01, 0.1, 0.25, 0.5, 1.0, 1.5, 2.5, 4, 6, 10, 16, 24]
+    # Snow levels: refined increments for better detail
+    SNOW_LEVELS = [0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 5.0, 6.0, 8.0, 10.0, 12.0, 14.0]
+    # Other winter precip levels
+    WINTER_LEVELS = [0.1, 0.5, 1, 2, 3, 4, 6, 10, 14]
     
     PRECIP_CONFIG = {
         'rain': {
             'levels': RAIN_LEVELS,
-            'colors': ['#FFFFFF', '#00FF00', '#00C800', '#008000', '#FFFF00', '#FFD700', '#FFA500', '#FF0000', '#B22222', '#FF00FF']
+            # Colors matching TropicalTidbits: All greens until 4mm/hr, then yellow->orange->red->purple->magenta
+            # 0.01-2.5: Various shades of green (light to dark)
+            # 4+: Yellow -> Orange -> Red -> Dark Red -> Purple -> Magenta
+            'colors': ['#90EE90', '#66DD66', '#33CC33', '#00BB00', '#009900', '#007700', '#005500', '#FFFF00', '#FFB300', '#FF6600', '#FF0000', '#FF00FF']
         },
         'frzr': {
             'levels': WINTER_LEVELS,
-            'colors': ['#FFFFFF', '#FFC0CB', '#FF69B4', '#FF1493', '#C71585', '#931040', '#B03060', '#D20000', '#FF2400', '#FF4500']
+            'colors': ['#FFC0CB', '#FF69B4', '#FF1493', '#C71585', '#931040', '#B03060', '#D20000', '#FF2400', '#FF4500']
         },
         'sleet': {
             'levels': WINTER_LEVELS,
-            'colors': ['#FFFFFF', '#E0FFFF', '#ADD8E6', '#9370DB', '#8A2BE2', '#9400D3', '#800080', '#4B0082', '#8B008B', '#B22222']
+            'colors': ['#E0FFFF', '#ADD8E6', '#9370DB', '#8A2BE2', '#9400D3', '#800080', '#4B0082', '#8B008B', '#B22222']
         },
         'snow': {
-            'levels': WINTER_LEVELS,
-            'colors': ['#FFFFFF', '#F0FFFF', '#00FFFF', '#00BFFF', '#1E90FF', '#0000FF', '#0000CD', '#00008B', '#483D8B', '#FF007F']
+            'levels': SNOW_LEVELS,
+            # Custom refined snow colorbar with specific increments
+            # Very light cyan -> cyan shades -> blues -> dark blues -> purples -> magentas
+            # Note: First color is light cyan, not white, to avoid gaps between precip types
+            'colors': [
+                '#c0ffff',  # 0.1-0.25: Very light cyan (not white to avoid gaps)
+                '#55ffff',  # 0.25-0.5
+                '#4feaff',  # 0.5-0.75
+                '#48d3ff',  # 0.75-1.0
+                '#42bfff',  # 1.0-1.5
+                '#3caaff',  # 1.5-2.0
+                '#3693ff',  # 2.0-2.5
+                '#2a69f1',  # 2.5-3.0
+                '#1d42ca',  # 3.0-3.5
+                '#1b18dc',  # 3.5-4.0
+                '#161fb8',  # 4.0-5.0
+                '#130495',  # 5.0-6.0
+                '#130495',  # 6.0-8.0
+                '#550a87',  # 8.0-10.0
+                '#550a87',  # 10.0-12.0
+                '#af068e',  # 12.0-14.0
+                '#ea0081'   # >14.0
+            ]
+        }
+    }
+    
+    # Radar reflectivity configuration with dBZ levels and colors for each precipitation type
+    RADAR_CONFIG = {
+        'rain': {
+            # dBZ levels: 0-10, 10-15, 15-20, 20-23, 23-25, 25-28, 28-30, 30-33, 33-35, 35-38, 38-40, 40-43, 43-45, 45-48, 48-50, 50-53, 53-55, 55-58, 58-60, >60
+            'levels': [0, 10, 15, 20, 23, 25, 28, 30, 33, 35, 38, 40, 43, 45, 48, 50, 53, 55, 58, 60, 70],
+            'colors': ['#ffffff', '#4efb4c', '#46e444', '#3ecd3d', '#36b536', '#2d9e2e', '#258528', 
+                      '#1d6e1f', '#155719', '#feff50', '#fad248', '#f8a442', '#f6763c', '#f5253a',
+                      '#de0a35', '#c21230', '#9c0045', '#bc0f9c', '#e300c1', '#f600dc']
+        },
+        'frzr': {
+            # dBZ levels: 0-4, 4-8, 8-12, 12-16, 16-20, 20-24, 24-28, 28-32, 32-36, 36-40, 40-44, 44-48, 48-52, 52-56, 56-60, >60
+            'levels': [0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60, 70],
+            'colors': ['#ffffff', '#fbcad0', '#f893ba', '#e96c9f', '#dd88a5', '#dc4f8b', '#d03a80',
+                      '#c62773', '#bd1366', '#b00145', '#c21230', '#da2d0d', '#e33403', '#f53c00',
+                      '#f53c00', '#f54603']
+        },
+        'sleet': {
+            # dBZ levels: 0-4, 4-8, 8-12, 12-16, 16-20, 20-24, 24-28, 28-32, 32-36, 36-40, 40-44, 44-48, 48-52, 52-56, 56-60, >60
+            'levels': [0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60, 70],
+            'colors': ['#ffffff', '#b49dff', '#b788ff', '#c56cff', '#c54ef9', '#c54ef9', '#b730e7',
+                      '#a913d3', '#a913d3', '#9b02b4', '#bc0f9c', '#a50085', '#c52c7b', '#cf346f',
+                      '#d83c64', '#e24556']
+        },
+        'snow': {
+            # dBZ levels: 0-4, 4-8, 8-12, 12-16, 16-20, 20-24, 24-28, 28-32, 32-36, 36-40, 40-44, 44-48, 48-52, 52-56, 56-60, >60
+            'levels': [0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60, 70],
+            'colors': ['#ffffff', '#55ffff', '#4feaff', '#48d3ff', '#42bfff', '#3caaff', '#3693ff',
+                      '#2a6aee', '#1e40d0', '#110ba7', '#2a009a', '#0c276f', '#540093', '#bc0f9c',
+                      '#d30085', '#f5007f']
         }
     }
     
@@ -59,24 +120,41 @@ class MapGenerator:
             p_type: Precipitation type ('rain', 'frzr', 'sleet', 'snow')
         
         Returns:
-            tuple: (cmap, norm, levels) for the precipitation type
+            tuple: (cmap, norm, edges) for the precipitation type
         """
-        config = self.PRECIP_CONFIG[p_type]
+        cfg = self.PRECIP_CONFIG[p_type]
+        edges = list(cfg['levels'])
+        if len(edges) == len(cfg['colors']):
+            edges.append(edges[-1] * 1.25)
+        cmap = colors.ListedColormap(cfg['colors'], name=f"{p_type}_cmap")
+        cmap.set_under((1, 1, 1, 0))  # transparent under
+        norm = colors.BoundaryNorm(edges, cmap.N, clip=False)
+        return cmap, norm, edges
+    
+    def get_radar_cmap(self, p_type):
+        """
+        Get colormap and normalization for radar reflectivity by precipitation type.
         
-        # Create the discrete colormap
-        cmap = colors.ListedColormap(config['colors'])
+        Args:
+            p_type: Precipitation type ('rain', 'frzr', 'sleet', 'snow')
         
-        # Create the normalization based on the boundaries
-        norm = colors.BoundaryNorm(config['levels'], cmap.N)
-        
-        return cmap, norm, config['levels']
+        Returns:
+            tuple: (cmap, norm, levels) for the radar reflectivity
+        """
+        cfg = self.RADAR_CONFIG[p_type]
+        levels = cfg['levels']
+        cmap = colors.ListedColormap(cfg['colors'], name=f"radar_{p_type}_cmap")
+        cmap.set_under((1, 1, 1, 0))  # transparent under minimum
+        norm = colors.BoundaryNorm(levels, cmap.N, clip=False)
+        return cmap, norm, levels
     
     def _setup_base_map(self, region: str = 'pnw', 
                        land_color: str = '#fbf5e7',
                        ocean_color: str = '#e3f2fd',
-                       border_color: str = '#333333',
-                       border_linewidth: float = 0.6,
-                       state_linewidth: float = 0.4):
+                       border_color: str = '#000000',  # Force Black for visibility
+                       border_linewidth: float = 0.8,  # Increased from 0.6
+                       state_linewidth: float = 1.2,  # Increased from 0.6 for better visibility
+                       county_linewidth: float = 0.8):  # Increased from 0.3 for better visibility
         """
         Set up the base map with projection, extent, and geographic features.
         
@@ -90,6 +168,7 @@ class MapGenerator:
             border_color: Color for borders/coastlines (default: dark gray)
             border_linewidth: Width of coastline/border lines
             state_linewidth: Width of state boundary lines
+            county_linewidth: Width of county boundary lines
             
         Returns:
             matplotlib axes object with base map configured
@@ -100,7 +179,8 @@ class MapGenerator:
         if region == "pnw":
             # Pacific Northwest: WA, OR, ID
             # Use Lambert Conformal optimized for PNW
-            ax = plt.axes(projection=ccrs.LambertConformal(
+            # Create axes with specific position to minimize margins
+            ax = fig.add_subplot(1, 1, 1, projection=ccrs.LambertConformal(
                 central_longitude=-117.5,  # Center of PNW
                 central_latitude=45.5,     # Center of PNW
                 standard_parallels=(43, 48)
@@ -114,18 +194,38 @@ class MapGenerator:
                 crs=ccrs.PlateCarree()
             )
         elif region == "us":
-            ax = plt.axes(projection=ccrs.LambertConformal(central_longitude=-95, central_latitude=35))
+            ax = fig.add_subplot(1, 1, 1, projection=ccrs.LambertConformal(central_longitude=-95, central_latitude=35))
             ax.set_extent([-130, -65, 20, 50], crs=ccrs.PlateCarree())
         else:
-            ax = plt.axes(projection=ccrs.PlateCarree())
+            ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
             ax.set_global()
         
-        # Add map features (zorder=0 to keep them below data)
+        # Add map features - land/ocean at bottom, borders/states on top of precip
         ax.add_feature(cfeature.OCEAN, facecolor=ocean_color, zorder=0)
         ax.add_feature(cfeature.LAND, facecolor=land_color, zorder=0)
-        ax.add_feature(cfeature.COASTLINE, linewidth=border_linewidth, edgecolor=border_color, zorder=2)
-        ax.add_feature(cfeature.BORDERS, linewidth=border_linewidth, edgecolor=border_color, zorder=2)
-        ax.add_feature(cfeature.STATES, linewidth=state_linewidth, edgecolor=border_color, linestyle=':', zorder=2)
+        
+        # Move borders and states to zorder=10 to ensure visibility above precipitation
+        ax.add_feature(cfeature.COASTLINE, linewidth=border_linewidth, edgecolor=border_color, zorder=10)
+        ax.add_feature(cfeature.BORDERS, linewidth=border_linewidth, edgecolor=border_color, zorder=10)
+        
+        # Add county boundaries for better geographic reference
+        # Using NaturalEarthFeature to load counties at 1:10m scale (highest resolution available)
+        try:
+            counties = NaturalEarthFeature(
+                category='cultural',
+                name='admin_2_counties',
+                scale='10m',
+                facecolor='none',
+                edgecolor='#333333'  # Darker gray for better visibility
+            )
+            ax.add_feature(counties, linewidth=county_linewidth, linestyle='-', alpha=0.7, zorder=9)
+        except Exception as e:
+            # If counties can't be loaded (missing data files), log warning but continue
+            logger.warning(f"Could not load county boundaries: {e}")
+        
+        # Make state lines bolder and more opaque for better visibility
+        ax.add_feature(cfeature.STATES, linewidth=state_linewidth, edgecolor=border_color, 
+                       linestyle='-', alpha=0.8, zorder=10)
         
         return fig, ax
     
@@ -146,28 +246,21 @@ class MapGenerator:
         stations = get_stations_for_region(region, priority_level)
         values = {}
         
-        # Detect if dataset uses 0-360 longitude format
-        lon_coord_name = 'longitude' if 'longitude' in ds.coords else 'lon'
-        lon_vals = ds.coords[lon_coord_name].values
+        # Detect coordinate names and 0-360 longitude format only once
+        lat_name = 'latitude' if 'latitude' in ds.coords else 'lat'
+        lon_name = 'longitude' if 'longitude' in ds.coords else 'lon'
+        lon_vals = ds.coords[lon_name].values
         uses_360_format = lon_vals.min() >= 0 and lon_vals.max() > 180
-        
         for station_name, station_data in stations.items():
             try:
                 station_lat = station_data['lat']
                 station_lon = station_data['lon']
-                
-                # Convert longitude to match dataset format if needed
                 if uses_360_format and station_lon < 0:
                     station_lon = station_lon % 360
-                
-                # Extract value at station location using nearest neighbor
                 value = ds[variable].sel(
-                    latitude=station_lat,
-                    longitude=station_lon,
+                    {lat_name: station_lat, lon_name: station_lon},
                     method='nearest'
                 ).values
-                
-                # Handle numpy arrays and scalars
                 if hasattr(value, 'item'):
                     value = value.item()
                 
@@ -267,7 +360,11 @@ class MapGenerator:
         is_850mb_map = False
         is_wind_speed_map = False
         if variable == "temperature_2m" or variable == "temp":
-            data = self._process_temperature(ds)
+            temp_data = self._process_temperature(ds)
+            logger.info(f"Temperature data before normalize - shape: {temp_data.shape}, coords: {list(temp_data.coords.keys())}, dims: {list(temp_data.dims)}")
+            logger.info(f"Temperature range: min={float(temp_data.min()):.2f}, max={float(temp_data.max()):.2f}")
+            data = self._normalize_lonlat(temp_data)
+            logger.info(f"Temperature data after normalize - shape: {data.shape}, coords: {list(data.coords.keys())}, dims: {list(data.dims)}")
             units = "°F"
             from matplotlib.colors import LinearSegmentedColormap
             
@@ -285,15 +382,22 @@ class MapGenerator:
             
             cmap = LinearSegmentedColormap.from_list('temperature', temp_colors, N=256)
         elif variable == "precipitation" or variable == "precip":
-            data = self._process_precipitation(ds, forecast_hour=forecast_hour)
+            # Build total precip explicitly from 0 -> forecast_hour using data_fetcher
+            tp_total = self.data_fetcher.fetch_total_precipitation(
+                run_time=run_time,
+                forecast_hour=forecast_hour,
+                subset_region=(region or settings.map_region) == 'pnw'
+            )
+            # Convert mm -> inches here; skip _process_precipitation(ds)
+            data = tp_total.squeeze() / 25.4
+            data = self._normalize_lonlat(data)
             units = "in"  # Inches for PNW users
             # Custom colormap matching the known-good precipitation scale
             from matplotlib import colors
             
-            # Define the specific hex colors for each interval
-            # Following the known-good map: Grey -> Green -> Blue -> Yellow -> Orange -> Red -> Purple
+            # Define the specific hex colors for each interval (no white for 0 bin)
             precip_colors = [
-                '#FFFFFF', '#C0C0C0', '#909090', '#606060', # 0.00, 0.01, 0.05, 0.1
+                '#C0C0C0', '#909090', '#606060', # 0.01, 0.05, 0.1
                 '#B0F090', '#80E060', '#50C040',            # 0.2, 0.3, 0.5
                 '#3070F0', '#5090F0', '#80B0F0', '#B0D0F0', # 0.7, 0.9, 1.2, 1.6
                 '#FFFF80', '#FFD060', '#FFA040',            # 2.0, 3.0, 4.0
@@ -302,17 +406,14 @@ class MapGenerator:
                 '#C040C0'                                   # 25.0+
             ]
             
-            # Define exact non-linear boundaries (increments)
-            # These must match the length of color list minus any 'extend' colors
-            precip_levels = [0.0, 0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.2, 1.6, 
+            # Define exact non-linear boundaries (increments), no 0.0 edge
+            precip_levels = [0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.2, 1.6, 
                              2.0, 3.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0, 25.0]
             
             # Create the discrete colormap
-            # ListedColormap is best for these fixed categories
-            # Number of colors = number of levels - 1 (one color per interval)
             custom_precip_cmap = colors.ListedColormap(precip_colors[:len(precip_levels)-1])
             custom_precip_cmap.set_over(precip_colors[-1])  # Use last color for values > 25.0
-            custom_precip_cmap.set_under('#FFFFFF')         # Explicitly white for < 0.01
+            custom_precip_cmap.set_under((1, 1, 1, 0))      # Transparent for < 0.01
             
             # Use BoundaryNorm to map the data to these uneven levels
             precip_norm = colors.BoundaryNorm(precip_levels, custom_precip_cmap.N)
@@ -324,7 +425,7 @@ class MapGenerator:
             has_wind = ('u10' in ds or 'ugrd10m' in ds) and ('v10' in ds or 'vgrd10m' in ds)
             if not has_wind and forecast_hour == 0:
                 raise ValueError(f"Wind components not available in analysis file (f000) for {variable}. Skipping wind_speed map for forecast hour 0.")
-            data = self._process_wind_speed(ds)
+            data = self._normalize_lonlat(self._process_wind_speed(ds))
             units = "mph"  # MPH for PNW users
             
             # Custom wind speed colormap matching WeatherBell style
@@ -370,8 +471,7 @@ class MapGenerator:
             cmap = LinearSegmentedColormap.from_list('wind_speed', norm_colors, N=256)
             is_wind_speed_map = True
         elif variable == "temp_850_wind_mslp" or variable == "850mb":
-            # 850mb Temperature shading, Wind Arrows, and MSLP Contours
-            data = ds['tmp_850']
+            data = self._normalize_lonlat(ds['tmp_850'])
             if float(data.max()) > 100: # Kelvin
                 data = data - 273.15 # Convert to Celsius
             units = "°C"
@@ -420,51 +520,21 @@ class MapGenerator:
             is_850mb_map = True
         elif variable == "mslp_precip" or variable == "mslp_pcpn":
             # MSLP & Categorical Precipitation (Rain/Snow/Sleet/Freezing Rain)
-            # This follows the WeatherBell/TropicalTidbits style
-            data = self._process_precipitation_mmhr(ds)  # Keep in mm/hr
+            # Use explicit 6-hour window rate from data_fetcher
+            data = self.data_fetcher.fetch_6hr_precip_rate_mmhr(
+                run_time=run_time,
+                forecast_hour=forecast_hour,
+                subset_region=(region or settings.map_region) == 'pnw'
+            )
+            data = self._normalize_lonlat(data)
             units = "mm/hr"
             cmap = "Greens" # Default, though we plot layers below
-            # Mark as categorical for special plotting below
             is_mslp_precip = True
         elif variable == "radar" or variable == "radar_reflectivity":
-            # Simulated Radar Reflectivity (Composite Reflectivity)
-            data = self._process_radar_reflectivity(ds)
+            data = self._normalize_lonlat(self._process_radar_reflectivity(ds))
             units = "dBZ"
-            # Standard radar colormap (similar to NWS/NEXRAD)
-            from matplotlib.colors import LinearSegmentedColormap
-            # Radar colors: light blue -> green -> yellow -> orange -> red -> purple
-            radar_colors = [
-                (-10, '#000000'),  # Below detectable (transparent/black)
-                (5, '#00CCFF'),    # Light blue (5 dBZ)
-                (10, '#0099FF'),   # Blue (10 dBZ)
-                (15, '#00FF00'),   # Green (15 dBZ)
-                (20, '#00CC00'),   # Dark green (20 dBZ)
-                (25, '#FFFF00'),   # Yellow (25 dBZ)
-                (30, '#FFCC00'),   # Orange (30 dBZ)
-                (35, '#FF9900'),   # Dark orange (35 dBZ)
-                (40, '#FF0000'),   # Red (40 dBZ)
-                (45, '#CC0000'),   # Dark red (45 dBZ)
-                (50, '#FF00FF'),   # Magenta (50 dBZ)
-                (55, '#CC00CC'),   # Purple (55 dBZ)
-                (60, '#9900CC'),   # Dark purple (60 dBZ)
-                (65, '#FFFFFF')    # White (65+ dBZ)
-            ]
-            norm_colors = []
-            min_val = -10
-            max_val = 70
-            for val, hex_code in radar_colors:
-                pos = (val - min_val) / (max_val - min_val)
-                # Ensure positions are in [0, 1] range and first/last are exactly 0 and 1
-                pos = max(0.0, min(1.0, pos))
-                norm_colors.append((pos, hex_code))
-            
-            # Ensure first position is exactly 0.0 and last is exactly 1.0
-            if norm_colors[0][0] != 0.0:
-                norm_colors[0] = (0.0, norm_colors[0][1])
-            if norm_colors[-1][0] != 1.0:
-                norm_colors[-1] = (1.0, norm_colors[-1][1])
-            
-            cmap = LinearSegmentedColormap.from_list('radar', norm_colors, N=256)
+            # Radar colors are now defined per precipitation type
+            # Will be used in the plotting section
         # Note: wind_gusts removed for initial release, can be added later
         else:
             raise ValueError(f"Unsupported variable: {variable}")
@@ -514,127 +584,152 @@ class MapGenerator:
                 zorder=1
             )
         elif is_mslp_precip:
-            # MSLP & Categorical Precipitation Plotting
-            mslp_data = self._process_mslp(ds)
+            # data is already 6-hr rate (mm/hr) from fetch_6hr_precip_rate_mmhr
+            # A. Normalize all inputs
+            rate = self._normalize_coords(data).squeeze()
+            mslp_data = self._normalize_coords(self._process_mslp(ds))
             has_gh = ('gh_1000' in ds and 'gh_500' in ds) or 'gh' in ds or any('gh' in str(v).lower() for v in ds.data_vars)
             thickness_data = self._process_thickness(ds) if has_gh else None
+
+            # Detect coordinate names
+            lon_name = 'longitude' if 'longitude' in rate.coords else 'lon'
+            lat_name = 'latitude' if 'latitude' in rate.coords else 'lat'
+
+            # B. Create a master categorical "Owner" grid via per-type masks
+            crain = ds.get('crain', xr.zeros_like(rate))
+            csnow = ds.get('csnow', xr.zeros_like(rate))
+            cicep = ds.get('cicep', xr.zeros_like(rate))
+            cfrzr = ds.get('cfrzr', xr.zeros_like(rate))
+
+            if 'time' in crain.dims: crain = crain.isel(time=0)
+            if 'time' in csnow.dims: csnow = csnow.isel(time=0)
+            if 'time' in cicep.dims: cicep = cicep.isel(time=0)
+            if 'time' in cfrzr.dims: cfrzr = cfrzr.isel(time=0)
+
+            # Upsample to MUCH finer grid for smooth contours (~0.02 degree for professional look)
+            from scipy.ndimage import gaussian_filter
             
-            lon_vals = data.coords.get('lon', data.coords.get('longitude'))
-            lat_vals = data.coords.get('lat', data.coords.get('latitude'))
+            # Use even finer resolution - 0.02 degrees (~2km) for maximum refinement
+            # This provides smoother gradients and better detail than 0.03 degrees
+            new_lon = np.arange(float(rate[lon_name].min()), float(rate[lon_name].max()), 0.02)
+            new_lat = np.arange(float(rate[lat_name].min()), float(rate[lat_name].max()), 0.02)
+            rate_smooth = rate.interp({lon_name: new_lon, lat_name: new_lat}, method="linear")
             
-            # Plot ALL precipitation types - always create all 4 colorbars
-            # Map GRIB variables to precipitation types
-            precip_type_map = {
-                'crain': 'rain',
-                'cfrzr': 'frzr',
-                'cicep': 'sleet',
-                'csnow': 'snow'
-            }
+            # Apply refined Gaussian smoothing to reduce blockiness while preserving features
+            # Sigma=0.7 provides smoother appearance without excessive blurring
+            rate_smooth.values = gaussian_filter(rate_smooth.values, sigma=0.7)
+
+            # C. Winner-Takes-All with Overlap: Plot in reverse order so dominant types overlay
+            precip_types = [('crain', 'rain', 4), ('csnow', 'snow', 3),
+                            ('cicep', 'sleet', 2), ('cfrzr', 'frzr', 1)]
             
-            # Store all precipitation type contourf plots for colorbars
+            # Collect all categorical masks with smooth interpolation
+            from scipy.ndimage import gaussian_filter
+            masks = {}
+            for var_key, p_type, z_val in precip_types:
+                if var_key in ds:
+                    mask_src = ds[var_key]
+                    if 'time' in mask_src.dims:
+                        mask_src = mask_src.isel(time=0)
+                    mask = self._normalize_coords(mask_src)
+                    # Use linear interpolation for smooth boundaries
+                    mask_hi = mask.interp({lon_name: new_lon, lat_name: new_lat}, method='linear')
+                    # Apply refined smoothing to categorical masks for better blending
+                    mask_hi.values = gaussian_filter(mask_hi.values, sigma=0.5)
+                    masks[p_type] = mask_hi
+                else:
+                    # Create zero mask if categorical data not available
+                    masks[p_type] = xr.zeros_like(rate_smooth)
+            
+            # Stack masks and determine winner at each grid point
+            # Stack order: rain, snow, sleet, frzr
+            mask_stack = np.stack([
+                masks['rain'].values,
+                masks['snow'].values,
+                masks['sleet'].values,
+                masks['frzr'].values
+            ], axis=0)
+            
+            # Find the index of maximum probability at each point
+            winner_idx = np.argmax(mask_stack, axis=0)
+            
+            # Apply minimum rate threshold to avoid plotting trace amounts
+            min_rate_threshold = 0.1  # mm/hr
+            has_precip = rate_smooth.values > min_rate_threshold
+            
+            # Plot in REVERSE priority order (frzr->sleet->snow->rain) with slight overlap
+            # This way dominant types paint over less dominant ones, eliminating gaps
             precip_contours = {}
             
-            for var_key, p_type in precip_type_map.items():
-                # Get colormap and levels for this precipitation type
-                cmap, norm, levels = self.get_precip_cmap(p_type)
+            # Plot types in reverse order with expanded masks for overlap
+            plot_order = [('cfrzr', 'frzr', 1, 0), ('cicep', 'sleet', 2, 1), 
+                         ('csnow', 'snow', 3, 2), ('crain', 'rain', 4, 3)]
+            
+            for var_key, p_type, z_val, idx in plot_order:
+                cmap, norm, edges = self.get_precip_cmap(p_type)
                 
-                if var_key in ds:
-                    mask = ds[var_key].isel(time=0) if 'time' in ds[var_key].dims else ds[var_key]
-                    
-                    # Use the mask values directly (0-1) to weight precipitation
-                    # This creates smoother transitions than hard cutoff at 0.5
-                    type_data = data * mask
-                    
-                    if float(type_data.max()) > 0.005:
-                        # Plot actual data with smooth gradients
-                        contour = ax.contourf(
-                            lon_vals, lat_vals, type_data,
-                            transform=ccrs.PlateCarree(),
-                            cmap=cmap,
-                            norm=norm,
-                            levels=levels,
-                            extend='max',
-                            zorder=1,
-                            alpha=0.85
-                        )
-                    else:
-                        # No data but create invisible contour for colorbar
-                        contour = ax.contourf(
-                            lon_vals, lat_vals, data.where(data < 0),
-                            transform=ccrs.PlateCarree(),
-                            cmap=cmap,
-                            norm=norm,
-                            levels=levels,
-                            extend='max',
-                            zorder=1,
-                            alpha=0
-                        )
-                else:
-                    # Variable not in dataset, create invisible contour for colorbar
-                    contour = ax.contourf(
-                        lon_vals, lat_vals, data.where(data < 0),
+                # Create many more intermediate levels for ultra-smooth appearance
+                # Insert 2 intermediate levels between each pair for finest gradients
+                smooth_levels = []
+                for i in range(len(edges) - 1):
+                    smooth_levels.append(edges[i])
+                    # Add 2 intermediate levels between each pair
+                    smooth_levels.append(edges[i] + (edges[i+1] - edges[i]) / 3)
+                    smooth_levels.append(edges[i] + 2 * (edges[i+1] - edges[i]) / 3)
+                smooth_levels.append(edges[-1])
+                
+                # Create mask: plot where this type wins OR is close to winning (within 0.15 for overlap)
+                is_winner = (winner_idx == idx)
+                mask_value = masks[p_type].values
+                is_close = mask_value > (mask_stack.max(axis=0) - 0.15)
+                type_mask = (is_winner | is_close) & has_precip
+                
+                # Skip if no data for this type
+                if not np.any(type_mask):
+                    precip_contours[p_type] = (None, cmap, norm, edges)
+                    continue
+                
+                # Create data for this type with expanded mask
+                # Ensure we only plot where rate is above the minimum threshold for this type
+                # This prevents white gaps from very light precipitation
+                type_min_threshold = edges[0] if p_type != 'rain' else 0.01
+                type_data = np.where(type_mask & (rate_smooth.values >= type_min_threshold), 
+                                    rate_smooth.values, np.nan)
+                
+                # Only plot if there's actual data
+                if np.nanmax(type_data) > 0.001:
+                    pm = ax.contourf(
+                        new_lon, new_lat, type_data,
+                        levels=smooth_levels,  # Use finer levels for smoother gradients
                         transform=ccrs.PlateCarree(),
-                        cmap=cmap,
-                        norm=norm,
-                        levels=levels,
-                        extend='max',
-                        zorder=1,
-                        alpha=0
+                        cmap=cmap, norm=norm,
+                        extend='neither',
+                        antialiased=True,
+                        zorder=z_val,
                     )
-                
-                # Always store the contour for colorbar display
-                precip_contours[p_type] = (contour, cmap, norm, levels)
-            
-            # Set im to the first available contour for compatibility with later code
+                    precip_contours[p_type] = (pm, cmap, norm, edges)
+                else:
+                    precip_contours[p_type] = (None, cmap, norm, edges)
+
             im = list(precip_contours.values())[0][0] if precip_contours else None
-            
-            # Plot MSLP Contours
             cs_mslp = ax.contour(
-                lon_vals, lat_vals, mslp_data,
+                mslp_data[lon_name].values, mslp_data[lat_name].values, mslp_data.values,
                 levels=np.arange(960, 1060, 4),
-                colors='black',
-                linewidths=1.2,
-                transform=ccrs.PlateCarree(),
-                zorder=12
+                colors='black', linewidths=1.2,
+                transform=ccrs.PlateCarree(), zorder=12
             )
             ax.clabel(cs_mslp, inline=True, fontsize=9, fmt='%d', zorder=13)
-            
-            # Plot Dual-Color Thickness
             if thickness_data is not None:
-                # ... (rest of the logic)
-                # Cold thickness (<= 540) - Blue
                 cold_levels = np.arange(480, 541, 6)
                 cs_cold = ax.contour(
-                    lon_vals, lat_vals, thickness_data,
+                    thickness_data[lon_name].values, thickness_data[lat_name].values, thickness_data.values,
                     levels=cold_levels,
                     colors='blue',
                     linewidths=1.2,
                     linestyles='dashed',
                     transform=ccrs.PlateCarree(),
-                    zorder=11
                 )
-                ax.clabel(cs_cold, inline=True, fontsize=8, fmt='%d', colors='blue')
-                
-                # Warm thickness (> 546) - Red
-                warm_levels = np.arange(552, 601, 6)
-                cs_warm = ax.contour(
-                    lon_vals, lat_vals, thickness_data,
-                    levels=warm_levels,
-                    colors='red',
-                    linewidths=1.2,
-                    linestyles='dashed',
-                    transform=ccrs.PlateCarree(),
-                    zorder=11
-                )
-                ax.clabel(cs_warm, inline=True, fontsize=8, fmt='%d', colors='red')
-                
-                # 546 line itself in Red
-                ax.contour(lon_vals, lat_vals, thickness_data, levels=[546], 
-                           colors='red', linewidths=1.2, linestyles='dashed', 
-                           transform=ccrs.PlateCarree(), zorder=11)
-            
-            # Label HIGH/LOW (MSLP Precip case)
-            mslp_data_to_label = mslp_data
+                ax.clabel(cs_cold, inline=True, fontsize=8, fmt='%d', zorder=13)
         elif is_850mb_map:
             # 850mb Temp shading
             lon_vals = data.coords.get('lon', data.coords.get('longitude'))
@@ -650,52 +745,105 @@ class MapGenerator:
                 extend='both',
                 zorder=1
             )
-            
-            # MSLP Contours
-            mslp_data = self._process_mslp(ds)
-            cs_mslp = ax.contour(
-                lon_vals, lat_vals, mslp_data,
-                levels=np.arange(960, 1060, 4),
-                colors='black',
-                linewidths=1.0,
-                transform=ccrs.PlateCarree(),
-                zorder=12
-            )
-            ax.clabel(cs_mslp, inline=True, fontsize=9, fmt='%d', zorder=13)
-            
-            # Wind Arrows (Black)
-            u = ds['ugrd_850'].squeeze()
-            v = ds['vgrd_850'].squeeze()
-            
-            # Subsample for readability
-            skip = 4
-            ax.quiver(
-                lon_vals[::skip].values, lat_vals[::skip].values, 
-                u[::skip, ::skip].values, v[::skip, ::skip].values,
-                transform=ccrs.PlateCarree(),
-                color='black',
-                scale=400,
-                width=0.005,
-                zorder=14
-            )
-            
-            # Set this so the H/L labeling logic runs
-            mslp_data_to_label = mslp_data
         elif variable == "radar" or variable == "radar_reflectivity":
-            # Radar reflectivity with standard dBZ levels
+            # Radar reflectivity with precipitation-type-specific colors
             lon_vals = data.coords.get('lon', data.coords.get('longitude'))
             lat_vals = data.coords.get('lat', data.coords.get('latitude'))
-            # Standard radar reflectivity levels (dBZ)
-            radar_levels = np.arange(-10, 70, 5)  # -10 to 65 dBZ in 5 dBZ increments
             
-            im = ax.contourf(
-                lon_vals, lat_vals, data,
-                transform=ccrs.PlateCarree(),
-                cmap=cmap,
-                levels=radar_levels,
-                extend='max',
-                zorder=1
-            )
+            # Get precipitation type categorical data
+            crain = ds.get('crain', xr.zeros_like(data))
+            csnow = ds.get('csnow', xr.zeros_like(data))
+            cicep = ds.get('cicep', xr.zeros_like(data))
+            cfrzr = ds.get('cfrzr', xr.zeros_like(data))
+            
+            # Remove time dimension if present
+            if 'time' in crain.dims: crain = crain.isel(time=0)
+            if 'time' in csnow.dims: csnow = csnow.isel(time=0)
+            if 'time' in cicep.dims: cicep = cicep.isel(time=0)
+            if 'time' in cfrzr.dims: cfrzr = cfrzr.isel(time=0)
+            
+            # Normalize coordinates for categorical data
+            crain = self._normalize_coords(crain)
+            csnow = self._normalize_coords(csnow)
+            cicep = self._normalize_coords(cicep)
+            cfrzr = self._normalize_coords(cfrzr)
+            
+            # Apply minimum reflectivity threshold first
+            min_dbz_threshold = 10  # Increased from 5 to 10 to match TropicalTidbits
+            has_precip = data.values >= min_dbz_threshold
+            
+            # Check if we have any precipitation type data
+            has_type_data = (np.max(crain.values) > 0 or np.max(csnow.values) > 0 or 
+                           np.max(cicep.values) > 0 or np.max(cfrzr.values) > 0)
+            
+            if has_type_data:
+                # Stack masks to determine dominant precipitation type
+                mask_stack = np.stack([
+                    crain.values,
+                    csnow.values,
+                    cicep.values,
+                    cfrzr.values
+                ], axis=0)
+                
+                # Find the index of maximum probability at each point
+                # 0=rain, 1=snow, 2=sleet, 3=frzr
+                winner_idx = np.argmax(mask_stack, axis=0)
+                
+                # Only consider areas with actual precipitation type data (>0)
+                has_type_info = np.max(mask_stack, axis=0) > 0
+                
+                # Plot in REVERSE priority order with OVERLAP to eliminate white gaps
+                # (frzr->sleet->snow->rain) so dominant types paint over less dominant ones
+                im = None
+                plot_order = [
+                    ('frzr', cfrzr, 3),
+                    ('sleet', cicep, 2),
+                    ('snow', csnow, 1),
+                    ('rain', crain, 0)
+                ]
+                
+                from scipy.ndimage import binary_dilation
+                
+                for p_type, mask, idx in plot_order:
+                    cmap_type, norm_type, levels_type = self.get_radar_cmap(p_type)
+                    
+                    # Create mask where this type is dominant and has reflectivity
+                    type_mask = (winner_idx == idx) & has_precip & has_type_info
+                    
+                    # EXPAND the mask slightly to create overlap and eliminate white gaps
+                    # Use binary dilation with a small structure to expand by ~2 grid points
+                    structure = np.ones((3, 3))
+                    expanded_mask = binary_dilation(type_mask, structure=structure, iterations=1)
+                    
+                    # Mask the data for this precipitation type using expanded mask
+                    masked_data = np.where(expanded_mask, data.values, np.nan)
+                    
+                    if np.any(~np.isnan(masked_data)):
+                        im_temp = ax.contourf(
+                            lon_vals, lat_vals, masked_data,
+                            transform=ccrs.PlateCarree(),
+                            cmap=cmap_type,
+                            levels=levels_type,
+                            extend='max',
+                            zorder=1
+                        )
+                        # Keep the last plotted image for colorbar
+                        if im is None:
+                            im = im_temp
+            else:
+                # Fall back to single rain colormap if no type data available
+                logger.warning("No precipitation type data available, using rain colormap for all reflectivity")
+                cmap_type, norm_type, levels_type = self.get_radar_cmap('rain')
+                masked_data = np.where(has_precip, data.values, np.nan)
+                
+                im = ax.contourf(
+                    lon_vals, lat_vals, masked_data,
+                    transform=ccrs.PlateCarree(),
+                    cmap=cmap_type,
+                    levels=levels_type,
+                    extend='max',
+                    zorder=1
+                )
         elif is_wind_speed_map:
             # Wind Speed with Streamlines
             lon_vals = data.coords.get('lon', data.coords.get('longitude'))
@@ -779,19 +927,42 @@ class MapGenerator:
                 temp_levels = 20  # Auto levels for other variables
             
             # Extract coordinates - handle both 'lon'/'lat' and 'longitude'/'latitude' naming
-            lon_coord_name = 'lon' if 'lon' in data.coords else 'longitude'
-            lat_coord_name = 'lat' if 'lat' in data.coords else 'latitude'
-            lon_vals = data.coords[lon_coord_name]
-            lat_vals = data.coords[lat_coord_name]
+            # Also check dims if not in coords
+            lon_coord_name = None
+            lat_coord_name = None
+            
+            for lon_name in ['lon', 'longitude', 'x']:
+                if lon_name in data.coords or lon_name in data.dims:
+                    lon_coord_name = lon_name
+                    break
+            
+            for lat_name in ['lat', 'latitude', 'y']:
+                if lat_name in data.coords or lat_name in data.dims:
+                    lat_coord_name = lat_name
+                    break
+            
+            if lon_coord_name is None or lat_coord_name is None:
+                raise ValueError(f"Could not find coordinates. Available coords: {list(data.coords.keys())}, dims: {list(data.dims)}")
+            
+            # Get coordinate values (from coords or as dimension coordinate)
+            lon_vals = data.coords[lon_coord_name] if lon_coord_name in data.coords else data[lon_coord_name]
+            lat_vals = data.coords[lat_coord_name] if lat_coord_name in data.coords else data[lat_coord_name]
             
             # Log coordinate info for debugging
             logger.debug(f"Using coordinates: {lon_coord_name}, {lat_coord_name}")
-            logger.debug(f"Lon range: {float(lon_vals.min()):.2f} to {float(lon_vals.max()):.2f}")
-            logger.debug(f"Lat range: {float(lat_vals.min()):.2f} to {float(lat_vals.max()):.2f}")
+            logger.info(f"Lon vals type: {type(lon_vals)}, has values: {hasattr(lon_vals, 'values')}")
+            logger.info(f"Lat vals type: {type(lat_vals)}, has values: {hasattr(lat_vals, 'values')}")
+            if hasattr(lon_vals, 'shape'):
+                logger.info(f"Lon shape: {lon_vals.shape}, range: {float(lon_vals.min()):.2f} to {float(lon_vals.max()):.2f}")
+                logger.info(f"Lat shape: {lat_vals.shape}, range: {float(lat_vals.min()):.2f} to {float(lat_vals.max()):.2f}")
+            logger.info(f"Map extent: lon [-125.0 to -110.0], lat [42.0 to 49.0]")
+            logger.info(f"Data coverage: lon [{float(lon_vals.min()):.2f} to {float(lon_vals.max()):.2f}], lat [{float(lat_vals.min()):.2f} to {float(lat_vals.max()):.2f}]")
             logger.debug(f"Data shape: {data.shape}, Lon shape: {lon_vals.shape}, Lat shape: {lat_vals.shape}")
+            logger.debug(f"Data min: {float(data.min()):.2f}, max: {float(data.max()):.2f}, mean: {float(data.mean()):.2f}")
             
             # For precipitation, use BoundaryNorm for discrete color mapping
             if variable in ["precipitation", "precip"]:
+                logger.info(f"Plotting precipitation with {len(temp_levels)} levels")
                 im = ax.contourf(
                     lon_vals, lat_vals, data,
                     transform=ccrs.PlateCarree(),
@@ -802,6 +973,8 @@ class MapGenerator:
                     zorder=1
                 )
             else:
+                logger.info(f"Plotting {variable} with {len(temp_levels) if isinstance(temp_levels, (list, np.ndarray)) else temp_levels} levels")
+                logger.info(f"Data array shape: {data.shape}, lon_vals shape: {lon_vals.shape}, lat_vals shape: {lat_vals.shape}")
                 im = ax.contourf(
                     lon_vals, lat_vals, data,
                     transform=ccrs.PlateCarree(),
@@ -810,6 +983,7 @@ class MapGenerator:
                     extend='both',
                     zorder=1
                 )
+                logger.info(f"Contourf completed successfully")
         
         # Add shared HIGH/LOW labels if MSLP data is available
         if 'mslp_data_to_label' in locals() and mslp_data_to_label is not None:
@@ -885,10 +1059,16 @@ class MapGenerator:
                     
                     # Get contour data for this type
                     contour, cmap, norm, levels = precip_contours[p_type]
-                    
-                    # Create colorbar
-                    cbar = plt.colorbar(contour, cax=cbar_ax, orientation='horizontal', 
-                                       cmap=cmap, norm=norm)
+
+                    # Create colorbar - use ScalarMappable if no contour exists
+                    if contour is not None:
+                        cbar = plt.colorbar(contour, cax=cbar_ax, orientation='horizontal', 
+                                           cmap=cmap, norm=norm)
+                    else:
+                        # No data for this type - create colorbar with ScalarMappable
+                        sm = matplotlib.cm.ScalarMappable(cmap=cmap, norm=norm)
+                        sm.set_array([])
+                        cbar = plt.colorbar(sm, cax=cbar_ax, orientation='horizontal')
                     
                     # Set appropriate tick positions based on type
                     if p_type == 'rain':
@@ -910,7 +1090,7 @@ class MapGenerator:
                 cbar.set_label("6-hour Averaged Precip Rate (mm/hr), MSLP (hPa), & 1000-500mb Thick (dam)")
         elif is_850mb_map:
             cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40)
-            cbar.set_label("850mb Temperature (°F), Wind (arrows, mph), MSLP (hPa)")
+            cbar.set_label("850mb Temperature (°C)")
         elif is_wind_speed_map:
             cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40)
             # Set tick positions for wind speed colorbar to match the screenshot
@@ -918,8 +1098,51 @@ class MapGenerator:
             cbar.set_ticks(tick_positions)
             cbar.set_label("10m Wind Speed + Streamlines (mph)")
         elif variable == "radar" or variable == "radar_reflectivity":
-            cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40)
-            cbar.set_label("Simulated Composite Radar Reflectivity (dBZ)")
+            # Create horizontal color bars for each precipitation type
+            # Position them at the bottom of the figure
+            from matplotlib.colors import ListedColormap, BoundaryNorm
+            from mpl_toolkits.axes_grid1 import make_axes_locatable
+            
+            # Create a single axis at the bottom for all colorbars
+            fig = plt.gcf()
+            
+            # Adjust the main plot to make room for colorbars
+            # Need more space for 4 colorbars
+            fig.subplots_adjust(bottom=0.20)
+            
+            # Create color bars for each precipitation type
+            precip_types = [
+                ('rain', 'Rain'),
+                ('snow', 'Snow'),
+                ('sleet', 'Sleet'),
+                ('frzr', 'Freezing Rain')
+            ]
+            
+            # Create a grid of colorbars at the bottom
+            num_types = len(precip_types)
+            cbar_height = 0.012  # Slightly smaller height
+            cbar_spacing = 0.015  # Slightly smaller spacing
+            
+            for idx, (p_type, label) in enumerate(precip_types):
+                cmap_type, norm_type, levels_type = self.get_radar_cmap(p_type)
+                
+                # Position from bottom: small bottom margin + (idx * (height + spacing))
+                # Start lower to avoid overlapping with map
+                bottom_pos = 0.02 + idx * (cbar_height + cbar_spacing)
+                cbar_ax = fig.add_axes([0.15, bottom_pos, 0.7, cbar_height])
+                
+                # Create a scalar mappable for the colorbar
+                sm = plt.cm.ScalarMappable(cmap=cmap_type, norm=norm_type)
+                sm.set_array([])
+                
+                cbar = plt.colorbar(sm, cax=cbar_ax, orientation='horizontal')
+                cbar.set_label(f"{label} (dBZ)", fontsize=8)
+                cbar.ax.tick_params(labelsize=7)
+                
+                # Set appropriate tick positions based on the levels
+                # Show every other level to avoid crowding
+                tick_positions = levels_type[::2] if len(levels_type) > 8 else levels_type
+                cbar.set_ticks(tick_positions)
         elif variable in ["precipitation", "precip"]:
             # Custom colorbar with specific tick labels matching the increments
             # Use the same norm for the colorbar
@@ -948,7 +1171,7 @@ class MapGenerator:
         elif is_mslp_precip:
             map_title = "GFS 6-hour Averaged Precip Rate (mm/hr), MSLP (hPa), & 1000-500mb Thick (dam)"
         elif is_850mb_map:
-            map_title = "GFS 850mb Temperature (°F), Wind, & MSLP (hPa)"
+            map_title = "GFS 850mb Temperature (°C)"
         elif is_wind_speed_map:
             map_title = "GFS 10m Wind Speed (mph) & Streamlines"
         elif variable == "radar" or variable == "radar_reflectivity":
@@ -962,8 +1185,9 @@ class MapGenerator:
         info_line = f"Init: {init_time}   Forecast Hour: [{forecast_hour}]  valid at {valid_str}"
         title_text = f"{map_title}\n{info_line}"
         
-        # Adjust figure layout to make title nearly flush with map
-        plt.subplots_adjust(top=0.96)  # Significantly reduce top margin
+        # Adjust figure layout to minimize margins and ensure data fills entire map region
+        # Set all margins to allow data to stretch to edges while leaving room for title/colorbar
+        plt.subplots_adjust(left=0.02, right=0.98, top=0.95, bottom=0.15)
         
         # Add title with explicit position very close to map
         fig.suptitle(title_text, fontsize=12, fontweight='bold', y=0.995)
@@ -1089,7 +1313,9 @@ class MapGenerator:
         filename = f"{model.lower()}_{run_str}_{variable}_{forecast_hour}.png"
         filepath = self.storage_path / filename
         
-        plt.savefig(filepath, dpi=settings.map_dpi, bbox_inches='tight', facecolor='white')
+        # Save with standard bbox (not 'tight') to preserve the full map extent we configured
+        # Using pad_inches=0.1 to add small padding without cropping the map data
+        plt.savefig(filepath, dpi=settings.map_dpi, bbox_inches=None, pad_inches=0.1, facecolor='white')
         
         # Verify file was created and has content
         if not filepath.exists():
@@ -1131,7 +1357,9 @@ class MapGenerator:
         # Convert Celsius to Fahrenheit for PNW users
         temp = (temp * 9/5) + 32
         
-        return temp.isel(time=0) if 'time' in temp.dims else temp
+        result = temp.isel(time=0) if 'time' in temp.dims else temp
+        logger.info(f"_process_temperature result - shape: {result.shape}, coords: {list(result.coords.keys())}, dims: {list(result.dims)}")
+        return result
     
     def _process_precipitation(self, ds: xr.Dataset, forecast_hour: int = 0) -> xr.DataArray:
         """
@@ -1161,7 +1389,6 @@ class MapGenerator:
             # (fetch_total_precipitation should have already cleaned these)
             if 'step' in precip.coords:
                 step_val = precip.coords['step'].values
-                import numpy as np
                 step_array = np.atleast_1d(step_val)
                 logger.info(f"tp step coordinate values: {step_array}")
             
@@ -1206,6 +1433,8 @@ class MapGenerator:
                 # If it's prate, convert from kg/m²/s to mm/h
                 if 'prate' in precip_vars[0].lower():
                     precip = precip * 3600
+                else:
+                    precip = precip / max(1, ds['tp'].attrs.get('step', 1))  # Divide by forecast hour
             else:
                 raise ValueError("Could not find precipitation variable in dataset")
         
@@ -1225,6 +1454,7 @@ class MapGenerator:
                     lon_vals = precip.coords[lon_coord].values
                     lat_vals = precip.coords[lat_coord].values
                     
+                                       
                     # Handle 0-360 longitude format
                     lon_is_0_360 = lon_vals.min() >= 0 and lon_vals.max() > 180
                     
@@ -1261,7 +1491,7 @@ class MapGenerator:
                     
                     # Get the actual coordinates of the selected point
                     actual_lon = float(precip.sel({lon_coord: test_lon_sel, lat_coord: test_lat}, method='nearest').coords[lon_coord].values)
-                    actual_lat = float(precip.sel({lon_coord: test_lon_sel, lat_coord: test_lat}, method='nearest').coords[lat_coord].values)
+                    actual_lat = float(precip.sel({lon_coord: test_lon_sel, lat_coord: test_lat}, method='nearest').coords[latCoord].values)
                     if lon_is_0_360 and actual_lon > 180:
                         actual_lon = actual_lon - 360
                     
@@ -1328,17 +1558,16 @@ class MapGenerator:
                 if 'prate' in ds:
                     prate = ds['prate'] * 3600  # Convert kg/m²/s to mm/h
                 elif 'tp' in ds:
-                    # For accumulated, estimate hourly rate (rough approximation)
-                    prate = ds['tp'] / max(1, ds['tp'].attrs.get('step', 1))  # Divide by forecast hour
+                    # Cannot reliably derive a rate from accumulated tp alone
+                    raise ValueError("Cannot derive reflectivity: prate missing and tp-to-rate is not reliable")
                 else:
-                    raise ValueError("Cannot calculate radar reflectivity: need prate or tp")
+                    raise ValueError("Cannot calculate radar reflectivity: need prate or refc")
                 
                 # Convert precipitation rate (mm/h) to dBZ using Marshall-Palmer relationship
                 # Z = 200 * R^1.6, where Z is reflectivity factor and R is rain rate (mm/h)
                 # dBZ = 10 * log10(Z)
                 # For R > 0.1 mm/h: dBZ ≈ 10 * log10(200 * R^1.6)
                 # For R <= 0.1 mm/h: use lower bound
-                import numpy as np
                 prate_values = prate.values if hasattr(prate, 'values') else prate
                 # Handle NaN and inf values
                 prate_values = np.nan_to_num(prate_values, nan=0.0, posinf=0.0, neginf=0.0)
@@ -1419,6 +1648,7 @@ class MapGenerator:
                 gusts = wind_speed * 1.4  # Approximate gust factor
             else:
                 raise ValueError("Could not find wind components for gust calculation")
+
         
         return gusts.isel(time=0) if 'time' in gusts.dims else gusts
     
@@ -1436,6 +1666,7 @@ class MapGenerator:
             temp_2m = ds['tmp2m'] - 273.15
         else:
             temp_vars = [v for v in ds.data_vars if ('tmp' in v.lower() or 't2m' in v.lower()) and '2' in v.lower()]
+           
             if temp_vars:
                 temp_2m = ds[temp_vars[0]] - 273.15
             else:
@@ -1443,16 +1674,12 @@ class MapGenerator:
         
         # Get precipitation
         if 'prate' in ds:
-            precip = ds['prate'] * 3600  # Convert to mm/h
+            precip = ds['prate']
+            # Check if it needs conversion
+            if precip.max() < 1:  # Likely in kg/m²/s
+                precip = precip * 3600
         else:
-            precip_vars = [v for v in ds.data_vars if 'prate' in v.lower() or 'precip' in v.lower()]
-            if precip_vars:
-                precip = ds[precip_vars[0]]
-                # Check if it needs conversion
-                if precip.max() < 1:  # Likely in kg/m²/s
-                    precip = precip * 3600
-            else:
-                raise ValueError("Could not find precipitation for precip type")
+            raise ValueError("Could not find precipitation for precip type")
         
         # Simple classification:
         # 0 = No precip
@@ -1498,74 +1725,184 @@ class MapGenerator:
         
         return mslp.isel(time=0) if 'time' in mslp.dims else mslp
     
-    def _process_precipitation_mmhr(self, ds: xr.Dataset) -> xr.DataArray:
-        """Process precipitation data in mm/hr (6-hour average rate)"""
-               # Try common precipitation variable names
-        precip = None
-        
-        # Check for 'tp' (Total Precipitation) - often used for accumulated precip
-        if 'tp' in ds:
-            precip = ds['tp']
-            # If it's accumulated, we might need to handle it, but for GFS 6-hour files
-            # it often represents the accumulation in that period.
-        elif 'prate' in ds:
-            # prate is in kg/m²/s, convert to mm/hr
-            precip = ds['prate'] * 3600  # Convert to mm/h
-        elif 'APCP_surface' in ds:
-            precip = ds['APCP_surface']
-        elif 'Total_precipitation' in ds:
-            precip = ds['Total_precipitation']
-        else:
-            # Search for anything matching precip or prate
-            precip_vars = [v for v in ds.data_vars if 'prate' in v.lower() or 'precip' in v.lower() or 'tp' == v.lower()]
-            if precip_vars:
-                precip = ds[precip_vars[0]]
-                # Check if it needs conversion from kg/m2/s to mm/h
-                if float(precip.max()) < 0.1:  # Likely in kg/m²/s
-                    precip = precip * 3600
-            else:
-                # Log available variables to help debugging
-                logger.warning(f"Available variables in dataset: {list(ds.data_vars)}")
-                raise ValueError("Could not find precipitation variable in dataset")
-        
-        return precip.isel(time=0) if 'time' in precip.dims else precip
-    
     def _process_thickness(self, ds: xr.Dataset) -> xr.DataArray:
-        """Process 1000-500mb thickness (decameters)"""
-        try:
-            # Check if we have the separate gh_1000 and gh_500 variables
-            if 'gh_1000' in ds and 'gh_500' in ds:
-                gh_1000 = ds['gh_1000']
-                gh_500 = ds['gh_500']
-                logger.info("Using separate gh_1000 and gh_500 variables for thickness")
-            elif 'gh' in ds:
-                # Try to extract from multi-level gh variable
-                gh_var = ds['gh']
-                if 'isobaricInhPa' in gh_var.dims:
-                    gh_1000 = gh_var.sel(isobaricInhPa=1000, method='nearest')
-                    gh_500 = gh_var.sel(isobaricInhPa=500, method='nearest')
-                elif 'level' in gh_var.dims:
-                    gh_1000 = gh_var.sel(level=1000, method='nearest')
-                    gh_500 = gh_var.sel(level=500, method='nearest')
-                else:
-                    logger.warning(f"Geopotential height does not have pressure level dimension: {gh_var.dims}")
+        """
+        Process 1000-500mb thickness data.
+        
+        Thickness is the difference between 500mb and 1000mb geopotential heights,
+        measured in decameters (dam). It's used to identify warm/cold air masses.
+        
+        Args:
+            ds: Dataset containing geopotential height data
+            
+        Returns:
+            DataArray with thickness in decameters
+        """
+        # Try to find gh_500 and gh_1000
+        if 'gh_500' in ds and 'gh_1000' in ds:
+            gh_500 = ds['gh_500']
+            gh_1000 = ds['gh_1000']
+        elif 'gh' in ds:
+            # Try to extract from multi-level gh variable
+            gh = ds['gh']
+            if 'isobaricInhPa' in gh.dims:
+                try:
+                    gh_500 = gh.sel(isobaricInhPa=500)
+                    gh_1000 = gh.sel(isobaricInhPa=1000)
+                except:
+                    logger.warning("Could not extract 500mb and 1000mb levels from gh variable")
                     return None
             else:
-                logger.warning("Could not find geopotential height variables for thickness")
+                logger.warning("gh variable does not have isobaricInhPa dimension")
                 return None
+        else:
+            # Try to find any geopotential height variables
+            gh_vars = [v for v in ds.data_vars if 'gh' in v.lower() and 'geopotential' not in v.lower()]
+            if len(gh_vars) >= 2:
+                # Assume first two are what we need
+                gh_500 = ds[gh_vars[0]]
+                gh_1000 = ds[gh_vars[1]]
+            else:
+                logger.warning("Could not find geopotential height variables for thickness calculation")
+                return None
+        
+        # Clean up time dimensions
+        if 'time' in gh_500.dims:
+            gh_500 = gh_500.isel(time=0)
+        if 'time' in gh_1000.dims:
+            gh_1000 = gh_1000.isel(time=0)
+        
+        gh_500 = gh_500.squeeze()
+        gh_1000 = gh_1000.squeeze()
+        
+        # Calculate thickness (in meters), then convert to decameters
+        # Thickness = gh_500 - gh_1000
+        thickness = (gh_500 - gh_1000) / 10.0  # Convert meters to decameters
+        
+        logger.info(f"Thickness range (dam): min={float(thickness.min()):.1f}, max={float(thickness.max()):.1f}")
+        
+        return thickness
+    
+    def _process_precipitation_mmhr(self, ds: xr.Dataset, hours: int = 6) -> xr.DataArray:
+        """
+        Process precipitation data with unit-safety and convert to mm/hr rate.
+        
+        This method ensures proper unit conversion from accumulated precipitation
+        to an average rate in mm/hr for the specified time period.
+        
+        Args:
+            ds: Dataset containing precipitation data
+            hours: Number of hours over which precipitation accumulated (default: 6)
             
-            # Remove time dimension if present
-            if 'time' in gh_1000.dims:
-                gh_1000 = gh_1000.isel(time=0)
-            if 'time' in gh_500.dims:
-                gh_500 = gh_500.isel(time=0)
+        Returns:
+            DataArray with precipitation rate in mm/hr
+        """
+        if 'tp' in ds:
+            # tp is total precipitation (accumulated), already in mm
+            precip = ds['tp']
             
-            # Calculate thickness (in meters, convert to decameters)
-            thickness = (gh_500 - gh_1000) / 10.0  # Convert m to dam (decameters)
+            # Clean up time-related dimensions
+            if 'time' in precip.dims:
+                precip = precip.isel(time=0)
+            if 'valid_time' in precip.coords and hasattr(precip.coords['valid_time'].values, '__len__'):
+                if len(precip.coords['valid_time'].values) > 1:
+                    precip = precip.isel(valid_time=0)
             
-            logger.info(f"Calculated thickness: range {float(thickness.min()):.1f} to {float(thickness.max()):.1f} dam")
-            return thickness
+            # Squeeze out any single-element dimensions
+            precip = precip.squeeze()
             
-        except Exception as e:
-            logger.warning(f"Could not calculate thickness: {e}")
-            return None
+            # Convert accumulated mm to mm/hr rate
+            precip = precip / hours
+            
+        elif 'prate' in ds:
+            # Precipitation rate: kg/m²/s needs conversion to mm/hr
+            # 1 kg/m²/s = 3600 mm/hr
+            precip = ds['prate'] * 3600
+            if 'time' in precip.dims:
+                precip = precip.isel(time=0)
+            precip = precip.squeeze()
+            
+        elif 'APCP_surface' in ds:
+            precip = ds['APCP_surface']
+            if 'time' in precip.dims:
+                precip = precip.isel(time=0)
+            precip = precip.squeeze()
+            # Convert accumulated mm to mm/hr rate
+            precip = precip / hours
+            
+        else:
+            # Try to find precipitation variable
+            precip_vars = [v for v in ds.data_vars if 'prate' in v.lower() or 'precip' in v.lower() or v.lower() == 'tp']
+            if precip_vars:
+                precip = ds[precip_vars[0]]
+                if 'prate' in precip_vars[0].lower():
+                    precip = precip * 3600  # Convert prate to mm/hr
+                else:
+                    precip = precip / hours  # Convert accumulated to rate
+                if 'time' in precip.dims:
+                    precip = precip.isel(time=0)
+                precip = precip.squeeze()
+            else:
+                raise ValueError("Could not find precipitation variable in dataset")
+        
+        logger.info(f"Precipitation rate range (mm/hr): min={float(precip.min()):.4f}, max={float(precip.max()):.4f}, mean={float(precip.mean()):.4f}")
+        
+        return precip
+
+    def _normalize_lonlat(self, da: xr.DataArray) -> xr.DataArray:
+        logger.info(f"_normalize_lonlat input - coords: {list(da.coords.keys())}, dims: {list(da.dims)}")
+        
+        # Check for longitude coordinate (try multiple common names)
+        lon = None
+        for lon_name in ['longitude', 'lon', 'x']:
+            if lon_name in da.coords:
+                lon = lon_name
+                break
+            elif lon_name in da.dims:
+                # Coordinate is actually a dimension, not in coords
+                lon = lon_name
+                break
+        
+        # Check for latitude coordinate (try multiple common names)
+        lat = None
+        for lat_name in ['latitude', 'lat', 'y']:
+            if lat_name in da.coords:
+                lat = lat_name
+                break
+            elif lat_name in da.dims:
+                # Coordinate is actually a dimension, not in coords
+                lat = lat_name
+                break
+        
+        # If we can't find coordinates, return as-is
+        if lon is None or lat is None:
+            logger.warning(f"Could not find lon/lat coordinates. Available coords: {list(da.coords.keys())}, dims: {list(da.dims)}")
+            return da
+        
+        logger.info(f"Found coords - lon: {lon}, lat: {lat}")
+        
+        # Get the coordinate values (whether from coords or dims)
+        lon_vals = da.coords[lon] if lon in da.coords else da[lon]
+        lat_vals = da.coords[lat] if lat in da.coords else da[lat]
+        
+        logger.info(f"Coordinate values - lon shape: {lon_vals.shape if hasattr(lon_vals, 'shape') else 'no shape'}, lat shape: {lat_vals.shape if hasattr(lat_vals, 'shape') else 'no shape'}")
+        
+        # Normalize longitude to -180..180 if needed
+        if lon_vals.max() > 180:
+            da = da.assign_coords({lon: (((lon_vals + 180) % 360) - 180)})
+            da = da.sortby(lon)
+        # Normalize latitude to ascending order if needed
+        if lat_vals[0] > lat_vals[-1]:
+            da = da.reindex({lat: lat_vals[::-1]})
+        
+        logger.info(f"_normalize_lonlat output - coords: {list(da.coords.keys())}, dims: {list(da.dims)}")
+        return da
+
+    def _normalize_coords(self, obj):
+        """Normalize longitude/latitude on either Dataset or DataArray."""
+        import xarray as xr
+        if isinstance(obj, xr.Dataset):
+            for v in list(obj.data_vars):
+                obj[v] = self._normalize_lonlat(obj[v])
+            return obj
+        return self._normalize_lonlat(obj)

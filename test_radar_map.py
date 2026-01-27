@@ -51,11 +51,11 @@ def test_radar_map():
     for hour in forecast_hours:
         print(f"\n🗺️  Generating radar map for +{hour}h...")
         try:
-            # Fetch data first
+            # Fetch data first - include precipitation type variables for proper coloring
             ds = fetcher.fetch_gfs_data(
                 run_time=run_time,
                 forecast_hour=hour,
-                variables=['refc'],
+                variables=['refc', 'crain', 'csnow', 'cicep', 'cfrzr'],
                 subset_region=True
             )
             
