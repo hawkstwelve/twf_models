@@ -175,6 +175,9 @@ class MapGenerator:
         """
         fig = plt.figure(figsize=(settings.map_width/100, settings.map_height/100), dpi=settings.map_dpi)
         
+        # Minimize margins by adjusting subplot parameters
+        fig.subplots_adjust(left=0.02, right=0.98, top=0.95, bottom=0.05)
+        
         # Set projection based on region
         if region == "pnw":
             # Pacific Northwest: WA, OR, ID
@@ -1313,9 +1316,9 @@ class MapGenerator:
         filename = f"{model.lower()}_{run_str}_{variable}_{forecast_hour}.png"
         filepath = self.storage_path / filename
         
-        # Save with standard bbox (not 'tight') to preserve the full map extent we configured
-        # Using pad_inches=0.1 to add small padding without cropping the map data
-        plt.savefig(filepath, dpi=settings.map_dpi, bbox_inches=None, pad_inches=0.1, facecolor='white')
+        # Save with tight bbox to minimize whitespace around the map
+        # pad_inches=0.05 adds just a tiny bit of padding to prevent edge clipping
+        plt.savefig(filepath, dpi=settings.map_dpi, bbox_inches='tight', pad_inches=0.05, facecolor='white')
         
         # Verify file was created and has content
         if not filepath.exists():
