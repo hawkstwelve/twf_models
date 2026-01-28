@@ -409,11 +409,12 @@ class ForecastScheduler:
         logger.info("Starting Multi-Model Forecast Scheduler...")
         logger.info(f"Global pool size: {_GLOBAL_POOL_SIZE} workers")
         
-        # Schedule: Run every 6 hours at 45 minutes past the hour
-        # (3:45, 9:45, 15:45, 21:45 UTC - allows 3h45m after model run for data availability)
+        # Schedule: Run every 6 hours at 30 minutes past the hour
+        # (3:30, 9:30, 15:30, 21:30 UTC - allows 3h30m after model run for data availability)
+        # Corresponds to: 9:30PM, 3:30AM, 9:30AM, 3:30PM CST
         self.scheduler.add_job(
             self.generate_forecast_maps,
-            trigger=CronTrigger(hour='3,9,15,21', minute='45'),
+            trigger=CronTrigger(hour='3,9,15,21', minute='30'),
             id='multi_model_forecast',
             name='Multi-Model Forecast Generation',
             replace_existing=True,

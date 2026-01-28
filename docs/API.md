@@ -34,8 +34,8 @@ Returns list of all enabled weather models and their capabilities.
     {
       "id": "AIGFS",
       "name": "AIGFS",
-      "full_name": "Arctic Ice Global Forecast System",
-      "description": "NOAA's Arctic-focused global model",
+      "full_name": "Artificial Intelligence Global Forecast System",
+      "description": "NOAA's AI-enhanced global forecast model",
       "resolution": "0.25",
       "max_forecast_hour": 384,
       "forecast_increment": 6,

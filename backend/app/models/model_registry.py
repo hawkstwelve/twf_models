@@ -160,8 +160,8 @@ ModelRegistry.register(ModelConfig(
 ModelRegistry.register(ModelConfig(
     id="AIGFS",
     name="AIGFS",
-    full_name="Arctic Ice Global Forecast System",
-    description="NOAA's Arctic-focused global model",
+    full_name="Artificial Intelligence Global Forecast System",
+    description="NOAA's AI-enhanced global forecast model",
     provider=ModelProvider.NOMADS,
     nomads_base_path="aigfs/prod",
     url_layout=URLLayout.AIGFS_EXTENDED,
