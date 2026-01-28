@@ -198,12 +198,219 @@ class ForecastScheduler:
             logger.error(traceback.format_exc())
             return False
     
-    def generate_all_models(self):
+    def generate_forecast_for_model_progressive(
+        self, 
+        model_id: str,
+        max_duration_minutes: int = 120,
+        check_interval_seconds: int = 60
+    ):
+        """
+        Generate forecast for a specific model with progressive polling.
+        
+        Polls NOMADS every check_interval_seconds and generates maps as forecast
+        hours become available. Continues until all forecast hours are complete
+        or max_duration_minutes is reached.
+        
+        Args:
+            model_id: Model to generate (e.g., 'GFS', 'AIGFS')
+            max_duration_minutes: Maximum time to poll (default 120 = 2 hours)
+            check_interval_seconds: Seconds between availability checks (default 60)
+        
+        Returns:
+            bool: True if all forecast hours completed successfully
+        """
+        logger.info(f"\n{'='*80}")
+        logger.info(f"🔄 Starting PROGRESSIVE generation for {model_id}")
+        logger.info(f"{'='*80}\n")
+        
+        try:
+            # Create fetcher
+            data_fetcher = ModelFactory.create_fetcher(model_id)
+            run_time = data_fetcher.get_latest_run_time()
+            
+            logger.info(f"📅 {model_id} Run Time: {run_time.strftime('%Y-%m-%d %HZ')}")
+            logger.info(f"⏱️  Max Duration: {max_duration_minutes} minutes")
+            logger.info(f"🔍 Check Interval: {check_interval_seconds} seconds")
+            
+            # Get model config
+            model_config = ModelRegistry.get(model_id)
+            
+            # Determine forecast hours
+            configured_hours = [int(h) for h in settings.forecast_hours.split(',')]
+            max_hour = min(max(configured_hours), model_config.max_forecast_hour)
+            forecast_hours = sorted([h for h in configured_hours if h <= max_hour])
+            
+            logger.info(f"🎯 Forecast hours needed: {forecast_hours}")
+            
+            # Filter variables for this model
+            variables = VariableRegistry.filter_by_model_capabilities(
+                self.variables,
+                model_config
+            )
+            logger.info(f"📊 Variables: {variables}")
+            logger.info(f"💻 Using {_GLOBAL_POOL_SIZE} worker processes")
+            logger.info("")
+            
+            # Track which hours have been generated
+            completed_hours = set()
+            pending_hours = set(forecast_hours)
+            failed_attempts = {}  # Track failures per hour
+            
+            start_time = time.time()
+            max_duration_seconds = max_duration_minutes * 60
+            poll_cycle = 0
+            
+            while pending_hours:
+                poll_cycle += 1
+                elapsed = time.time() - start_time
+                elapsed_minutes = elapsed / 60
+                
+                # Check if we've exceeded max duration
+                if elapsed >= max_duration_seconds:
+                    logger.warning(f"⏰ Max duration ({max_duration_minutes} min) reached")
+                    logger.warning(f"   Still pending: {sorted(pending_hours)}")
+                    break
+                
+                logger.info(f"🔍 Poll cycle #{poll_cycle} at +{elapsed_minutes:.1f} min")
+                logger.info(f"   Completed: {len(completed_hours)}/{len(forecast_hours)} hours")
+                if pending_hours:
+                    logger.info(f"   Pending: {sorted(pending_hours)}")
+                
+                # Check which pending hours are now available
+                available_hours = []
+                for fh in sorted(pending_hours):
+                    if self.check_forecast_hour_available(model_id, run_time, fh):
+                        available_hours.append(fh)
+                
+                if available_hours:
+                    logger.info(f"✅ Found {len(available_hours)} available: {available_hours}")
+                    
+                    # Generate maps for available hours in parallel
+                    with Pool(processes=_GLOBAL_POOL_SIZE, maxtasksperchild=5) as pool:
+                        args = [(model_id, run_time, fh, variables) for fh in available_hours]
+                        results = pool.map(generate_maps_for_hour, args)
+                    
+                    # Process results
+                    for fh, result in zip(available_hours, results):
+                        if result is not None:
+                            completed_hours.add(fh)
+                            pending_hours.discard(fh)
+                            logger.info(f"   ✓ f{fh:03d} generation complete")
+                        else:
+                            failed_attempts[fh] = failed_attempts.get(fh, 0) + 1
+                            if failed_attempts[fh] >= 3:
+                                logger.error(f"   ✗ f{fh:03d} failed {failed_attempts[fh]} times, giving up")
+                                pending_hours.discard(fh)
+                            else:
+                                logger.warning(f"   ⚠️  f{fh:03d} generation failed (attempt {failed_attempts[fh]}/3)")
+                    
+                    # Check if we're done immediately after generating
+                    if not pending_hours:
+                        logger.info(f"\n🎉 All {len(completed_hours)} forecast hours complete!")
+                        logger.info(f"⏱️  Total time: {elapsed_minutes:.1f} minutes ({poll_cycle} poll cycles)")
+                        break
+                else:
+                    logger.info(f"⏳ No new data available, waiting {check_interval_seconds}s...")
+                
+                # Wait before next check (only if there are still pending hours)
+                if pending_hours:
+                    time.sleep(check_interval_seconds)
+            
+            # Final summary (only show if we didn't already report completion)
+            final_elapsed = time.time() - start_time
+            final_elapsed_minutes = final_elapsed / 60
+            
+            # Only show summary if we exited via timeout or failure (not normal completion)
+            if pending_hours or failed_attempts:
+                logger.info(f"\n{'='*80}")
+                logger.info(f"📊 {model_id} PROGRESSIVE GENERATION SUMMARY")
+                logger.info(f"{'='*80}")
+                logger.info(f"✅ Completed: {len(completed_hours)}/{len(forecast_hours)} hours")
+                logger.info(f"⏱️  Duration: {final_elapsed_minutes:.1f} minutes ({poll_cycle} poll cycles)")
+                
+                if pending_hours:
+                    logger.warning(f"⚠️  Still pending: {sorted(pending_hours)}")
+                
+                if failed_attempts:
+                    logger.warning(f"❌ Failed attempts:")
+                    for fh, count in sorted(failed_attempts.items()):
+                        if fh not in completed_hours:
+                            logger.warning(f"   f{fh:03d}: {count} failures")
+                
+                logger.info(f"{'='*80}\n")
+            
+            return len(completed_hours) == len(forecast_hours)
+        
+        except Exception as e:
+            logger.error(f"❌ {model_id} progressive generation failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
+    
+    def check_forecast_hour_available(self, model_id: str, run_time: datetime, forecast_hour: int) -> bool:
+        """
+        Check if a specific forecast hour is available on NOMADS.
+        
+        Args:
+            model_id: Model ID (e.g., 'GFS', 'AIGFS')
+            run_time: Model run time
+            forecast_hour: Forecast hour to check
+        
+        Returns:
+            bool: True if data is available
+        """
+        try:
+            import requests
+            
+            model_config = ModelRegistry.get(model_id)
+            if not model_config:
+                return False
+            
+            date_str = run_time.strftime("%Y%m%d")
+            run_hour = run_time.strftime("%H")
+            forecast_hour_str = f"{forecast_hour:03d}"
+            
+            # Build check URL based on model
+            base_url = "https://nomads.ncep.noaa.gov/pub/data/nccf/com"
+            
+            if model_id == "GFS":
+                # Check GFS standard location
+                if forecast_hour == 0 and model_config.has_analysis_file:
+                    filename = f"gfs.t{run_hour}z.pgrb2.0p25.anl"
+                else:
+                    filename = f"gfs.t{run_hour}z.pgrb2.0p25.f{forecast_hour_str}"
+                url = f"{base_url}/gfs/prod/gfs.{date_str}/{run_hour}/atmos/{filename}"
+                
+            elif model_id == "AIGFS":
+                # Check AIGFS location (try sfc first as it's most common)
+                if forecast_hour == 0 and model_config.has_analysis_file:
+                    filename = "aigfs.t{run_hour}z.sfc.f000.grib2"
+                else:
+                    filename = f"aigfs.t{run_hour}z.sfc.f{forecast_hour_str}.grib2"
+                url = f"{base_url}/aigfs/prod/aigfs.{date_str}/{run_hour}/model/atmos/grib2/{filename}"
+                
+            else:
+                logger.warning(f"Don't know how to check availability for {model_id}")
+                return True  # Assume available for unknown models
+            
+            # Try HEAD request (faster than GET)
+            response = requests.head(url, timeout=10, allow_redirects=True)
+            return response.status_code == 200
+            
+        except requests.exceptions.RequestException:
+            return False
+        except Exception as e:
+            logger.debug(f"Error checking availability for {model_id} f{forecast_hour:03d}: {e}")
+            return False
+    def generate_all_models(self, use_progressive: bool = True):
         """
         Generate forecasts for all enabled models.
         
         **CRITICAL: Run sequentially to avoid CPU/memory thrashing.**
         Each model uses a shared pool of workers.
+        
+        Args:
+            use_progressive: If True, use progressive polling; if False, generate all at once
         """
         logger.info(f"\n{'='*80}")
         logger.info(f"🌐 MULTI-MODEL FORECAST GENERATION")
@@ -216,13 +423,24 @@ class ForecastScheduler:
             return
         
         logger.info(f"Enabled models: {list(enabled_models.keys())}")
-        logger.info(f"Global pool size: {_GLOBAL_POOL_SIZE} workers\n")
+        logger.info(f"Global pool size: {_GLOBAL_POOL_SIZE} workers")
+        logger.info(f"Generation mode: {'PROGRESSIVE (polling)' if use_progressive else 'IMMEDIATE (all at once)'}\n")
         
         # Generate SEQUENTIALLY (safer, prevents resource contention)
         # With global pool size limit, this is efficient enough
         results = {}
         for model_id in enabled_models.keys():
-            success = self.generate_forecast_for_model(model_id)
+            if use_progressive:
+                # Use progressive generation with polling
+                success = self.generate_forecast_for_model_progressive(
+                    model_id,
+                    max_duration_minutes=120,
+                    check_interval_seconds=60
+                )
+            else:
+                # Generate all forecast hours immediately
+                success = self.generate_forecast_for_model(model_id)
+            
             results[model_id] = success
             logger.info(f"\n{'-'*80}\n")
         
@@ -304,15 +522,16 @@ class ForecastScheduler:
         Generate forecast maps for all enabled models.
         
         This is the main entry point called by the scheduler.
-        Replaces old progressive generation with multi-model support.
+        Uses progressive generation (polling) if enabled in config.
         """
         logger.info("="*80)
         logger.info("🚀 Starting forecast map generation")
         logger.info("="*80)
         
         try:
-            # Call new multi-model generation method
-            self.generate_all_models()
+            # Use progressive generation setting from config
+            use_progressive = settings.progressive_generation
+            self.generate_all_models(use_progressive=use_progressive)
             
             logger.info("="*80)
             logger.info("✅ Forecast generation complete")
@@ -322,9 +541,6 @@ class ForecastScheduler:
             logger.error(f"❌ Error in forecast generation: {e}")
             import traceback
             logger.error(traceback.format_exc())
-    
-    # Old progressive generation loop removed - now using multi-model generation
-    # If needed in the future for specific models, can be re-added
     
     def cleanup_old_runs(self, keep_last_n=4):
         """
