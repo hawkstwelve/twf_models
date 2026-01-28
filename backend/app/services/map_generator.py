@@ -13,6 +13,15 @@ from pathlib import Path
 from datetime import datetime, timedelta
 import logging
 from typing import Optional
+import os
+
+# Additional matplotlib configuration to prevent hanging
+matplotlib.rcParams['savefig.facecolor'] = 'white'
+matplotlib.rcParams['figure.max_open_warning'] = 0  # Disable warning about too many figures
+matplotlib.rcParams['agg.path.chunksize'] = 10000  # Larger chunks for better performance
+
+# Set environment variables to help with cartopy/shapely issues
+os.environ['CARTOPY_OFFLINE'] = '0'  # Allow downloading map data if needed
 
 from app.config import settings
 from app.services.data_fetcher import GFSDataFetcher
@@ -1315,9 +1324,25 @@ class MapGenerator:
         filename = f"{model.lower()}_{run_str}_{variable}_{forecast_hour}.png"
         filepath = self.storage_path / filename
         
+        logger.info(f"Saving map to: {filepath}")
+        
         # Save with tight bbox to minimize whitespace around the map
         # pad_inches=0.05 adds just a tiny bit of padding to prevent edge clipping
-        plt.savefig(filepath, dpi=settings.map_dpi, bbox_inches='tight', pad_inches=0.05, facecolor='white')
+        # Added explicit format parameter to help matplotlib determine file type
+        try:
+            plt.savefig(
+                filepath, 
+                format='png',
+                dpi=settings.map_dpi, 
+                bbox_inches='tight', 
+                pad_inches=0.05, 
+                facecolor='white',
+                edgecolor='none'
+            )
+            logger.info(f"plt.savefig() completed")
+        except Exception as e:
+            logger.error(f"Error during plt.savefig(): {e}")
+            raise
         
         # Verify file was created and has content
         if not filepath.exists():
@@ -1325,7 +1350,7 @@ class MapGenerator:
         file_size = filepath.stat().st_size
         if file_size == 0:
             raise IOError(f"Map file is empty: {filepath}")
-        logger.debug(f"Map file saved: {filepath} ({file_size} bytes)")
+        logger.info(f"Map file verified: {filepath} ({file_size} bytes)")
         
         # Aggressive memory cleanup
         plt.clf()
@@ -1336,7 +1361,7 @@ class MapGenerator:
         import gc
         gc.collect()
         
-        logger.info(f"Map saved to: {filepath}")
+        logger.info(f"✓ Map complete: {filename}")
         return filepath
     
     def _process_temperature(self, ds: xr.Dataset) -> xr.DataArray:
