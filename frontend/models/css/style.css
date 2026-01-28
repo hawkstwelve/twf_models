@@ -125,6 +125,34 @@ body {
     box-shadow: 0 0 0 3px rgba(74, 144, 201, 0.2);
 }
 
+/* Model Badge */
+.model-badge {
+    display: inline-block;
+    padding: 6px 14px;
+    margin-top: 8px;
+    background: var(--accent-blue);
+    color: white;
+    border-radius: 16px;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+    text-align: center;
+    text-transform: uppercase;
+    box-shadow: 0 2px 6px rgba(74, 144, 201, 0.3);
+    transition: all 0.2s ease;
+}
+
+.model-badge:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(74, 144, 201, 0.4);
+}
+
+/* Model Select Dropdown */
+#model-select option {
+    padding: 8px;
+    background: var(--bg-sidebar);
+}
+
 /* Animation Controls */
 .animation-controls {
     padding-top: 12px;

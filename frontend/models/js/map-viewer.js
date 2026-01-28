@@ -1,43 +1,175 @@
 /**
  * TWF Models Map Viewer
- * Enhanced with dropdown selectors, animation slider, and image preloading
+ * Enhanced with dropdown selectors, animation slider, image preloading, and multi-model support
  */
 
 class MapViewer {
     constructor() {
         this.apiClient = new APIClient(CONFIG.API_BASE_URL);
-        this.currentVariable = 'temp';
-        this.currentForecastHour = 0;
+        
+        // Current selections
+        this.currentModel = CONFIG.DEFAULT_MODEL;
+        this.currentVariable = CONFIG.DEFAULT_VARIABLE;
+        this.currentForecastHour = CONFIG.DEFAULT_FORECAST_HOUR;
         this.currentMap = null;
-        this.isLoading = false;
-        this.isAnimating = false;
-        this.animationSpeed = 2; // frames per second
-        this.animationInterval = null;
-        this.imageCache = new Map(); // Cache for preloaded images
+        
+        // Available options (from API)
+        this.availableModels = [];  // Loaded from API
         this.availableVariables = new Set();
         this.availableForecastHours = [];
+        
+        // State
+        this.isLoading = false;
+        this.isAnimating = false;
+        this.animationSpeed = CONFIG.ANIMATION_SPEED; // frames per second
+        this.animationInterval = null;
+        this.imageCache = new Map(); // Cache for preloaded images
     }
 
     /**
      * Initialize the map viewer
      */
     async init() {
+        console.log('Initializing Map Viewer...');
+        
+        // 1. Fetch available models first
+        await this.fetchModels();
+        
+        // 2. Fetch available options for default model
         await this.fetchAvailableOptions();
+        
+        // 3. Populate UI dropdowns
+        this.populateModelDropdown();
         this.populateVariableDropdown();
         this.populateForecastDropdown();
+        
+        // 4. Setup event listeners
         this.setupEventListeners();
+        
+        // 5. Load initial map
         await this.loadMap();
+        
+        // 6. Preload next images
         this.preloadImages();
         
-        // Auto-refresh every minute to check for new maps
-        setInterval(() => this.loadMap(), CONFIG.REFRESH_INTERVAL);
+        // 7. Start auto-refresh
+        setInterval(() => {
+            if (!this.isAnimating) {
+                this.loadMap();
+            }
+        }, CONFIG.REFRESH_INTERVAL);
         
-        // Refresh available options every 5 minutes
+        // 8. Refresh available options every 5 minutes
         setInterval(() => {
             this.fetchAvailableOptions();
             this.populateVariableDropdown();
             this.populateForecastDropdown();
         }, 300000); // 5 minutes
+        
+        console.log('Map Viewer initialized');
+    }
+
+    /**
+     * Fetch available models from API
+     */
+    async fetchModels() {
+        try {
+            console.log('Fetching models...');
+            this.availableModels = await this.apiClient.getModels();
+            
+            console.log(`Loaded ${this.availableModels.length} models:`,
+                       this.availableModels.map(m => m.id).join(', '));
+            
+            // Validate current model is available
+            const modelIds = this.availableModels.map(m => m.id);
+            if (!modelIds.includes(this.currentModel)) {
+                console.warn(`Default model ${this.currentModel} not available, switching to ${modelIds[0]}`);
+                this.currentModel = modelIds[0] || 'GFS';
+            }
+            
+        } catch (error) {
+            console.error('Failed to fetch models:', error);
+            
+            // Use fallback
+            this.availableModels = [{
+                id: 'GFS',
+                name: 'GFS',
+                full_name: 'Global Forecast System',
+                excluded_variables: [],
+                color: '#1E90FF'
+            }];
+        }
+    }
+
+    /**
+     * Get current model config
+     */
+    getCurrentModelConfig() {
+        return this.availableModels.find(m => m.id === this.currentModel);
+    }
+
+    /**
+     * Get variables supported by current model
+     */
+    getAvailableVariablesForModel() {
+        const modelConfig = this.getCurrentModelConfig();
+        if (!modelConfig) {
+            return Object.keys(CONFIG.VARIABLES);
+        }
+        
+        const excludedVars = modelConfig.excluded_variables || [];
+        return Object.keys(CONFIG.VARIABLES).filter(v => !excludedVars.includes(v));
+    }
+
+    /**
+     * Populate model dropdown
+     */
+    populateModelDropdown() {
+        const select = document.getElementById('model-select');
+        if (!select) {
+            console.warn('Model select element not found');
+            return;
+        }
+        
+        select.innerHTML = '';
+        
+        this.availableModels.forEach(model => {
+            const option = document.createElement('option');
+            option.value = model.id;
+            option.textContent = `${model.name} - ${model.full_name}`;
+            
+            // Apply model color if available
+            if (model.color) {
+                option.style.color = model.color;
+            }
+            
+            if (model.id === this.currentModel) {
+                option.selected = true;
+            }
+            
+            select.appendChild(option);
+        });
+        
+        // Update model badge
+        this.updateModelBadge();
+        
+        console.log(`Populated model dropdown with ${this.availableModels.length} models`);
+    }
+
+    /**
+     * Update model badge display
+     */
+    updateModelBadge() {
+        const badge = document.getElementById('current-model-badge');
+        if (!badge) return;
+        
+        const modelConfig = this.getCurrentModelConfig();
+        if (modelConfig) {
+            badge.textContent = modelConfig.name;
+            if (modelConfig.color) {
+                badge.style.backgroundColor = modelConfig.color;
+            }
+        }
     }
 
     /**
@@ -45,9 +177,14 @@ class MapViewer {
      */
     async fetchAvailableOptions() {
         try {
-            const maps = await this.apiClient.getMaps();
+            console.log(`Fetching available options for ${this.currentModel}...`);
             
-            console.log('Fetched maps from API:', maps.length);
+            const maps = await this.apiClient.getMaps({ 
+                model: this.currentModel,
+                limit: 1000  // Get all available
+            });
+            
+            console.log(`Fetched ${maps.length} maps for ${this.currentModel}`);
             
             // Extract unique variables and forecast hours from API response
             const variablesFromAPI = new Set();
@@ -62,33 +199,43 @@ class MapViewer {
             if (variablesFromAPI.size > 0) {
                 this.availableVariables = variablesFromAPI;
                 this.availableForecastHours = Array.from(forecastHoursSet).sort((a, b) => a - b);
-                console.log('Using API data:', Array.from(this.availableVariables), this.availableForecastHours);
             } else {
-                // No maps from API, use config fallback
-                console.log('No maps from API, using config fallback');
-                this.availableVariables = new Set(Object.keys(CONFIG.VARIABLES));
-                this.availableForecastHours = CONFIG.FORECAST_HOURS;
+                // No maps from API, use model config + fallback
+                console.log('No maps from API, using model config fallback');
+                this.availableVariables = new Set(this.getAvailableVariablesForModel());
+                
+                const modelConfig = this.getCurrentModelConfig();
+                const maxHour = modelConfig?.max_forecast_hour || 72;
+                const increment = modelConfig?.forecast_increment || 6;
+                
+                this.availableForecastHours = [];
+                for (let h = 0; h <= maxHour && h <= 72; h += increment) {
+                    this.availableForecastHours.push(h);
+                }
             }
             
-            // If current selections are no longer available, reset to defaults
+            // Validate current selections
             if (!this.availableVariables.has(this.currentVariable)) {
-                this.currentVariable = this.availableVariables.has('temp') ? 'temp' : Array.from(this.availableVariables)[0];
+                const vars = Array.from(this.availableVariables);
+                this.currentVariable = vars[0] || 'temp';
+                console.log(`Switched variable to ${this.currentVariable}`);
             }
             
             if (!this.availableForecastHours.includes(this.currentForecastHour)) {
                 this.currentForecastHour = this.availableForecastHours[0] || 0;
+                console.log(`Switched forecast hour to ${this.currentForecastHour}`);
             }
+            
         } catch (error) {
             console.error('Failed to fetch available options:', error);
             // Fallback to config values
-            this.availableVariables = new Set(Object.keys(CONFIG.VARIABLES));
-            this.availableForecastHours = CONFIG.FORECAST_HOURS;
-            console.log('Using config fallback due to error:', Array.from(this.availableVariables), this.availableForecastHours);
+            this.availableVariables = new Set(this.getAvailableVariablesForModel());
+            this.availableForecastHours = CONFIG.FORECAST_HOURS.slice(0, 13);
         }
     }
 
     /**
-     * Populate variable dropdown
+     * Populate variable dropdown (filtered by current model)
      */
     populateVariableDropdown() {
         const select = document.getElementById('variable-select');
@@ -102,17 +249,32 @@ class MapViewer {
         // Clear existing options
         select.innerHTML = '';
         
-        // Add available variables
-        const variables = Array.from(this.availableVariables).sort((a, b) => {
-            const labelA = CONFIG.VARIABLES[a]?.label || a;
-            const labelB = CONFIG.VARIABLES[b]?.label || b;
-            return labelA.localeCompare(labelB);
-        });
+        // Get variables supported by current model
+        const supportedVars = this.getAvailableVariablesForModel();
+        
+        // Filter to only variables with available data
+        const variables = Array.from(this.availableVariables)
+            .filter(v => supportedVars.includes(v))
+            .sort((a, b) => {
+                const labelA = CONFIG.VARIABLES[a]?.label || a;
+                const labelB = CONFIG.VARIABLES[b]?.label || b;
+                return labelA.localeCompare(labelB);
+            });
+        
+        // Fallback to all supported variables if no data yet
+        if (variables.length === 0) {
+            supportedVars.forEach(v => variables.push(v));
+        }
         
         variables.forEach(variable => {
             const option = document.createElement('option');
             option.value = variable;
-            option.textContent = CONFIG.VARIABLES[variable]?.label || this.formatVariableName(variable);
+            
+            const varConfig = CONFIG.VARIABLES[variable];
+            const label = varConfig?.label || this.formatVariableName(variable);
+            const icon = varConfig?.icon || '';
+            
+            option.textContent = icon ? `${icon} ${label}` : label;
             
             if (variable === this.currentVariable) {
                 option.selected = true;
@@ -120,6 +282,13 @@ class MapViewer {
             
             select.appendChild(option);
         });
+        
+        // If current variable not supported by model, switch to first available
+        if (!supportedVars.includes(this.currentVariable) && variables.length > 0) {
+            console.log(`Variable ${this.currentVariable} not supported by ${this.currentModel}, switching to ${variables[0]}`);
+            this.currentVariable = variables[0];
+            select.value = this.currentVariable;
+        }
         
         console.log('Variable dropdown populated with', variables.length, 'options');
     }
@@ -205,6 +374,14 @@ class MapViewer {
      * Setup event listeners for UI controls
      */
     setupEventListeners() {
+        // Model selector
+        const modelSelect = document.getElementById('model-select');
+        if (modelSelect) {
+            modelSelect.addEventListener('change', (e) => {
+                this.selectModel(e.target.value);
+            });
+        }
+
         // Variable selector
         const variableSelect = document.getElementById('variable-select');
         if (variableSelect) {
@@ -261,6 +438,57 @@ class MapViewer {
                     this.startAnimation();
                 }
             });
+        }
+    }
+
+    /**
+     * Select a model
+     */
+    async selectModel(modelId) {
+        if (this.currentModel === modelId) return;
+        
+        console.log(`Model changed: ${this.currentModel} → ${modelId}`);
+        
+        // Stop any animation
+        this.stopAnimation();
+        
+        // Clear image cache
+        this.imageCache.clear();
+        
+        // Update current model
+        this.currentModel = modelId;
+        
+        // Update dropdown
+        const select = document.getElementById('model-select');
+        if (select) {
+            select.value = modelId;
+        }
+        
+        // Update model badge
+        this.updateModelBadge();
+        
+        // Show loading state
+        this.showLoading();
+        
+        try {
+            // Fetch new data for this model
+            await this.fetchAvailableOptions();
+            
+            // Update dropdowns (variables may differ between models)
+            this.populateVariableDropdown();
+            this.populateForecastDropdown();
+            
+            // Load map for new model
+            await this.loadMap();
+            
+            // Preload images
+            this.preloadImages();
+            
+        } catch (error) {
+            console.error('Error switching models:', error);
+            this.showError(`Failed to switch to ${modelId}`);
+        } finally {
+            this.hideLoading();
         }
     }
 
@@ -371,9 +599,10 @@ class MapViewer {
      * Preload images for smooth animation
      */
     async preloadImages() {
-        // Preload images for current variable and all forecast hours
+        // Preload images for current model, variable and all forecast hours
         for (const hour of this.availableForecastHours) {
-            if (!this.imageCache.has(`${this.currentVariable}_${hour}`)) {
+            const cacheKey = `${this.currentModel}_${this.currentVariable}_${hour}`;
+            if (!this.imageCache.has(cacheKey)) {
                 this.preloadImage(this.currentVariable, hour);
             }
         }
@@ -385,13 +614,14 @@ class MapViewer {
     async preloadImage(variable, forecastHour) {
         try {
             const maps = await this.apiClient.getMaps({
+                model: this.currentModel,
                 variable: variable,
                 forecast_hour: forecastHour
             });
             
             if (maps.length > 0) {
                 const imageUrl = this.apiClient.getImageUrl(maps[0].image_url);
-                const cacheKey = `${variable}_${forecastHour}`;
+                const cacheKey = `${this.currentModel}_${variable}_${forecastHour}`;
                 
                 // Create and load image
                 const img = new Image();
@@ -403,7 +633,7 @@ class MapViewer {
                 };
             }
         } catch (error) {
-            console.error(`Failed to preload image for ${variable} at +${forecastHour}h:`, error);
+            console.error(`Failed to preload image for ${this.currentModel} ${variable} at +${forecastHour}h:`, error);
         }
     }
 
@@ -419,7 +649,7 @@ class MapViewer {
         
         try {
             // Check cache first
-            const cacheKey = `${this.currentVariable}_${this.currentForecastHour}`;
+            const cacheKey = `${this.currentModel}_${this.currentVariable}_${this.currentForecastHour}`;
             let imageUrl;
             
             if (this.imageCache.has(cacheKey)) {
@@ -427,12 +657,17 @@ class MapViewer {
             } else {
                 // Fetch from API
                 const maps = await this.apiClient.getMaps({
+                    model: this.currentModel,
                     variable: this.currentVariable,
                     forecast_hour: this.currentForecastHour
                 });
                 
                 if (maps.length === 0) {
-                    throw new Error('No maps available for the selected options');
+                    const modelConfig = this.getCurrentModelConfig();
+                    throw new Error(
+                        `No ${modelConfig?.name || this.currentModel} maps available for ` +
+                        `${this.currentVariable} at +${this.currentForecastHour}h`
+                    );
                 }
                 
                 this.currentMap = maps[0];
@@ -446,7 +681,7 @@ class MapViewer {
             const mapImage = document.getElementById('map-image');
             if (mapImage) {
                 mapImage.src = imageUrl;
-                mapImage.alt = `${this.currentVariable} forecast at +${this.currentForecastHour}h`;
+                mapImage.alt = `${this.currentModel} ${this.currentVariable} forecast at +${this.currentForecastHour}h`;
             }
             
             // Update metadata

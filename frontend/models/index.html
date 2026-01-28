@@ -26,6 +26,14 @@
         <!-- Sidebar Controls -->
         <aside class="sidebar">
             <div class="control-section">
+                <label class="control-label" for="model-select">Model</label>
+                <select id="model-select" class="control-select">
+                    <option value="GFS">Loading models...</option>
+                </select>
+                <span id="current-model-badge" class="model-badge">GFS</span>
+            </div>
+
+            <div class="control-section">
                 <label class="control-label" for="variable-select">Variable</label>
                 <select id="variable-select" class="control-select">
                     <!-- Options will be dynamically generated -->
@@ -100,13 +108,6 @@
             <span id="metadata-valid-time">Valid: --</span>
             <span class="separator">•</span>
             <span id="metadata-region">Pacific Northwest</span>
-        </div>
-        <div class="footer-info">
-            <span>GFS Model Data from NOAA</span>
-            <span class="separator">•</span>
-            <span>0.25° Resolution</span>
-            <span class="separator">•</span>
-            <span>Updates at 9:30 PM, 3:30 AM, 9:30 AM, 3:30 PM CST</span>
         </div>
     </footer>
 

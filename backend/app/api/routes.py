@@ -8,8 +8,9 @@ import os
 import logging
 
 from app.config import settings
-from app.models.schemas import MapInfo, MapListResponse, UpdateResponse, GFSRun, GFSRunListResponse
+from app.models.schemas import MapInfo, MapListResponse, UpdateResponse, GFSRun, GFSRunListResponse, ModelInfo, ModelListResponse
 from app.services.map_generator import MapGenerator
+from app.models.model_registry import ModelRegistry
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -33,10 +34,90 @@ def format_run_time_label(dt: datetime) -> str:
     return dt.strftime("%HZ %b %d")
 
 
+@router.get("/models", response_model=ModelListResponse)
+async def get_models(response: Response):
+    """
+    Get list of available models and their capabilities.
+    
+    Returns only enabled models with their metadata.
+    Frontend uses this to populate model dropdown.
+    """
+    # Cache model list for 5 minutes
+    response.headers["Cache-Control"] = "public, max-age=300"
+    
+    models = ModelRegistry.get_enabled()
+    
+    model_list = [
+        ModelInfo(
+            id=model_id,
+            name=config.name,
+            full_name=config.full_name,
+            description=config.description,
+            resolution=config.resolution,
+            max_forecast_hour=config.max_forecast_hour,
+            forecast_increment=config.forecast_increment,
+            run_hours=config.run_hours,
+            excluded_variables=config.excluded_variables,
+            color=config.color,
+            enabled=config.enabled
+        )
+        for model_id, config in models.items()
+    ]
+    
+    return ModelListResponse(models=model_list)
+
+
+@router.get("/models/{model_id}", response_model=ModelInfo)
+async def get_model_info(model_id: str, response: Response):
+    """
+    Get detailed info about a specific model.
+    
+    Args:
+        model_id: Model identifier (e.g., "GFS", "AIGFS")
+    
+    Raises:
+        404: Model not found in registry
+        403: Model exists but is not enabled
+    """
+    # Cache model info for 5 minutes
+    response.headers["Cache-Control"] = "public, max-age=300"
+    
+    config = ModelRegistry.get(model_id)
+    
+    if not config:
+        raise HTTPException(
+            status_code=404, 
+            detail=f"Model {model_id} not found"
+        )
+    
+    if not config.enabled:
+        raise HTTPException(
+            status_code=403, 
+            detail=f"Model {model_id} is not enabled"
+        )
+    
+    return ModelInfo(
+        id=model_id,
+        name=config.name,
+        full_name=config.full_name,
+        description=config.description,
+        resolution=config.resolution,
+        max_forecast_hour=config.max_forecast_hour,
+        forecast_increment=config.forecast_increment,
+        run_hours=config.run_hours,
+        excluded_variables=config.excluded_variables,
+        color=config.color,
+        enabled=config.enabled,
+        provider=config.provider.value,
+        has_refc=config.has_refc,
+        has_upper_air=config.has_upper_air
+    )
+
+
 @router.get("/maps", response_model=MapListResponse)
 async def get_maps(
     response: Response,
-    model: Optional[str] = Query(None, description="Filter by model (GFS, Graphcast)"),
+    model: Optional[str] = Query(None, description="Filter by model (e.g., 'GFS', 'AIGFS')"),
     variable: Optional[str] = Query(None, description="Filter by variable"),
     forecast_hour: Optional[int] = Query(None, description="Filter by forecast hour"),
     run_time: Optional[str] = Query(None, description="Filter by run time (ISO format: 2026-01-24T00:00:00Z)")
@@ -45,8 +126,23 @@ async def get_maps(
     Get list of available maps.
     
     Supports filtering by model, variable, forecast_hour, and run_time.
-    If run_time is provided, only maps from that specific GFS run are returned.
+    If run_time is provided, only maps from that specific model run are returned.
+    If no model specified, returns maps from all enabled models.
     """
+    # Validate model if provided
+    if model:
+        model_config = ModelRegistry.get(model)
+        if not model_config:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Unknown model: {model}. Use /api/models to see available models."
+            )
+        if not model_config.enabled:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Model {model} is not enabled"
+            )
+    
     # Cache for configured duration - maps list changes as new maps are generated
     response.headers["Cache-Control"] = f"public, max-age={settings.cache_maps_list_seconds}"
     

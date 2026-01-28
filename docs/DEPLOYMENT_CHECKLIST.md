@@ -1,8 +1,7 @@
 # NOMADS Deployment Checklist
 
-**Date:** January 26, 2026  
-**Commit:** bffbac5  
-**Status:** Ready to Deploy 🚀
+**Date:** January 27, 2026  
+**Status:** Backend deployed & stable; focus shifting to frontend and map expansion.
 
 ---
 

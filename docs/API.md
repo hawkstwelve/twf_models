@@ -1,6 +1,86 @@
 # API Documentation
 
+## Base URL
+```
+https://api.sodakweather.com
+```
+
 ## Endpoints
+
+### Get Available Models
+```
+GET /api/models
+```
+
+Returns list of all enabled weather models and their capabilities.
+
+**Response:**
+```json
+{
+  "models": [
+    {
+      "id": "GFS",
+      "name": "GFS",
+      "full_name": "Global Forecast System",
+      "description": "NOAA's global weather model",
+      "resolution": "0.25",
+      "max_forecast_hour": 384,
+      "forecast_increment": 6,
+      "run_hours": [0, 6, 12, 18],
+      "excluded_variables": [],
+      "color": "#1E90FF",
+      "enabled": true
+    },
+    {
+      "id": "AIGFS",
+      "name": "AIGFS",
+      "full_name": "Arctic Ice Global Forecast System",
+      "description": "NOAA's Arctic-focused global model",
+      "resolution": "0.25",
+      "max_forecast_hour": 384,
+      "forecast_increment": 6,
+      "run_hours": [0, 6, 12, 18],
+      "excluded_variables": ["radar"],
+      "color": "#4169E1",
+      "enabled": true
+    }
+  ]
+}
+```
+
+### Get Model Information
+```
+GET /api/models/{model_id}
+```
+
+Returns detailed information about a specific model.
+
+**Path Parameters:**
+- `model_id`: Model identifier (e.g., "GFS", "AIGFS")
+
+**Response:**
+```json
+{
+  "id": "GFS",
+  "name": "GFS",
+  "full_name": "Global Forecast System",
+  "description": "NOAA's global weather model",
+  "resolution": "0.25",
+  "max_forecast_hour": 384,
+  "forecast_increment": 6,
+  "run_hours": [0, 6, 12, 18],
+  "excluded_variables": [],
+  "color": "#1E90FF",
+  "enabled": true,
+  "provider": "NOMADS",
+  "has_refc": true,
+  "has_upper_air": true
+}
+```
+
+**Error Responses:**
+- `404`: Model not found
+- `403`: Model exists but is not enabled
 
 ### Get Available Maps
 ```
@@ -8,6 +88,20 @@ GET /api/maps
 ```
 
 Returns list of available forecast maps with metadata.
+
+**Query Parameters:**
+- `model` (optional): Filter by model (e.g., "GFS", "AIGFS")
+- `variable` (optional): Filter by variable
+- `forecast_hour` (optional): Filter by forecast hour
+- `run_time` (optional): Filter by run time (ISO format: 2026-01-24T00:00:00Z)
+
+**Example Requests:**
+```
+GET /api/maps                           # All maps from all models
+GET /api/maps?model=GFS                 # Only GFS maps
+GET /api/maps?model=GFS&variable=temp   # GFS temperature maps
+GET /api/maps?model=AIGFS&forecast_hour=12  # AIGFS 12-hour maps
+```
 
 **Response:**
 ```json

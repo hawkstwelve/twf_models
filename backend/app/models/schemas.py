@@ -46,3 +46,27 @@ class GFSRunListResponse(BaseModel):
     """Response for GFS runs list endpoint"""
     runs: List[GFSRun]
     total_runs: int
+
+
+class ModelInfo(BaseModel):
+    """Information about a weather model"""
+    id: str  # e.g., "GFS", "AIGFS"
+    name: str  # e.g., "GFS"
+    full_name: str  # e.g., "Global Forecast System"
+    description: str
+    resolution: str  # e.g., "0.25"
+    max_forecast_hour: int
+    forecast_increment: int
+    run_hours: List[int]
+    excluded_variables: List[str]
+    color: str  # Hex color code
+    enabled: bool
+    # Optional detailed fields
+    provider: Optional[str] = None  # e.g., "NOMADS"
+    has_refc: Optional[bool] = None
+    has_upper_air: Optional[bool] = None
+
+
+class ModelListResponse(BaseModel):
+    """Response for models list endpoint"""
+    models: List[ModelInfo]

@@ -1,9 +1,27 @@
 # Recommended Next Steps
 
-**Status as of January 23, 2026**  
-**Target: TropicalTidbits-style model viewer for PNW**  
-**Target Completion: Fall/Winter 2026 (9-10 months)**  
-**Reference**: https://tropicaltidbits.com/analysis/models/
+**Status as of January 27, 2026**  
+**Backend: Deployed & Stable**  
+**Frontend: Planning/Not Started**  
+**Current Focus:** Multi-hour forecasts, frontend polish, further map expansion, user testing
+
+---
+
+## ✅ Backend & Deployment (Complete)
+- GFS data fetcher, map generation, API, scheduling, and deployment are all complete and stable.
+- 0.25° GFS data is in use, with 7 map types (Temperature, Precip, Wind Speed, Precip Type, MSLP & Precip, Radar, 850mb Temp/Wind/MSLP) and 4+ forecast hours generated automatically.
+- API and basic frontend are live and accessible.
+
+## ⏳ In Progress
+- Multi-hour forecast support (24/48/72/120h)
+- Performance and stability testing
+- Frontend interactive viewer polish
+
+## 📝 Next Steps
+- Expand map types (e.g., Accumulated Snowfall, 24h Precip, Wind Gusts, 700mb Temp Advection, etc.)
+- Extend forecast hours (every 3-6h out to 120h+)
+- User testing and feedback
+- Forum integration and documentation polish
 
 ---
 

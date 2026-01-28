@@ -1,8 +1,8 @@
 # Development Roadmap
 
-**Goal**: Create a TropicalTidbits-style forecast model viewer for the Pacific Northwest  
-**Target**: Fall/Winter 2026  
-**Reference**: https://tropicaltidbits.com/analysis/models/
+**Last Updated:** January 27, 2026
+
+**Current Status:** Backend deployed & stable; Radar, MSLP & Precip, and 850mb Temp/Wind/MSLP maps implemented. Next: further map expansion, frontend polish, extended hours.
 
 ---
 
@@ -75,8 +75,8 @@
 Based on TropicalTidbits GFS products:
 
 **High Priority (Winter Weather Focus):**
-- [ ] MSLP & Precipitation (rain/frozen)
-- [ ] 850mb Temperature, Wind, MSLP
+- [x] MSLP & Precipitation (rain/frozen)
+- [x] 850mb Temperature, Wind, MSLP
 - [ ] 500mb Height & Vorticity
 - [ ] Simulated Radar Reflectivity
 - [ ] Accumulated Snowfall (10:1 SLR)
