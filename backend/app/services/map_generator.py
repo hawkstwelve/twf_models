@@ -1005,7 +1005,7 @@ class MapGenerator:
                 logger.info(f"Lon shape: {lon_vals.shape}, range: {float(lon_vals.min()):.2f} to {float(lon_vals.max()):.2f}")
                 logger.info(f"Lat shape: {lat_vals.shape}, range: {float(lat_vals.min()):.2f} to {float(lat_vals.max()):.2f}")
             logger.info(f"Map extent: lon [-125.0 to -110.0], lat [42.0 to 49.0]")
-            logger.info(f"Data coverage: lon [{float(lon_vals.min()):.2f} to {float(lonVals.max()):.2f}], lat [{float(lat_vals.min()):.2f} to {float(lat_vals.max()):.2f}]")
+            logger.info(f"Data coverage: lon [{float(lon_vals.min()):.2f} to {float(lon_vals.max()):.2f}], lat [{float(lat_vals.min()):.2f} to {float(lat_vals.max()):.2f}]")
             logger.debug(f"Data shape: {data.shape}, Lon shape: {lon_vals.shape}, Lat shape: {lat_vals.shape}")
             logger.debug(f"Data min: {float(data.min()):.2f}, max: {float(data.max()):.2f}, mean: {float(data.mean()):.2f}")
             
