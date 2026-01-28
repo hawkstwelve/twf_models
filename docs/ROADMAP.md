@@ -78,7 +78,7 @@ Based on TropicalTidbits GFS products:
 - [x] MSLP & Precipitation (rain/frozen)
 - [x] 850mb Temperature, Wind, MSLP
 - [ ] 500mb Height & Vorticity
-- [ ] Simulated Radar Reflectivity
+- [x] Simulated Radar Reflectivity
 - [ ] Accumulated Snowfall (10:1 SLR)
 - [ ] 24-hour Accumulated Precip
 - [ ] 700mb Temperature Advection & Frontogenesis
