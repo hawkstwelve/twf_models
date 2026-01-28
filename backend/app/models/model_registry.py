@@ -186,7 +186,7 @@ ModelRegistry.register(ModelConfig(
     forecast_increment=6,
     availability_delay_hours=3.5,
     has_refc=False,  # No radar
-    has_precip_type_masks=True,
+    has_precip_type_masks=False,  # No CSNOW - must derive from temperature
     has_upper_air=True,
     tp_is_accumulated_from_init=False,  # Assume same as GFS (verify!)
     products_supported={"sfc", "pres"},

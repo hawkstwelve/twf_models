@@ -21,6 +21,11 @@ const CONFIG = {
             units: 'inches',
             description: 'Total Precipitation',
         },
+        'snowfall': {
+            label: 'Total Snowfall',
+            units: 'inches',
+            description: 'Total Snowfall (10:1 Ratio)',
+        },
         'wind_speed': {
             label: 'Wind Speed',
             units: 'mph',
