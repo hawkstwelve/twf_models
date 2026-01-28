@@ -1,148 +1,155 @@
 # TWF Weather Models - Custom Forecast Maps
 
-A system for generating and hosting custom weather forecast maps from models like GFS and Graphcast.
+An automated weather forecast map generation and delivery system providing high-resolution, professional-quality maps for the Pacific Northwest region. The system supports multiple weather models (GFS, AIGFS), generates custom maps with station overlays, and serves them via a REST API with an interactive frontend viewer.
 
 ## Project Overview
 
-This project consists of:
-1. **Backend Service** (Digital Ocean droplet): Downloads weather model data, processes it, and generates custom maps
-2. **API Server**: Serves generated maps and metadata
-3. **Frontend Integration**: Displays maps at `theweatherforums.com/models` (Invision Community)
+This project provides custom weather forecast maps for display on The Weather Forums (theweatherforums.com/models). The system runs on a VPS (16GB RAM / 8 vCPU), automatically generating maps four times daily aligned with model run schedules.
 
-**Note**: The forums are hosted on a Digital Ocean droplet. This project can be deployed on the same droplet or a separate one (recommended for isolation).
+### System Components
+
+1. **Multi-Model Backend Service**: Automated data fetching, processing, and map generation for GFS and AIGFS models
+2. **REST API**: FastAPI server serving generated maps and metadata with model-aware endpoints
+3. **Frontend Viewer**: Interactive map gallery with model selector, variable dropdown, time slider, and animation controls
+4. **Scheduler**: Systemd-based automation with progressive generation and intelligent worker management
+
+### Current Deployment
+
+- **API**: https://api.sodakweather.com
+- **Test Frontend**: https://sodakweather.com/models
+- **Production Target**: theweatherforums.com/models
 
 ## Architecture
 
+The system follows a multi-model pipeline architecture with intelligent data fetching:
+
 ```
-┌─────────────────┐
-│  Weather Models │  (GFS, Graphcast APIs/data sources)
-│  (External)     │
-└────────┬────────┘
+┌──────────────────┐
+│ Weather Models   │  NOAA NOMADS Server
+│ GFS + AIGFS      │  Updated every 6 hours (00, 06, 12, 18 UTC)
+│ (NOMADS)         │
+└────────┬─────────┘
          │
+         │ Progressive monitoring (checks every minute for up to 90 min)
          ▼
-┌─────────────────┐
-│  Backend Worker │  (Digital Ocean Droplet)
-│  - Data Fetch   │
-│  - Processing   │
-│  - Map Gen      │
-└────────┬────────┘
+┌──────────────────┐
+│  Model Factory   │  Creates model-specific data fetchers
+│  Data Fetcher    │  - GFS: Filtered NOMADS requests (small downloads)
+│  (Backend)       │  - AIGFS: Full GRIB2 files (~2-3GB per run)
+│                  │  - Regional subsetting (PNW: 40-50°N, 235-245°E)
+│                  │  - Intelligent GRIB caching (75% bandwidth savings)
+└────────┬─────────┘
          │
+         │ Dataset building with derived fields
          ▼
-┌─────────────────┐
-│  Image Storage  │  (Local filesystem or S3/DO Spaces)
-└────────┬────────┘
+┌──────────────────┐
+│  Map Generator   │  Pure rendering engine (matplotlib + cartopy)
+│  (Backend)       │  - Station overlays (9 PNW cities)
+│                  │  - Professional colormaps (38-color temp gradient)
+│                  │  - Model-aware variable filtering
+└────────┬─────────┘
          │
+         │ Parallel generation (2-3 workers based on memory)
          ▼
-┌─────────────────┐
-│  API Server     │  (FastAPI/Flask)
-│  - Serve images │
-│  - Metadata     │
-└────────┬────────┘
+┌──────────────────┐
+│  Image Storage   │  Local filesystem with automated cleanup
+│  (/opt/...)      │  - Retains last 4 runs (24 hours) per model
+│                  │  - Naming: {model}_{run}_{variable}_{hour}.png
+└────────┬─────────┘
          │
+         │ HTTP requests
          ▼
-┌─────────────────┐
-│  Frontend       │  (theweatherforums.com/models)
-│  - Map Gallery  │
-│  - Viewer       │
-└─────────────────┘
+┌──────────────────┐
+│  FastAPI Server  │  REST API with CORS support
+│  (Port 8000)     │  - /api/models (list available models)
+│                  │  - /api/maps (filter by model/variable/hour)
+│                  │  - /api/runs (list model runs with metadata)
+│                  │  - SSL via Let's Encrypt
+└────────┬─────────┘
+         │
+         │ HTTPS
+         ▼
+┌──────────────────┐
+│  Frontend        │  Interactive viewer with:
+│  (sodakweather)  │  - Model dropdown selector
+│                  │  - Variable dropdown
+│                  │  - Time slider with animation
+│                  │  - Play/pause controls with speed adjustment
+│                  │  - Mobile-responsive design
+└──────────────────┘
 ```
+
+### Scheduling & Data Flow
+- **Systemd Services**: API server and scheduler run as separate systemd services
+- **Model Alignment**: Generation starts 3.5 hours after each model run time
+- **Progressive Generation**: Checks data availability every minute, generates maps as data arrives
+- **Parallel Processing**: 2-3 worker processes (dynamically calculated based on available RAM)
+- **Error Handling**: Automatic retry logic with exponential backoff
+- **Memory Management**: Intelligent cleanup between models to prevent OOM conditions
 
 ## Technology Stack
 
 ### Backend
-- **Python 3.10+**: Core language
-- **FastAPI**: API framework
-- **xarray**: NetCDF/GRIB data handling
-- **MetPy**: Meteorological calculations
-- **Cartopy**: Map projections and visualization
-- **Matplotlib/Plotly**: Map generation
-- **APScheduler**: Scheduled data fetching
-- **Celery** (optional): For heavy async processing
+- **Python 3.11**: Core language
+- **FastAPI**: REST API framework with async support
+- **xarray & cfgrib**: GRIB2 data parsing and manipulation
+- **MetPy**: Meteorological calculations and variable transformations
+- **Cartopy**: Map projections and geographic features
+- **Matplotlib**: Professional-quality map rendering (non-interactive AGG backend)
+- **Systemd**: Service management and scheduling
+- **Multiprocessing**: Parallel map generation with dynamic worker allocation
 
 ### Data Sources
-- **GFS**: NOAA's Global Forecast System (via NOMADS or AWS)
-- **Graphcast**: Google's AI weather model (via API or local processing)
+- **GFS 0.25°**: NOAA's Global Forecast System via NOMADS
+  - High-resolution model (46×78 grid points over PNW)
+  - Updated every 6 hours (00, 06, 12, 18 UTC)
+  - Filtered requests for efficient downloads
+  - 75% bandwidth savings via intelligent GRIB caching
+  
+- **AIGFS**: NOAA's AI-Enhanced Global Forecast System via NOMADS
+  - Same resolution and schedule as GFS
+  - Full GRIB2 downloads (~2-3GB per run)
+  - No simulated radar support (excluded automatically)
+  - Includes upper air pressure levels
 
 ### Infrastructure
-- **Digital Ocean Droplet**: $6-24/month depending on specs
-- **Storage**: Local or DO Spaces ($5/month for 250GB)
-- **CDN** (optional): Cloudflare for image delivery
+- **VPS**: 16GB RAM, 8 vCPU, 240GB SSD, Ubuntu 22.04
+- **SSL**: Let's Encrypt certificates via Certbot
+- **Storage**: Local filesystem with automated cleanup and multi-run retention
+- **Performance**: Dynamic worker allocation based on available memory
 
-## Cost Estimates
+## Current Capabilities
 
-### Monthly Costs
-- **Digital Ocean Droplet**: 
-  - Basic: $6/month (512MB RAM, 1 vCPU) - *may be insufficient*
-  - Recommended: $12/month (1GB RAM, 1 vCPU) - *minimum for processing*
-  - Optimal: $24/month (2GB RAM, 2 vCPU) - *better performance*
-- **Storage (DO Spaces)**: $5/month for 250GB
-- **Bandwidth**: Usually included (1-2TB)
-- **Domain/CDN**: Free if using existing domain
+### Supported Models
+1. **GFS** (Global Forecast System) - NOAA's operational global model
+2. **AIGFS** (AI-Enhanced GFS) - NOAA's machine learning-enhanced model
+3. **HRRR** (High-Resolution Rapid Refresh) - Registered but disabled (future support)
 
-**Total Estimated Monthly Cost: $17-29/month**
+### Map Products (6 Variables)
+Generated for both GFS and AIGFS models (where supported):
 
-### One-Time Costs
-- Domain setup (if needed): $0-15/year
-- Development time: Variable
+1. **Surface Temperature (2m)** - Professional 38-color gradient, °F with fixed levels (-40°F to 115°F)
+2. **Precipitation** - Total accumulation from forecast start, inches
+3. **Wind Speed** - 10m winds, mph
+4. **MSLP & Precipitation** - Mean sea level pressure contours with 6-hour precipitation rate overlay (mm/hr)
+5. **850mb Analysis** - Temperature (°F), wind barbs (kt), and MSLP contours (mb)
+6. **Simulated Radar** - Composite reflectivity (dBZ) - **GFS only** (AIGFS excluded automatically)
 
-## Difficulty Assessment
+### Features
+- **Multi-Model Support**: Extensible model registry system with model-specific configurations
+- **0.25° Resolution**: 4x higher detail than standard GFS maps (~15 mile grid spacing)
+- **Station Overlays**: Forecast values displayed at 9 major PNW cities (handles 0-360° vs -180/180° longitude formats)
+- **Progressive Generation**: Maps available as soon as model data arrives (f000 first, then f006, f012, etc.)
+- **Multi-Run Retention**: Keeps last 4 model runs (24 hours) per model for comparison
+- **Automated Cleanup**: Manages disk space automatically per model
+- **Smart Caching**: 75% bandwidth reduction via GRIB file reuse
+- **Model-Aware API**: Frontend can filter by model and automatically detects available variables per model
+- **Variable Requirements System**: Central registry defines data requirements for each map type
 
-### Complexity: **Medium to High**
-
-**Challenges:**
-1. **Weather Data Formats**: GRIB/NetCDF files require specialized libraries
-2. **Map Projections**: Geographic coordinate systems and projections
-3. **Data Volume**: GFS files can be 100MB-1GB+ per forecast
-4. **Processing Time**: Map generation can take 30 seconds to several minutes
-5. **Scheduling**: Coordinating data availability with processing
-6. **Error Handling**: Network issues, missing data, processing failures
-
-**Easier Aspects:**
-- Well-documented Python libraries (MetPy, Cartopy)
-- Standard web API patterns
-- Existing infrastructure (your forum)
-
-## Potential Gotchas
-
-### 1. **Data Access & Rate Limits**
-- GFS data via NOMADS has rate limits
-- AWS S3 bucket (noaa-gfs-bdp-pds) is free but requires proper access patterns
-- Graphcast may require API keys or local model execution
-
-### 2. **File Sizes & Storage**
-- GFS full resolution files are massive (500MB-2GB per run)
-- Need strategy for partial downloads or subsetting
-- Image storage will grow over time (need cleanup/rotation)
-
-### 3. **Processing Time**
-- Full GFS processing can take 10-30 minutes
-- Need async processing or background jobs
-- Users shouldn't wait for real-time generation
-
-### 4. **Coordinate Systems**
-- Weather data uses various projections
-- Need to handle lat/lon conversions correctly
-- Map boundaries and zoom levels
-
-### 5. **Update Frequency**
-- GFS updates every 6 hours (00, 06, 12, 18 UTC)
-- Need to sync processing with model runs
-- Handle delays in data availability
-
-### 6. **Resource Constraints**
-- Memory usage for large datasets
-- CPU for map rendering
-- Disk space for cached data
-
-### 7. **Integration with Existing Site**
-- CORS if different domains
-- Authentication if needed
-- Styling consistency
-
-### 8. **Error Recovery**
-- What if model run is delayed?
-- What if processing fails?
-- Need fallback/retry mechanisms
+### Forecast Range
+- **Current Implementation**: 13 forecast hours (0, 6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 66, 72)
+- **6-hour increments** for smooth temporal resolution
+- **Configurable**: Can easily extend to 120+ hours in 6-hour increments
 
 ## Project Structure
 
@@ -151,90 +158,206 @@ twf_models/
 ├── backend/
 │   ├── app/
 │   │   ├── __init__.py
-│   │   ├── main.py              # FastAPI app
-│   │   ├── config.py            # Configuration
-│   │   ├── models/              # Data models
+│   │   ├── main.py                     # FastAPI app
+│   │   ├── config.py                   # Configuration (forecast hours, regions, etc.)
+│   │   ├── scheduler.py                # Multi-model scheduler with worker management
+│   │   ├── models/
+│   │   │   ├── model_registry.py       # Model configurations (GFS, AIGFS, HRRR)
+│   │   │   ├── variable_requirements.py # Data requirements for each map type
+│   │   │   └── schemas.py              # API response models
 │   │   ├── services/
-│   │   │   ├── data_fetcher.py  # Download weather data
-│   │   │   ├── processor.py     # Process data
-│   │   │   └── map_generator.py # Generate maps
-│   │   ├── api/
-│   │   │   └── routes.py        # API endpoints
-│   │   └── scheduler.py         # Scheduled tasks
-│   ├── tests/
+│   │   │   ├── model_factory.py        # Creates model-specific data fetchers
+│   │   │   ├── base_data_fetcher.py    # Base fetcher with GRIB caching
+│   │   │   ├── nomads_data_fetcher.py  # NOMADS-specific fetching logic
+│   │   │   ├── map_generator.py        # Pure rendering engine
+│   │   │   └── stations.py             # Station overlay data
+│   │   └── api/
+│   │       └── routes.py               # API endpoints (models, maps, runs)
 │   ├── requirements.txt
-│   └── Dockerfile
-├── frontend/                    # (Optional, if separate)
-│   └── ...
+│   └── test_setup.py
+├── frontend/models/                    # Interactive viewer
+│   ├── index.html                      # Main HTML with model/variable selectors
+│   ├── config.js                       # Frontend configuration
+│   ├── css/style.css                   # Modern weather app styling
+│   └── js/
+│       ├── api-client.js               # API communication layer
+│       └── map-viewer.js               # Viewer logic (slider, animation)
+├── deployment/
+│   ├── twf-models-api.service          # Systemd service for API
+│   └── twf-models-scheduler.service    # Systemd service for scheduler
 ├── scripts/
-│   ├── setup_droplet.sh         # Initial server setup
-│   └── deploy.sh                # Deployment script
+│   ├── deploy.sh
+│   └── tests/                          # Manual test scripts
+│       ├── run_latest_gfs_now.py       # Generate GFS maps on demand
+│       ├── run_latest_aigfs_now.py     # Generate AIGFS maps on demand
+│       ├── run_latest_now.py           # Generate all models
+│       ├── test_temp_map.py            # Test individual map types
+│       ├── test_850mb_map.py
+│       ├── test_radar_map.py
+│       └── test_mslp_precip_map.py
 ├── docs/
-│   └── API.md                   # API documentation
-├── .env.example
-├── docker-compose.yml
+│   ├── API.md                          # API documentation
+│   ├── INTEGRATION.md                  # Forum integration strategy
+│   └── PERFORMANCE_PLAN.md             # Memory optimization & diagnostics
+├── archive/research/                    # Historical research/tests
 └── README.md
 ```
 
-## Current Status
+## Project Status
 
-✅ **Phase 1 Complete**: Backend deployed and operational on Digital Ocean  
-🚧 **Phase 2 In Progress**: Local development of enhanced features  
-⏳ **Phase 3 Planned**: Frontend development and testing on sodakweather.com  
-⏳ **Phase 4 Planned**: Production launch on theweatherforums.com/models
+### ✅ Completed
+- **Multi-Model Backend**: GFS and AIGFS support with extensible model registry
+- **API Operational**: FastAPI server with SSL certificates at api.sodakweather.com
+- **Model-Aware Endpoints**: `/api/models`, `/api/maps`, `/api/runs` with filtering
+- **Automated Generation**: 4x daily (03:30, 09:30, 15:30, 21:30 UTC) for all enabled models
+- **Progressive Monitoring**: Checks NOMADS every minute, generates maps as data arrives
+- **6 Map Variables**: Temperature, precipitation, wind speed, MSLP & precip, 850mb analysis, radar (GFS only)
+- **13 Forecast Hours**: 0-72h in 6-hour increments (configurable to 120h+)
+- **Station Overlays**: Accurate coordinate handling for 9 PNW cities
+- **GRIB Caching**: 75% bandwidth reduction for GFS filtered requests
+- **Multi-Run Retention**: Last 4 runs per model with automated cleanup
+- **Interactive Frontend**: Deployed at sodakweather.com/models with:
+  - Model dropdown selector (GFS/AIGFS)
+  - Variable dropdown (auto-populated from API)
+  - Time slider with forecast hour labels
+  - Play/pause animation controls with adjustable speed (0.5-4 fps)
+  - Mobile-responsive design
+- **Dynamic Worker Management**: Adjusts parallelism based on available RAM (2-3 workers)
+- **Memory Optimization**: Intelligent cleanup between models to prevent OOM
 
-**Deployment**: http://174.138.84.70:8000 (Backend API)
+### 🚧 In Progress
+- **Performance Tuning**: Addressing memory pressure on 16GB VPS
+  - Dynamic worker calculation (psutil-based)
+  - Swap space configuration
+  - Memory cleanup between models
+- **Additional Variables**: Expanding beyond current 6 types
+  - 500mb Height & Vorticity
+  - Accumulated Snowfall (10:1 SLR)
+  - 24-hour Accumulated Precipitation
+  - Precipitation Type (rain/snow/freezing masks)
+  - 700mb Temperature Advection & Frontogenesis
+  - PWAT, CAPE, Surface Wind Gusts
 
-## Quick Start
-
-### Test Locally
-```bash
-# Generate a quick test map
-python3 test_quick_map.py
-
-# Generate all maps for all forecast hours
-python3 test_all_maps_all_hours.py
-
-# Test station overlay feature
-python3 test_station_overlays.py
-```
-
-### Configuration
-Copy `.env.example` to `.env` and adjust settings:
-```bash
-cp .env.example backend/.env
-```
+### ⏳ Planned
+- **Extended Forecast Hours**: 
+  - Every 3h to 48h (17 hours)
+  - Every 6h to 120h (13 additional hours)
+  - Total: ~30 forecast hours per variable per model
+- **HRRR Model Support**: High-resolution short-range forecasts (currently registered but disabled)
+- **Frontend Enhancements**:
+  - Model run time selector dropdown
+  - Side-by-side model comparison
+  - GIF animation export
+  - Full-screen mode
+- **Production Deployment**: Launch on theweatherforums.com/models after thorough testing on sodakweather.com
+- **Additional Regions**: Expand beyond PNW (configurable via settings)
 
 ## Documentation
 
-- **[DEPLOYMENT_SUCCESS.md](DEPLOYMENT_SUCCESS.md)** - Deployment summary and monitoring
-- **[RECOMMENDED_NEXT_STEPS.md](RECOMMENDED_NEXT_STEPS.md)** - Development roadmap and TODO
-- **[docs/DEPLOYMENT_GUIDE_WALKTHROUGH.md](docs/DEPLOYMENT_GUIDE_WALKTHROUGH.md)** - Step-by-step deployment
-- **[docs/ROADMAP.md](docs/ROADMAP.md)** - Project phases and timeline
-- **[docs/INTEGRATION.md](docs/INTEGRATION.md)** - Forum integration strategy
-- **[docs/GOTCHAS.md](docs/GOTCHAS.md)** - Common issues and solutions
+Detailed documentation is available in the `docs/` directory:
 
-## Features
+- **[API.md](docs/API.md)** - Complete API documentation with examples for multi-model endpoints
+- **[INTEGRATION.md](docs/INTEGRATION.md)** - 3-phase deployment strategy and forum integration guide
+- **[PERFORMANCE_PLAN.md](docs/PERFORMANCE_PLAN.md)** - VPS performance optimization, memory management, and diagnostic commands
 
-✅ **Implemented:**
-- GFS data fetching from AWS S3
-- 0.25° high-resolution maps (4x better than standard)
-- 4 map types: Temperature, Precipitation, Wind Speed, Precipitation Type
-- 4 forecast hours: 0h, 24h, 48h, 72h
-- Station overlays showing values at major PNW cities
-- GRIB file caching (75% bandwidth reduction)
-- Automated generation every 6 hours
-- FastAPI server with health checks
+## API Endpoints
 
-🚧 **In Development:**
-- Extended forecast hours (every 3h to 48h, every 6h to 120h)
-- Additional map types (850mb temp, MSLP, 500mb height, etc.)
-- Interactive frontend with slider/animation
-- Mobile-responsive design
+The REST API provides model-aware access to generated maps and metadata:
 
-## Project Status
+### Model Management
+- `GET /api/models` - List all enabled models with capabilities (resolution, max forecast hour, excluded variables)
+- `GET /api/models/{model_id}` - Get detailed info about a specific model (GFS, AIGFS, etc.)
 
-**Backend**: ✅ Deployed and stable  
-**API**: ✅ Operational at http://174.138.84.70:8000  
-**Maps**: ✅ Generating every 6 hours (00, 06, 12, 18 UTC)  
-**Frontend**: ⏳ Planned for sodakweather.com testing
+### Map Access
+- `GET /api/maps` - List available maps with filtering:
+  - `?model=GFS` - Filter by model
+  - `?variable=temp` - Filter by variable
+  - `?forecast_hour=12` - Filter by forecast hour
+  - `?run_time=2026-01-27T12:00:00Z` - Filter by run time
+- `GET /api/runs` - List available model runs with metadata
+  - `?model=GFS` - Filter by model (default: GFS)
+- `GET /images/{filename}` - Serve map images with ETag support
+- `GET /health` - API health check
+
+**Example:**
+```
+https://api.sodakweather.com/api/models
+https://api.sodakweather.com/api/maps?model=GFS&variable=temp&forecast_hour=24
+https://api.sodakweather.com/api/maps?model=AIGFS
+```
+
+## Development & Testing
+
+### Test Scripts
+Manual test scripts are available in `scripts/tests/` for local development and on-demand generation:
+
+```bash
+# Generate maps for specific models
+python scripts/tests/run_latest_gfs_now.py      # GFS only (filtered downloads, ~10-20 min)
+python scripts/tests/run_latest_aigfs_now.py    # AIGFS only (full GRIB2, ~20-40 min)
+python scripts/tests/run_latest_now.py          # All enabled models (~30-60 min)
+
+# Test individual map types
+python scripts/tests/test_temp_map.py           # Temperature map
+python scripts/tests/test_precip_map.py         # Precipitation
+python scripts/tests/test_850mb_map.py          # 850mb analysis
+python scripts/tests/test_radar_map.py          # Simulated radar
+python scripts/tests/test_mslp_precip_map.py    # MSLP with precipitation
+python scripts/tests/test_wind_speed_map.py     # Wind speed
+```
+
+See `scripts/tests/TEST_SCRIPTS_README.md` for detailed usage instructions.
+
+### Configuration
+Configuration is managed through:
+- **Environment variables**: Set in production systemd services
+- **backend/app/config.py**: Forecast hours, regions, storage paths, API settings
+- **Model Registry**: `backend/app/models/model_registry.py` - Add/configure models
+- **Variable Requirements**: `backend/app/models/variable_requirements.py` - Define data needs per map type
+
+### Adding a New Model
+1. Register model in `model_registry.py` with NOMADS paths and patterns
+2. Implement data fetcher in `services/` if special handling needed (or use base fetcher)
+3. Add model to frontend `config.js` for dropdown
+4. Enable in registry (`enabled=True`)
+
+### Adding a New Variable
+1. Define requirements in `variable_requirements.py` (raw fields, derived fields)
+2. Add rendering logic in `map_generator.py`
+3. Add to scheduler's `variables` list
+4. Frontend auto-detects via API
+
+## Next Steps
+
+The project is currently focused on stability, performance optimization, and expanding capabilities:
+
+### Immediate Priorities
+1. **Performance Optimization**: Implement memory management improvements on 16GB VPS
+   - Add swap space (4GB)
+   - Deploy dynamic worker calculation (psutil-based)
+   - Memory cleanup between model runs
+   
+2. **Variable Expansion**: Add 5-10 additional map types
+   - Winter weather focus (snowfall, ice, freezing levels)
+   - Upper air products (500mb height, vorticity)
+   - Convective parameters (CAPE, helicity)
+
+### Medium-Term Goals
+3. **Extended Forecast Hours**: Implement 3-hour resolution to 48h, 6-hour to 120h
+4. **HRRR Support**: Enable high-resolution short-range model
+5. **Frontend Polish**: 
+   - Model run time selector
+   - Side-by-side comparison
+   - GIF export
+
+### Long-Term Vision
+6. **Production Launch**: Deploy to theweatherforums.com/models after comprehensive testing
+7. **Additional Regions**: Support CONUS, other regions beyond PNW
+8. **Model Ensemble**: Compare multiple model outputs side-by-side
+
+For integration strategy, see [INTEGRATION.md](docs/INTEGRATION.md).  
+For performance diagnostics, see [PERFORMANCE_PLAN.md](docs/PERFORMANCE_PLAN.md).
+
+---
+
+**Last Updated**: January 28, 2026
