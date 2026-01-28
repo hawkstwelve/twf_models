@@ -82,7 +82,9 @@ class NOMADSDataFetcher(BaseDataFetcher):
             )
         
         # Single product - use original logic
-        file_url = self._build_nomads_url(
+        product_name = list(self.model_config.products.keys())[0]
+        file_url = self._build_nomads_url_for_product(
+            product_name=product_name,
             date_str=date_str,
             run_hour=run_hour_str,
             forecast_hour=forecast_hour,
