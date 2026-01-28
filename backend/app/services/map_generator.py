@@ -24,7 +24,6 @@ matplotlib.rcParams['agg.path.chunksize'] = 10000  # Larger chunks for better pe
 os.environ['CARTOPY_OFFLINE'] = '0'  # Allow downloading map data if needed
 
 from app.config import settings
-from app.services.data_fetcher import GFSDataFetcher
 from app.services.stations import get_stations_for_region, format_station_value
 
 logger = logging.getLogger(__name__)
@@ -117,7 +116,6 @@ class MapGenerator:
     }
     
     def __init__(self):
-        self.data_fetcher = GFSDataFetcher()
         self.storage_path = Path(settings.storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
     
@@ -396,19 +394,13 @@ class MapGenerator:
         elif variable == "precipitation" or variable == "precip":
             # Use tp_total from dataset (pre-computed by build_dataset_for_maps)
             # This is the total accumulated precipitation from hour 0 to forecast_hour
-            if 'tp_total' in ds:
-                data = ds['tp_total'].squeeze() / 25.4  # Convert mm to inches
-                data = self._normalize_lonlat(data)
-            else:
-                # Fallback for older code paths that don't use build_dataset_for_maps
-                tp_total = self.data_fetcher.fetch_total_precipitation(
-                    run_time=run_time,
-                    forecast_hour=forecast_hour,
-                    subset_region=(region or settings.map_region) == 'pnw'
+            if 'tp_total' not in ds:
+                raise ValueError(
+                    f"tp_total not found in dataset. Dataset must be built using "
+                    f"build_dataset_for_maps() which computes derived fields."
                 )
-                # Convert mm -> inches here; skip _process_precipitation(ds)
-                data = tp_total.squeeze() / 25.4
-                data = self._normalize_lonlat(data)
+            data = ds['tp_total'].squeeze() / 25.4  # Convert mm to inches
+            data = self._normalize_lonlat(data)
             units = "in"  # Inches for PNW users
             # Custom colormap matching the known-good precipitation scale
             from matplotlib import colors
@@ -538,12 +530,13 @@ class MapGenerator:
             is_850mb_map = True
         elif variable == "mslp_precip" or variable == "mslp_pcpn":
             # MSLP & Categorical Precipitation (Rain/Snow/Sleet/Freezing Rain)
-            # Use explicit 6-hour window rate from data_fetcher
-            data = self.data_fetcher.fetch_6hr_precip_rate_mmhr(
-                run_time=run_time,
-                forecast_hour=forecast_hour,
-                subset_region=(region or settings.map_region) == 'pnw'
-            )
+            # Use p6_rate_mmhr from dataset (pre-computed by build_dataset_for_maps)
+            if 'p6_rate_mmhr' not in ds:
+                raise ValueError(
+                    f"p6_rate_mmhr not found in dataset. Dataset must be built using "
+                    f"build_dataset_for_maps() which computes derived fields."
+                )
+            data = ds['p6_rate_mmhr'].squeeze()
             data = self._normalize_lonlat(data)
             units = "mm/hr"
             cmap = "Greens" # Default, though we plot layers below
