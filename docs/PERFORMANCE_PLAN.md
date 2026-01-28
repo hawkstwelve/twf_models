@@ -248,14 +248,18 @@ gc.collect()
 
 ---
 
-#### 1.2 Verify NOMADS Filtering is Working
-**Impact**: -70% download size, +40% download speed  
+#### 1.2 Verify NOMADS Filtering is Working (GFS Only)
+**Impact**: -70% download size for GFS, +40% download speed  
 **Risk**: None (already configured)  
 **Effort**: 5 minutes  
 
-**File**: `backend/app/services/nomads_data_fetcher.py`
+**Note**: NOMADS filtering is **only available for GFS**, not AIGFS. This is a NOMADS server limitation - no filter script exists for AIGFS. The code already handles this correctly:
+- GFS: Uses `filter_gfs_0p25.pl` → downloads 15-30MB filtered files
+- AIGFS: No filter available → downloads 150-200MB full files
 
-Add logging to verify filtered downloads:
+**File**: `backend/app/services/base_data_fetcher.py`
+
+Add logging to verify which models use filtering:
 
 ```python
 # In _download_from_nomads() method, add before download:
@@ -263,27 +267,30 @@ Add logging to verify filtered downloads:
 def _download_from_nomads(self, url: str, cache_key: str) -> str:
     """Download GRIB from NOMADS and cache locally"""
     
-    # 🆕 ADD THIS: Log if using filter
-    is_filtered = 'filter_' in url or 'var_' in url
+    # 🆕 ADD THIS: Log filtering status and file size
+    is_filtered = 'filter_' in url or 'cgi-bin' in url
     logger.info(f"  Downloading {'FILTERED' if is_filtered else 'FULL'} GRIB...")
     
     # ... existing download code ...
     
-    # 🆕 ADD THIS: Log file size
+    # 🆕 ADD THIS: Log file size after download
     file_size_mb = os.path.getsize(tmp_path) / (1024 * 1024)
     logger.info(f"  Downloaded {file_size_mb:.1f} MB")
 ```
 
 **Verify in logs**:
 ```bash
-journalctl -u twf-models-scheduler | grep "FILTERED\|Downloaded"
+journalctl -u twf-models-scheduler | grep -E "GFS|AIGFS|FILTERED|FULL|Downloaded"
 ```
 
-You should see:
-- `Downloading FILTERED GRIB...` (good!)
-- `Downloaded 15.3 MB` (filtered) vs `Downloaded 180.5 MB` (full)
+**Expected output**:
+- GFS: `Downloading FILTERED GRIB... Downloaded 15.3 MB` ✅
+- AIGFS: `Downloading FULL GRIB... Downloaded 180.5 MB` ⚠️ (unavoidable)
 
-If you see "FULL" downloads, filtering is not working properly.
+**Performance Impact**:
+- GFS: Fast downloads (filtered)
+- AIGFS: Slower downloads (full files), but this is unavoidable
+- Future consideration: Request NOAA to add AIGFS filter script
 
 ---
 
@@ -632,10 +639,10 @@ def start(self):
 | Phase | Changes | Memory Impact | Speed Impact | Stability |
 |-------|---------|---------------|--------------|-----------|
 | **P0: Emergency** | Swap + 2 workers + cleanup | -50% peak | +20% time | ⭐⭐⭐⭐⭐ |
-| **P1: High Impact** | Matplotlib + verify filter + cache | -25% | +30% | ⭐⭐⭐⭐ |
+| **P1: High Impact** | Matplotlib + verify GFS filter + cache | -25% | +30% GFS | ⭐⭐⭐⭐ |
 | **P2: Medium** | Batch mode + stations + pooling | -10% | +15% | ⭐⭐⭐ |
 | **P3: Nice to Have** | Dask + caching + monitoring | -10% | +5% | ⭐⭐ |
-| **TOTAL (All)** | Combined optimizations | -70% | +50% | Stable ✅ |
+| **TOTAL (All)** | Combined optimizations | -70% | +40% GFS | Stable ✅ |
 
 ### Before vs After (Estimated)
 
@@ -643,9 +650,13 @@ def start(self):
 |--------|-----------------|----------|----------|----------|
 | Peak Memory | 15.4 GB (99%) | 8.5 GB (54%) | 7.5 GB (48%) | 7.0 GB (45%) |
 | I/O Wait | 63% | 15-25% | 10-15% | 5-10% |
-| Total Time | ~45 min | ~55 min | ~45 min | ~35 min |
+| Total Time (GFS) | ~25 min | ~30 min | ~25 min | ~20 min |
+| Total Time (AIGFS) | ~25 min | ~35 min | ~30 min | ~25 min |
+| Combined Time | ~50 min | ~65 min | ~55 min | ~45 min |
 | Stability | ❌ Crashes | ✅ Stable | ✅ Stable | ✅ Stable |
 | Cache Hits | 20% | 40% | 60% | 75% |
+
+**Note on AIGFS**: AIGFS downloads full GRIB files (150-200MB each) because NOMADS doesn't provide a filter script for this model. This means AIGFS will always be slower than GFS, but the memory optimizations still help significantly.
 
 ---
 

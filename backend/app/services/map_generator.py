@@ -394,15 +394,21 @@ class MapGenerator:
             
             cmap = LinearSegmentedColormap.from_list('temperature', temp_colors, N=256)
         elif variable == "precipitation" or variable == "precip":
-            # Build total precip explicitly from 0 -> forecast_hour using data_fetcher
-            tp_total = self.data_fetcher.fetch_total_precipitation(
-                run_time=run_time,
-                forecast_hour=forecast_hour,
-                subset_region=(region or settings.map_region) == 'pnw'
-            )
-            # Convert mm -> inches here; skip _process_precipitation(ds)
-            data = tp_total.squeeze() / 25.4
-            data = self._normalize_lonlat(data)
+            # Use tp_total from dataset (pre-computed by build_dataset_for_maps)
+            # This is the total accumulated precipitation from hour 0 to forecast_hour
+            if 'tp_total' in ds:
+                data = ds['tp_total'].squeeze() / 25.4  # Convert mm to inches
+                data = self._normalize_lonlat(data)
+            else:
+                # Fallback for older code paths that don't use build_dataset_for_maps
+                tp_total = self.data_fetcher.fetch_total_precipitation(
+                    run_time=run_time,
+                    forecast_hour=forecast_hour,
+                    subset_region=(region or settings.map_region) == 'pnw'
+                )
+                # Convert mm -> inches here; skip _process_precipitation(ds)
+                data = tp_total.squeeze() / 25.4
+                data = self._normalize_lonlat(data)
             units = "in"  # Inches for PNW users
             # Custom colormap matching the known-good precipitation scale
             from matplotlib import colors
@@ -1232,16 +1238,17 @@ class MapGenerator:
                                     for k, v in station_values.items()}
                     
                 elif variable in ["precipitation", "precip"]:
-                    # Use 'tp' (total precipitation accumulated) instead of 'prate' (rate)
-                    extract_var = 'tp' if 'tp' in ds else 'prate'
+                    # Use 'tp_total' (total precipitation accumulated from hour 0) for station overlays
+                    # This matches the total precip shown in contours/colors
+                    extract_var = 'tp_total' if 'tp_total' in ds else ('tp' if 'tp' in ds else 'prate')
                     station_values = self.extract_station_values(
                         ds, extract_var, 
                         region=region_to_use,
                         priority_level=settings.station_priority
                     )
                     # Convert based on variable type
-                    if extract_var == 'tp':
-                        # tp is already in mm, just convert to inches
+                    if extract_var in ['tp_total', 'tp']:
+                        # tp_total/tp is already in mm, just convert to inches
                         station_values = {k: v / 25.4 for k, v in station_values.items()}
                     else:
                         # prate is in kg/m²/s, convert to inches (hourly accumulation)
