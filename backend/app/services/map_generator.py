@@ -1177,18 +1177,19 @@ class MapGenerator:
         valid_str = valid_time.strftime("%Hz %a, %b %d %Y") if valid_time else ""
         
         # Build title based on map type
+        # Use the model parameter to dynamically set the model name in titles
         if variable in ["precipitation", "precip"]:
-            map_title = "GFS Total Precip (in)"
+            map_title = f"{model} Total Precip (in)"
         elif is_mslp_precip:
-            map_title = "GFS 6-hour Averaged Precip Rate (mm/hr), MSLP (hPa), & 1000-500mb Thick (dam)"
+            map_title = f"{model} 6-hour Averaged Precip Rate (mm/hr), MSLP (hPa), & 1000-500mb Thick (dam)"
         elif is_850mb_map:
-            map_title = "GFS 850mb Temperature (°C)"
+            map_title = f"{model} 850mb Temperature (°C)"
         elif is_wind_speed_map:
-            map_title = "GFS 10m Wind Speed (mph) & Streamlines"
+            map_title = f"{model} 10m Wind Speed (mph) & Streamlines"
         elif variable == "radar" or variable == "radar_reflectivity":
-            map_title = "GFS Simulated Composite Radar Reflectivity (dBZ)"
+            map_title = f"{model} Simulated Composite Radar Reflectivity (dBZ)"
         elif variable in ["temperature_2m", "temp"]:
-            map_title = "GFS 2m Temperature (°F)"
+            map_title = f"{model} 2m Temperature (°F)"
         else:
             map_title = f"{model} {variable.replace('_', ' ').title()}"
         
