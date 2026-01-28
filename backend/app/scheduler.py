@@ -146,6 +146,16 @@ def generate_maps_for_hour(args):
                 child_logger.error(f"  ✗ {variable}: {e}")
                 failed_variables.append(variable)
         
+        # Clear matplotlib state after all maps for this forecast hour
+        # This prevents memory accumulation across variables
+        try:
+            import matplotlib.pyplot as plt
+            plt.clf()
+            plt.cla()
+            plt.close('all')
+        except Exception:
+            pass  # Non-critical
+        
         # Cleanup
         ds.close()
         del ds
@@ -469,6 +479,28 @@ class ForecastScheduler:
                 success = self.generate_forecast_for_model(model_id)
             
             results[model_id] = success
+            
+            # Memory cleanup between models to prevent accumulation
+            try:
+                import psutil
+                mem_before = psutil.virtual_memory()
+                logger.info(f"  🧹 Cleaning up after {model_id}...")
+                logger.info(f"     Memory before cleanup: {mem_before.percent:.1f}% used, {mem_before.available / (1024**3):.1f}GB available")
+                
+                gc.collect()
+                time.sleep(5)  # Let OS reclaim memory
+                
+                mem_after = psutil.virtual_memory()
+                freed_mb = (mem_after.available - mem_before.available) / (1024**2)
+                logger.info(f"     Memory after cleanup:  {mem_after.percent:.1f}% used, {mem_after.available / (1024**3):.1f}GB available")
+                if freed_mb > 0:
+                    logger.info(f"     ✓ Freed {freed_mb:.0f}MB")
+            except ImportError:
+                # Fallback if psutil not available
+                logger.info(f"  🧹 Cleaning up after {model_id}...")
+                gc.collect()
+                time.sleep(5)
+            
             logger.info(f"\n{'-'*80}\n")
         
         # Summary

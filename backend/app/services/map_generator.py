@@ -1353,14 +1353,29 @@ class MapGenerator:
             raise IOError(f"Map file is empty: {filepath}")
         logger.info(f"Map file verified: {filepath} ({file_size} bytes)")
         
-        # Aggressive memory cleanup
-        plt.clf()
-        plt.cla()
-        plt.close('all')
-        
-        # Force garbage collection for this specific map's objects
-        import gc
-        gc.collect()
+        # Aggressive memory cleanup to prevent matplotlib leaks
+        # CRITICAL: Must explicitly close figure and delete references
+        try:
+            # Get reference to current figure and axes
+            fig = plt.gcf()
+            ax = plt.gca()
+            
+            # Close the specific figure
+            plt.close(fig)
+            
+            # Delete references
+            del fig, ax
+            
+            # Clear any remaining state
+            plt.clf()
+            plt.cla()
+            plt.close('all')
+            
+            # Force garbage collection for this specific map's objects
+            import gc
+            gc.collect()
+        except Exception as cleanup_error:
+            logger.warning(f"Non-critical cleanup warning: {cleanup_error}")
         
         logger.info(f"✓ Map complete: {filename}")
         return filepath
