@@ -97,7 +97,7 @@ def test_snowfall_map(model_id: str = 'gfs', forecast_hour: int = 12):
         
         # Generate map
         print(f"\nStep 2: Generating snowfall map...")
-        map_gen = MapGenerator(storage_path=settings.image_storage_path)
+        map_gen = MapGenerator()
         
         try:
             map_path = map_gen.generate_map(
