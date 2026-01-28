@@ -94,6 +94,16 @@ body {
     gap: 8px;
 }
 
+.slider-section {
+    margin-top: 12px;
+}
+
+.sidebar-divider {
+    height: 1px;
+    background: var(--border-color);
+    margin: 8px 0;
+}
+
 .control-label {
     font-size: 13px;
     font-weight: 600;
@@ -155,8 +165,14 @@ body {
 
 /* Animation Controls */
 .animation-controls {
-    padding-top: 12px;
-    border-top: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.play-btn,
+.pause-btn {
+    width: 100%;
 }
 
 .animation-buttons {

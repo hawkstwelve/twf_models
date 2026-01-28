@@ -31,8 +31,35 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 # Global concurrency control - prevent resource thrashing
-# Adjust based on server capacity (4 workers for 8vCPU/16GB)
-_GLOBAL_POOL_SIZE = min(4, os.cpu_count() or 4)
+# Dynamic worker count based on available memory
+# Reserve 4GB for OS/API/overhead, allocate 4GB per worker
+def calculate_optimal_workers():
+    """Calculate worker count based on available system memory"""
+    try:
+        import psutil
+        mem = psutil.virtual_memory()
+        mem_gb = mem.total / (1024**3)
+        available_gb = mem.available / (1024**3)
+        
+        # Conservative: Reserve 4GB base, use 4GB per worker, max 3 workers
+        # This accounts for GFS, AIGFS, and future HRRR (higher memory)
+        workers = max(1, min(3, int((mem_gb - 4) / 4)))
+        
+        # If available memory is critically low, reduce workers
+        if available_gb < 6:
+            workers = 1
+            logger.warning(f"⚠️  Low memory ({available_gb:.1f}GB available), using 1 worker")
+        
+        logger.info(f"💾 System: {mem_gb:.1f}GB total, {available_gb:.1f}GB available → {workers} workers")
+        return workers
+    except ImportError:
+        logger.warning("psutil not installed, using default 2 workers")
+        return 2
+    except Exception as e:
+        logger.warning(f"Failed to calculate workers dynamically: {e}, using default 2")
+        return 2
+
+_GLOBAL_POOL_SIZE = calculate_optimal_workers()
 
 def generate_maps_for_hour(args):
     """

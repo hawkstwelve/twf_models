@@ -30,7 +30,6 @@
                 <select id="model-select" class="control-select">
                     <option value="GFS">Loading models...</option>
                 </select>
-                <span id="current-model-badge" class="model-badge">GFS</span>
             </div>
 
             <div class="control-section">
@@ -40,6 +39,8 @@
                 </select>
             </div>
 
+            <div class="sidebar-divider"></div>
+
             <div class="control-section">
                 <label class="control-label" for="forecast-select">Forecast Hour</label>
                 <select id="forecast-select" class="control-select">
@@ -47,35 +48,34 @@
                 </select>
             </div>
 
-            <div class="control-section animation-controls">
-                <label class="control-label">Animation</label>
-                <div class="animation-buttons">
-                    <button id="play-btn" class="control-btn" title="Play Animation">
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                            <path d="M3 2l10 6-10 6z"/>
-                        </svg>
-                    </button>
-                    <button id="pause-btn" class="control-btn" title="Pause Animation" style="display: none;">
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                            <path d="M3 2h4v12H3zm6 0h4v12H9z"/>
-                        </svg>
-                    </button>
-                </div>
-                
-                <div class="speed-control">
-                    <label class="speed-label">Speed (fps)</label>
-                    <input type="range" id="speed-slider" class="speed-slider" min="0.5" max="4" step="0.5" value="2">
-                    <span id="speed-value" class="speed-value">2</span>
-                </div>
-            </div>
-
-            <div class="control-section">
+            <div class="control-section slider-section">
                 <div class="slider-container">
                     <input type="range" id="time-slider" class="time-slider" min="0" max="0" value="0" step="1">
                     <div class="slider-labels">
                         <span id="slider-current-label">Now</span>
                         <span id="slider-max-label">+72h</span>
                     </div>
+                </div>
+            </div>
+
+            <div class="sidebar-divider"></div>
+
+            <div class="control-section animation-controls">
+                <label class="control-label">Animation</label>
+                <button id="play-btn" class="control-btn play-btn" title="Play Animation">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                        <path d="M3 2l10 6-10 6z"/>
+                    </svg>
+                </button>
+                <button id="pause-btn" class="control-btn pause-btn" title="Pause Animation" style="display: none;">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                        <path d="M3 2h4v12H3zm6 0h4v12H9z"/>
+                    </svg>
+                </button>
+                <div class="speed-control">
+                    <label class="speed-label">Speed (fps)</label>
+                    <input type="range" id="speed-slider" class="speed-slider" min="0.5" max="4" step="0.5" value="2">
+                    <span id="speed-value" class="speed-value">2</span>
                 </div>
             </div>
         </aside>

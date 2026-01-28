@@ -30,6 +30,7 @@ apscheduler==3.10.4
 python-dotenv==1.0.0
 python-dateutil==2.8.2
 pytz==2023.3
+psutil>=5.9.0  # System monitoring for dynamic worker calculation
 
 # Optional: For async processing
 # celery==5.3.4
