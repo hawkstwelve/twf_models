@@ -332,28 +332,23 @@ Configuration is managed through:
 The project is currently focused on stability, performance optimization, and expanding capabilities:
 
 ### Immediate Priorities
-1. **Performance Optimization**: Implement memory management improvements on 16GB VPS
-   - Add swap space (4GB)
-   - Deploy dynamic worker calculation (psutil-based)
-   - Memory cleanup between model runs
-   
-2. **Variable Expansion**: Add 5-10 additional map types
+1. **Variable Expansion**: Add 5-10 additional map types
    - Winter weather focus (snowfall, ice, freezing levels)
    - Upper air products (500mb height, vorticity)
    - Convective parameters (CAPE, helicity)
+2. **Extended Forecast Hours**: Implement 3-hour resolution to 48h, 6-hour to 120h
 
 ### Medium-Term Goals
-3. **Extended Forecast Hours**: Implement 3-hour resolution to 48h, 6-hour to 120h
-4. **HRRR Support**: Enable high-resolution short-range model
-5. **Frontend Polish**: 
+3. **HRRR Support**: Enable high-resolution short-range model
+4. **Frontend Polish**: 
    - Model run time selector
    - Side-by-side comparison
    - GIF export
 
 ### Long-Term Vision
-6. **Production Launch**: Deploy to theweatherforums.com/models after comprehensive testing
-7. **Additional Regions**: Support CONUS, other regions beyond PNW
-8. **Model Ensemble**: Compare multiple model outputs side-by-side
+5. **Production Launch**: Deploy to theweatherforums.com/models after comprehensive testing
+6. **Additional Regions**: Support CONUS, other regions beyond PNW
+7. **Model Ensemble**: Compare multiple model outputs side-by-side
 
 For integration strategy, see [INTEGRATION.md](docs/INTEGRATION.md).  
 For performance diagnostics, see [PERFORMANCE_PLAN.md](docs/PERFORMANCE_PLAN.md).
