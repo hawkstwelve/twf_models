@@ -15,37 +15,31 @@ const CONFIG = {
             label: 'Temperature',
             units: '°F',
             description: '2m Temperature',
-            icon: '🌡️'
         },
         'precip': {
             label: 'Total Precip',
             units: 'inches',
             description: 'Total Precipitation',
-            icon: '🌧️'
         },
         'wind_speed': {
             label: 'Wind Speed',
             units: 'mph',
             description: '10m Wind Speed',
-            icon: '💨'
         },
         'mslp_precip': {
             label: 'MSLP & Precip',
             units: 'mb / inches',
             description: 'Mean Sea Level Pressure & Precipitation',
-            icon: '🌀'
         },
         'temp_850_wind_mslp': {
             label: '850mb Analysis',
             units: '°C / mph / mb',
             description: '850mb Temperature, Wind, and MSLP',
-            icon: '🎈'
         },
         'radar': {
             label: 'Radar',
             units: 'dBZ',
             description: 'Simulated Composite Radar Reflectivity',
-            icon: '📡'
         }
     },
     

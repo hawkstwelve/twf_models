@@ -1,3 +1,9 @@
+#!/usr/bin/env python3
+"""
+Manual Multi-Model Map Generation Script
+Generates maps for all enabled models for the latest available run.
+Use run_latest_gfs_now.py or run_latest_aigfs_now.py to run individual models.
+"""
 import os
 import sys
 import logging
@@ -10,6 +16,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'backend
 
 from app.scheduler import ForecastScheduler
 from app.config import settings
+from app.models.model_registry import ModelRegistry
 
 # Configure logging to see output in terminal
 logging.basicConfig(
@@ -58,35 +65,71 @@ def cleanup_old_maps():
 
 def force_latest_run():
     print("="*70)
-    print("🚀 MANUALLY TRIGGERING LATEST GFS MAP GENERATION")
+    print("🌐 MANUALLY TRIGGERING LATEST MULTI-MODEL MAP GENERATION")
     print("="*70)
+    print()
     
     # Clean up old maps first
     cleanup_old_maps()
     
     scheduler = ForecastScheduler()
     
-    # Calculate the most likely available GFS run time
-    # GFS runs at 00, 06, 12, 18 UTC
-    from datetime import timezone
-    now = datetime.now(timezone.utc)
-    # Go back 3.5 hours to find which run should be finishing/available
-    adjusted_now = now - timedelta(hours=3, minutes=30)
-    run_hour = (adjusted_now.hour // 6) * 6
-    run_time = adjusted_now.replace(hour=run_hour, minute=0, second=0, microsecond=0)
+    # Get enabled models
+    enabled_models = ModelRegistry.get_enabled()
     
-    print(f"📡 Force-starting monitoring for: {run_time.strftime('%Y-%m-%d %Hz')}")
-    print(f"⏱️  Will check NOMADS every 60 seconds for data...")
+    print(f"📊 Enabled Models: {', '.join(enabled_models.keys())}")
+    print()
+    print("💡 Tip: Use run_latest_gfs_now.py or run_latest_aigfs_now.py")
+    print("   to generate maps for individual models.")
+    print()
+    print("="*70)
+    print()
     
     try:
-        # Run the same loop the scheduler uses
-        scheduler._progressive_generation_loop(
-            run_time, 
-            duration_minutes=120, # Monitor for 2 hours
-            check_interval_seconds=60
-        )
+        # Generate all enabled models
+        scheduler.generate_all_models()
+        
+        print()
+        print("="*70)
+        print("✅ MULTI-MODEL MAP GENERATION COMPLETE!")
+        print("="*70)
+        print()
+        print(f"Maps saved to: {settings.storage_path}")
+        print()
+        print("To view generated maps:")
+        print(f"  ls -lh {settings.storage_path}/")
+        print()
+            
     except KeyboardInterrupt:
-        print("\nStopping manual trigger...")
+        print()
+        print("⚠️  Manual trigger interrupted by user")
+        print()
+    except Exception as e:
+        print()
+        print("="*70)
+        print(f"❌ ERROR: {e}")
+        print("="*70)
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
-    force_latest_run()
+    print()
+    print("🌐 Multi-Model Map Generator")
+    print()
+    print("This script will:")
+    print("  1. Remove all existing maps")
+    print("  2. Generate maps for all enabled models")
+    print("  3. Process models sequentially (GFS, then AIGFS, etc.)")
+    print()
+    print("For testing individual models, use:")
+    print("  - run_latest_gfs_now.py (GFS only)")
+    print("  - run_latest_aigfs_now.py (AIGFS only)")
+    print()
+    
+    try:
+        force_latest_run()
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)

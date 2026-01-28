@@ -167,20 +167,21 @@ ModelRegistry.register(ModelConfig(
     url_layout=URLLayout.AIGFS_EXTENDED,
     subdir_template="aigfs.{date}/{hour}/model/atmos/grib2",
     products={
-        "pres": ProductPattern(
-            name="pres",
-            file_pattern="aigfs.t{run_hour}z.pres.f{forecast_hour}.grib2",
-            filter_script="filter_aigfs_0p25.pl"  # May or may not exist
-        ),
         "sfc": ProductPattern(
             name="sfc",
             file_pattern="aigfs.t{run_hour}z.sfc.f{forecast_hour}.grib2",
-            filter_script=None  # Likely no filter for AIGFS
+            filter_script=None  # No filter script exists for AIGFS
+        ),
+        "pres": ProductPattern(
+            name="pres",
+            file_pattern="aigfs.t{run_hour}z.pres.f{forecast_hour}.grib2",
+            filter_script=None  # No filter script exists for AIGFS
         ),
     },
     has_analysis_file=True,
-    analysis_pattern="aigfs.t{run_hour}z.pres.f000.grib2",  # AIGFS uses f000, not anl
+    analysis_pattern="aigfs.t{run_hour}z.sfc.f000.grib2",  # AIGFS uses f000 in sfc product
     resolution="0.25",
+    run_hours=[0, 6, 12, 18],  # Explicitly set run hours
     max_forecast_hour=384,
     forecast_increment=6,
     availability_delay_hours=3.5,
@@ -190,6 +191,7 @@ ModelRegistry.register(ModelConfig(
     tp_is_accumulated_from_init=False,  # Assume same as GFS (verify!)
     products_supported={"sfc", "pres"},
     excluded_variables=["radar", "radar_reflectivity"],
+    use_filter=False,  # AIGFS filter script doesn't exist on NOMADS - download full files
     color="#4169E1",
     enabled=True
 ))

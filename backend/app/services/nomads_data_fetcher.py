@@ -24,6 +24,41 @@ class NOMADSDataFetcher(BaseDataFetcher):
         if self.model_config.provider != ModelProvider.NOMADS:
             raise ValueError(f"Model {model_id} is not a NOMADS model")
     
+    def _select_product_for_fields(self, raw_fields: Set[str]) -> str:
+        """
+        Select which product file to use based on fields needed.
+        
+        For models with multiple products (e.g., AIGFS has 'sfc' and 'pres'):
+        - Surface fields (2m temp, 10m wind, precip, etc.) come from 'sfc' product
+        - Upper air fields (850mb, 500mb, etc.) come from 'pres' product
+        
+        For now, we prefer 'sfc' product as it has most surface fields.
+        If only upper air fields are needed, use 'pres' product.
+        """
+        if len(self.model_config.products) == 1:
+            # Only one product available, use it
+            return list(self.model_config.products.keys())[0]
+        
+        # Check if we need upper air fields
+        upper_air_fields = {'tmp_850', 'ugrd_850', 'vgrd_850', 'gh_500', 'hgt_500', 'gh_1000', 'hgt_1000'}
+        has_upper_air = bool(raw_fields & upper_air_fields)
+        
+        # Check if we need surface fields
+        surface_fields = {'tmp2m', 't2m', 'ugrd10m', 'u10', 'vgrd10m', 'v10', 'prmsl', 'msl', 
+                         'tp', 'prate', 'apcp', 'refc', 'crain', 'csnow', 'cicep', 'cfrzr'}
+        has_surface = bool(raw_fields & surface_fields)
+        
+        # Decision logic
+        if 'sfc' in self.model_config.products and has_surface:
+            # Prefer sfc product when we need surface fields
+            return 'sfc'
+        elif 'pres' in self.model_config.products and has_upper_air:
+            # Use pres product if we only need upper air
+            return 'pres'
+        else:
+            # Default to first available
+            return list(self.model_config.products.keys())[0]
+    
     def fetch_raw_data(
         self,
         run_time: datetime,
@@ -39,7 +74,14 @@ class NOMADSDataFetcher(BaseDataFetcher):
         # Determine if this is analysis (f000) and model has special analysis file
         is_analysis = (forecast_hour == 0) and self.model_config.has_analysis_file
         
-        # Build URL based on model's URL layout
+        # Check if model has multiple products and we need fields from different products
+        if len(self.model_config.products) > 1:
+            return self._fetch_from_multiple_products(
+                run_time, forecast_hour, raw_fields, subset_region,
+                date_str, run_hour_str, is_analysis
+            )
+        
+        # Single product - use original logic
         file_url = self._build_nomads_url(
             date_str=date_str,
             run_hour=run_hour_str,
@@ -66,8 +108,91 @@ class NOMADSDataFetcher(BaseDataFetcher):
         
         return ds
     
-    def _build_nomads_url(
+    def _fetch_from_multiple_products(
         self,
+        run_time: datetime,
+        forecast_hour: int,
+        raw_fields: Set[str],
+        subset_region: bool,
+        date_str: str,
+        run_hour_str: str,
+        is_analysis: bool
+    ) -> xr.Dataset:
+        """
+        Fetch from multiple product files and merge them.
+        Used for models like AIGFS that have separate sfc and pres files.
+        """
+        # Separate fields by product
+        upper_air_fields = {'tmp_850', 'ugrd_850', 'vgrd_850', 'gh_500', 'hgt_500', 'gh_1000', 'hgt_1000'}
+        surface_fields = {'tmp2m', 't2m', 'ugrd10m', 'u10', 'vgrd10m', 'v10', 'prmsl', 'msl', 
+                         'tp', 'prate', 'apcp', 'refc', 'crain', 'csnow', 'cicep', 'cfrzr'}
+        
+        fields_needing_sfc = raw_fields & surface_fields
+        fields_needing_pres = raw_fields & upper_air_fields
+        
+        datasets = []
+        
+        # Fetch from sfc product if needed
+        if fields_needing_sfc and 'sfc' in self.model_config.products:
+            logger.info(f"  Fetching surface fields from 'sfc' product")
+            url_sfc = self._build_nomads_url_for_product(
+                'sfc', date_str, run_hour_str, forecast_hour, 
+                is_analysis, fields_needing_sfc, subset_region
+            )
+            logger.info(f"  {self.model_id} SFC URL: {url_sfc}")
+            
+            url_hash = hashlib.sha1(url_sfc.encode()).hexdigest()[:16]
+            cache_key = f"{self.model_id.lower()}_sfc_{url_hash}"
+            tmp_path = self._get_cached_grib_path(cache_key)
+            
+            if not tmp_path:
+                tmp_path = self._download_from_nomads(url_sfc, cache_key)
+            else:
+                logger.info(f"    Using cached sfc file")
+            
+            ds_sfc = self._open_grib_file(tmp_path, forecast_hour, fields_needing_sfc, subset_region)
+            datasets.append(ds_sfc)
+        
+        # Fetch from pres product if needed
+        if fields_needing_pres and 'pres' in self.model_config.products:
+            logger.info(f"  Fetching upper air fields from 'pres' product")
+            url_pres = self._build_nomads_url_for_product(
+                'pres', date_str, run_hour_str, forecast_hour,
+                is_analysis, fields_needing_pres, subset_region
+            )
+            logger.info(f"  {self.model_id} PRES URL: {url_pres}")
+            
+            url_hash = hashlib.sha1(url_pres.encode()).hexdigest()[:16]
+            cache_key = f"{self.model_id.lower()}_pres_{url_hash}"
+            tmp_path = self._get_cached_grib_path(cache_key)
+            
+            if not tmp_path:
+                tmp_path = self._download_from_nomads(url_pres, cache_key)
+            else:
+                logger.info(f"    Using cached pres file")
+            
+            ds_pres = self._open_grib_file(tmp_path, forecast_hour, fields_needing_pres, subset_region)
+            datasets.append(ds_pres)
+        
+        if not datasets:
+            raise ValueError(f"No data fetched for any product")
+        
+        # Merge datasets
+        if len(datasets) == 1:
+            return datasets[0]
+        else:
+            logger.info(f"  Merging {len(datasets)} product datasets")
+            # Merge by taking coords from first dataset and adding all data vars
+            merged = datasets[0].copy()
+            for ds in datasets[1:]:
+                for var in ds.data_vars:
+                    merged[var] = ds[var]
+                ds.close()
+            return merged
+    
+    def _build_nomads_url_for_product(
+        self,
+        product_name: str,
         date_str: str,
         run_hour: str,
         forecast_hour: int,
@@ -75,27 +200,27 @@ class NOMADSDataFetcher(BaseDataFetcher):
         raw_fields: Set[str],
         subset_region: bool
     ) -> str:
-        """
-        Build NOMADS URL based on model configuration.
-        Handles different URL layouts (GFS, AIGFS, HRRR, etc.)
-        """
-        forecast_hour_str = f"{forecast_hour:03d}"
-        
-        # Get product pattern (default to first available, usually "sfc")
-        # For more complex models, may need to determine which product based on fields
-        product_name = list(self.model_config.products.keys())[0]
+        """Build URL for a specific product."""
         product = self.model_config.products[product_name]
+        forecast_hour_str = f"{forecast_hour:03d}"
         
         # Determine file pattern
         if is_analysis and self.model_config.analysis_pattern:
-            file_pattern = self.model_config.analysis_pattern.format(run_hour=run_hour)
+            # Check if analysis pattern matches this product
+            if product_name in self.model_config.analysis_pattern or product_name == 'sfc':
+                file_pattern = self.model_config.analysis_pattern.format(run_hour=run_hour)
+            else:
+                file_pattern = product.file_pattern.format(
+                    run_hour=run_hour,
+                    forecast_hour=forecast_hour_str
+                )
         else:
             file_pattern = product.file_pattern.format(
                 run_hour=run_hour,
                 forecast_hour=forecast_hour_str
             )
         
-        # Build subdirectory path based on layout
+        # Build subdirectory path
         subdir = self.model_config.subdir_template.format(
             model=self.model_id.lower(),
             date=date_str,

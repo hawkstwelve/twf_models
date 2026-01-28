@@ -136,7 +136,7 @@ class MapViewer {
         this.availableModels.forEach(model => {
             const option = document.createElement('option');
             option.value = model.id;
-            option.textContent = `${model.name} - ${model.full_name}`;
+            option.textContent = model.name;
             
             // Apply model color if available
             if (model.color) {

@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     nomads_max_retries: int = 3  # Number of retries for failed downloads
     
     # Storage
-    storage_path: str = "./images"
+    storage_path: str = "/opt/twf_models/backend/app/static/images"  # Absolute path for production
     storage_type: str = "local"  # local, s3, spaces
     
     # AWS/DO Spaces
