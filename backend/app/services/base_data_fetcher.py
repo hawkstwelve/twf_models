@@ -105,6 +105,10 @@ class BaseDataFetcher(ABC):
             logger.info(f"  Computing tp_total (0→{forecast_hour}h)")
             ds['tp_total'] = self._compute_total_precipitation(run_time, forecast_hour, subset_region)
         
+        if VariableRegistry.needs_snow_total(variables):
+            logger.info(f"  Computing tp_snow_total (0→{forecast_hour}h)")
+            ds['tp_snow_total'] = self._compute_total_snowfall(run_time, forecast_hour, subset_region)
+        
         if VariableRegistry.needs_precip_6hr_rate(variables):
             logger.info(f"  Computing p6_rate_mmhr")
             ds['p6_rate_mmhr'] = self._compute_6hr_precip_rate(run_time, forecast_hour, subset_region)
@@ -177,6 +181,224 @@ class BaseDataFetcher(ABC):
                 raise ValueError(f"No precipitation data available up to f{forecast_hour:03d}")
             
             return precip_total
+    
+    def _compute_total_snowfall(
+        self,
+        run_time: datetime,
+        forecast_hour: int,
+        subset_region: bool = True
+    ) -> xr.DataArray:
+        """
+        Compute total snowfall from hour 0 to forecast_hour using 10:1 ratio.
+        
+        Two approaches based on model capabilities:
+        
+        GFS (has_precip_type_masks=True):
+          - Uses native CSNOW field (categorical snow mask)
+          - Direct classification from model output
+          
+        AIGFS (has_precip_type_masks=False):
+          - Derives snow fraction from T850 and T2m
+          - Temperature-based classification: <= -2°C = 100% snow, >= +1°C = 0% snow
+        
+        Returns:
+            DataArray with total snowfall in inches (10:1 ratio), 2D grid (lat, lon)
+        """
+        
+        # Helper functions
+        def _drop_timeish(da: xr.DataArray) -> xr.DataArray:
+            """Drop time-related coordinates and squeeze singleton dims"""
+            drop_coords = [c for c in ['time', 'valid_time', 'step'] if c in da.coords]
+            if drop_coords:
+                da = da.drop_vars(drop_coords)
+            return da.squeeze()
+        
+        def _get_bucket_precip_mm(ds: xr.Dataset) -> xr.DataArray:
+            """Extract precipitation and convert to mm"""
+            if 'tp' in ds:
+                p = ds['tp']
+            elif 'apcp' in ds:
+                p = ds['apcp']
+            elif 'APCP_surface' in ds:
+                p = ds['APCP_surface']
+            else:
+                cand = [v for v in ds.data_vars if v.lower() in ('tp', 'apcp') or 'apcp' in v.lower()]
+                if not cand:
+                    raise ValueError("No precip field found (tp/apcp)")
+                p = ds[cand[0]]
+            
+            p = _drop_timeish(p)
+            
+            # Unit handling
+            units = (p.attrs.get('units') or '').lower()
+            if units in ('m', 'meter', 'meters'):
+                p_mm = p * 1000.0
+            elif units in ('mm', 'millimeter', 'millimeters'):
+                p_mm = p
+            else:
+                # Heuristic: GRIB precip often in meters; if max < 5 => probably meters
+                p_mm = (p * 1000.0) if float(p.max()) < 5.0 else p
+            
+            return p_mm
+        
+        def _to_celsius(temp_k_or_c: xr.DataArray) -> xr.DataArray:
+            """Convert temperature to Celsius"""
+            t = _drop_timeish(temp_k_or_c)
+            # Heuristic: Kelvin if values typically > 100
+            return (t - 273.15) if float(t.max()) > 100.0 else t
+        
+        def _snow_fraction_from_thermal(t850_c: xr.DataArray, t2m_c: xr.DataArray | None) -> xr.DataArray:
+            """
+            AIGFS fallback: derive snow fraction from temperature.
+            
+            Core logic: piecewise-linear ramp based on T850:
+              <= -2°C => 1.0 (100% snow)
+              >= +1°C => 0.0 (0% snow)
+              Between => linear interpolation
+            
+            Optional surface penalty: suppress snow where T2m is clearly warm
+            """
+            # Piecewise-linear ramp
+            snow_frac = xr.where(
+                t850_c <= -2.0, 1.0,
+                xr.where(
+                    t850_c >= 1.0, 0.0,
+                    (1.0 - (t850_c - (-2.0)) / (1.0 - (-2.0)))  # maps -2->1.0, +1->0.0
+                )
+            )
+            
+            if t2m_c is not None:
+                # Surface warm penalty: >= +3°C forces 0, 0-3°C tapers down
+                warm_penalty = xr.where(
+                    t2m_c >= 3.0, 0.0,
+                    xr.where(
+                        t2m_c <= 0.0, 1.0,
+                        (1.0 - (t2m_c / 3.0))
+                    )
+                )
+                snow_frac = snow_frac * warm_penalty
+            
+            # Clamp to valid range
+            snow_frac = snow_frac.clip(0.0, 1.0)
+            return snow_frac
+        
+        # Main logic
+        # Main logic
+        
+        # f000 => no accumulation
+        if forecast_hour == 0:
+            ds0 = self.fetch_raw_data(run_time, 0, {'tmp2m', 't2m'}, subset_region)
+            base = ds0['t2m'] if 't2m' in ds0 else ds0['tmp2m']
+            base = _drop_timeish(base)
+            return base * 0.0
+        
+        # List of bucket endpoints to sum
+        hours_to_fetch = list(range(
+            self.model_config.forecast_increment,
+            forecast_hour + 1,
+            self.model_config.forecast_increment
+        ))
+        
+        snow_liq_mm_total = None  # Liquid-equivalent mm classified as snow
+        
+        # Branch: model has native precip-type masks?
+        if self.model_config.has_precip_type_masks:
+            # -------- GFS PATH (native csnow) --------
+            logger.info(f"    Using native CSNOW masks (GFS path)")
+            
+            for fh in hours_to_fetch:
+                try:
+                    ds = self.fetch_raw_data(run_time, fh, {'tp', 'apcp', 'csnow'}, subset_region)
+                    
+                    p_mm = _get_bucket_precip_mm(ds)
+                    
+                    if 'csnow' not in ds:
+                        # Model claims masks but csnow missing => treat as no-snow for this bucket
+                        logger.warning(f"CSNOW missing at f{fh:03d}, skipping bucket")
+                        continue
+                    
+                    cs = _drop_timeish(ds['csnow'])
+                    
+                    # Normalize csnow to [0,1]
+                    cs_units = (cs.attrs.get('units') or '').lower()
+                    if cs_units in ('%', 'percent'):
+                        cs_frac = (cs / 100.0)
+                    else:
+                        # Heuristic: if max > 1.5 => likely 0-100 scale
+                        cs_frac = (cs / 100.0) if float(cs.max()) > 1.5 else cs
+                    
+                    cs_frac = cs_frac.clip(0.0, 1.0)
+                    
+                    snow_bucket_mm = p_mm * cs_frac
+                    
+                    snow_liq_mm_total = (snow_bucket_mm.copy(deep=True) if snow_liq_mm_total is None 
+                                        else (snow_liq_mm_total + snow_bucket_mm))
+                
+                except FileNotFoundError:
+                    logger.warning(f"Data not found for f{fh:03d}")
+                    continue
+                except Exception as e:
+                    logger.error(f"Error computing snowfall (mask path) for f{fh:03d}: {e}")
+                    continue
+        
+        else:
+            # -------- AIGFS PATH (derive snow fraction from temperature) --------
+            logger.info(f"    Deriving snow fraction from T850/T2m (AIGFS path)")
+            
+            for fh in hours_to_fetch:
+                try:
+                    # Need precip from surface and thermal from pressure levels
+                    ds_sfc = self.fetch_raw_data(run_time, fh, {'tp', 'apcp', 'tmp2m', 't2m'}, subset_region)
+                    ds_pres = self.fetch_raw_data(run_time, fh, {'tmp_850'}, subset_region)
+                    
+                    p_mm = _get_bucket_precip_mm(ds_sfc)
+                    
+                    if 'tmp_850' not in ds_pres:
+                        # Cannot classify without T850; skip bucket
+                        logger.warning(f"tmp_850 missing at f{fh:03d}, skipping bucket")
+                        continue
+                    
+                    t850_c = _to_celsius(ds_pres['tmp_850'])
+                    
+                    # Optional 2m temp if present
+                    t2m = None
+                    if 't2m' in ds_sfc:
+                        t2m = ds_sfc['t2m']
+                    elif 'tmp2m' in ds_sfc:
+                        t2m = ds_sfc['tmp2m']
+                    
+                    t2m_c = _to_celsius(t2m) if t2m is not None else None
+                    
+                    snow_frac = _snow_fraction_from_thermal(t850_c, t2m_c)
+                    
+                    # Align grids if needed (in case pressure/surface coords differ)
+                    if (snow_frac.shape != p_mm.shape) or (set(snow_frac.coords.keys()) != set(p_mm.coords.keys())):
+                        logger.debug(f"Interpolating snow_frac to match precip grid")
+                        snow_frac = snow_frac.interp_like(p_mm, method="linear")
+                    
+                    snow_bucket_mm = p_mm * snow_frac
+                    
+                    snow_liq_mm_total = (snow_bucket_mm.copy(deep=True) if snow_liq_mm_total is None 
+                                        else (snow_liq_mm_total + snow_bucket_mm))
+                
+                except FileNotFoundError:
+                    logger.warning(f"Data not found for f{fh:03d}")
+                    continue
+                except Exception as e:
+                    logger.error(f"Error computing snowfall (thermal path) for f{fh:03d}: {e}")
+                    continue
+        
+        if snow_liq_mm_total is None:
+            raise ValueError(f"No snowfall/precip data available up to f{forecast_hour:03d}")
+        
+        # Convert liquid-equivalent mm to inches of snow at 10:1 ratio
+        # snow_in = (mm_liq / 25.4) * 10
+        snow_in_10to1 = (snow_liq_mm_total / 25.4) * 10.0
+        
+        # Final cleanup of time-like coords
+        snow_in_10to1 = _drop_timeish(snow_in_10to1)
+        
+        return snow_in_10to1
     
     def _compute_6hr_precip_rate(
         self,

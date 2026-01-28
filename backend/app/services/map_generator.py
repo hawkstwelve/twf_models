@@ -429,6 +429,44 @@ class MapGenerator:
             precip_norm = colors.BoundaryNorm(precip_levels, custom_precip_cmap.N)
             
             cmap = custom_precip_cmap
+        elif variable == "snowfall":
+            # Use tp_snow_total from dataset (pre-computed by build_dataset_for_maps)
+            # This is the total accumulated snowfall from hour 0 to forecast_hour
+            if 'tp_snow_total' not in ds:
+                raise ValueError(
+                    f"tp_snow_total not found in dataset. Dataset must be built using "
+                    f"build_dataset_for_maps() which computes derived fields."
+                )
+            # tp_snow_total is already in inches (computed by _compute_total_snowfall)
+            data = ds['tp_snow_total'].squeeze()
+            data = self._normalize_lonlat(data)
+            units = "in"  # Inches (10:1 ratio)
+            
+            # Snowfall colormap - blues and whites for snow
+            from matplotlib import colors
+            
+            # Define colors for snowfall accumulation
+            snow_colors = [
+                '#E8E8E8', '#D0D0D0', '#B8B8B8',           # 0.1, 0.5, 1.0
+                '#C0D8FF', '#A0C8FF', '#80B8FF', '#60A8FF', # 2.0, 3.0, 4.0, 6.0
+                '#4090FF', '#2070FF', '#1050D0', '#0040B0', # 8.0, 10.0, 12.0, 15.0
+                '#0030A0', '#002080', '#001060', '#000850', # 18.0, 24.0, 30.0, 36.0
+                '#600060', '#800080', '#A000A0', '#C000C0'  # 42.0, 48.0, 60.0, 72.0+
+            ]
+            
+            # Define boundaries for snowfall levels (inches)
+            snow_levels = [0.1, 0.5, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0, 12.0, 15.0,
+                          18.0, 24.0, 30.0, 36.0, 42.0, 48.0, 60.0, 72.0]
+            
+            # Create discrete colormap
+            custom_snow_cmap = colors.ListedColormap(snow_colors[:len(snow_levels)-1])
+            custom_snow_cmap.set_over(snow_colors[-1])  # Use last color for values > 72.0
+            custom_snow_cmap.set_under((1, 1, 1, 0))    # Transparent for < 0.1
+            
+            # Use BoundaryNorm for discrete levels
+            snow_norm = colors.BoundaryNorm(snow_levels, custom_snow_cmap.N)
+            
+            cmap = custom_snow_cmap
         elif variable == "wind_speed_10m" or variable == "wind_speed":
             # For forecast hour 0 (analysis), wind components may not be available
             # Check if wind data exists before processing
@@ -967,7 +1005,7 @@ class MapGenerator:
                 logger.info(f"Lon shape: {lon_vals.shape}, range: {float(lon_vals.min()):.2f} to {float(lon_vals.max()):.2f}")
                 logger.info(f"Lat shape: {lat_vals.shape}, range: {float(lat_vals.min()):.2f} to {float(lat_vals.max()):.2f}")
             logger.info(f"Map extent: lon [-125.0 to -110.0], lat [42.0 to 49.0]")
-            logger.info(f"Data coverage: lon [{float(lon_vals.min()):.2f} to {float(lon_vals.max()):.2f}], lat [{float(lat_vals.min()):.2f} to {float(lat_vals.max()):.2f}]")
+            logger.info(f"Data coverage: lon [{float(lon_vals.min()):.2f} to {float(lonVals.max()):.2f}], lat [{float(lat_vals.min()):.2f} to {float(lat_vals.max()):.2f}]")
             logger.debug(f"Data shape: {data.shape}, Lon shape: {lon_vals.shape}, Lat shape: {lat_vals.shape}")
             logger.debug(f"Data min: {float(data.min()):.2f}, max: {float(data.max()):.2f}, mean: {float(data.mean()):.2f}")
             
@@ -980,6 +1018,17 @@ class MapGenerator:
                     cmap=cmap,
                     norm=precip_norm,
                     levels=temp_levels,
+                    extend='both',
+                    zorder=1
+                )
+            elif variable == "snowfall":
+                logger.info(f"Plotting snowfall with {len(snow_levels)} levels")
+                im = ax.contourf(
+                    lon_vals, lat_vals, data,
+                    transform=ccrs.PlateCarree(),
+                    cmap=cmap,
+                    norm=snow_norm,
+                    levels=snow_levels,
                     extend='both',
                     zorder=1
                 )
@@ -1161,6 +1210,13 @@ class MapGenerator:
             tick_positions = [0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.2, 1.6, 2, 3, 4, 6, 8, 10, 12, 14, 16, 18, 20]
             cbar.set_ticks(tick_positions)
             cbar.set_label("Total Precipitation (inches)")
+        elif variable == "snowfall":
+            # Custom colorbar for snowfall
+            cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40, shrink=0.6, norm=snow_norm)
+            # Set tick positions at key snowfall amounts
+            tick_positions = [0.1, 0.5, 1, 2, 3, 4, 6, 8, 10, 12, 15, 18, 24, 30, 36, 42, 48, 60, 72]
+            cbar.set_ticks(tick_positions)
+            cbar.set_label("Total Snowfall (10:1 Ratio) (inches)")
         else:
             cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, aspect=40, shrink=0.6)
             cbar.set_label(f"{variable.replace('_', ' ').title()} ({units})")
@@ -1179,6 +1235,8 @@ class MapGenerator:
         # Use the model parameter to dynamically set the model name in titles
         if variable in ["precipitation", "precip"]:
             map_title = f"{model} Total Precip (in)"
+        elif variable == "snowfall":
+            map_title = f"{model} Total Snowfall (10:1 Ratio) (in)"
         elif is_mslp_precip:
             map_title = f"{model} 6-hour Averaged Precip Rate (mm/hr), MSLP (hPa), & 1000-500mb Thick (dam)"
         elif is_850mb_map:
@@ -1217,7 +1275,7 @@ class MapGenerator:
                         priority_level=settings.station_priority
                     )
                     # Convert K to F for display
-                    station_values = {k: (v - 273.15) * 9/5 + 32 if v > 100 else v
+                    station_values = {k: (v - 273.15) * 9/5 +  32 if v > 100 else v
                                     for k, v in station_values.items()}
                 
                 elif variable in ["temp_850_wind_mslp", "850mb"]:
@@ -1247,6 +1305,19 @@ class MapGenerator:
                         # prate is in kg/m²/s, convert to inches (hourly accumulation)
                         station_values = {k: v * 3600 * 0.0393701 
                                         for k, v in station_values.items()}
+                
+                elif variable == "snowfall":
+                    # Use 'tp_snow_total' (total snowfall accumulated from hour 0) for station overlays
+                    extract_var = 'tp_snow_total'
+                    if extract_var in ds:
+                        station_values = self.extract_station_values(
+                            ds, extract_var, 
+                            region=region_to_use,
+                            priority_level=settings.station_priority
+                        )
+                        # tp_snow_total is already in inches, no conversion needed
+                    else:
+                        logger.warning("tp_snow_total not found in dataset for station overlays")
                     
                 elif variable in ["wind_speed_10m", "wind_speed"]:
                     # Wind speed requires calculating magnitude from u and v components
@@ -1671,26 +1742,17 @@ class MapGenerator:
             if gust_vars:
                 gusts = ds[gust_vars[0]]
                 # Convert m/s to mph if needed
-                if gusts.max() < 50:  # Likely in m/s
-                    gusts = gusts * 2.237
+                if gusts.max() < 200:  # If less than 200, probably m/s
+                    gusts = gusts * 2.237  # Convert m/s to mph
             else:
-                # Fallback: use wind speed as proxy (gusts are typically 1.3-1.5x wind speed)
+                # Calculate from wind components if available
                 u = ds.get('ugrd10m', None)
                 v = ds.get('vgrd10m', None)
                 if u is not None and v is not None:
                     wind_speed = np.sqrt(u**2 + v**2) * 2.237  # Convert to mph
                     gusts = wind_speed * 1.4  # Approximate gust factor
                 else:
-                    raise ValueError("Could not find wind gust data or wind components")
-        else:
-            # Calculate from wind speed with gust factor
-            u = ds.get('ugrd10m', None)
-            v = ds.get('vgrd10m', None)
-            if u is not None and v is not None:
-                wind_speed = np.sqrt(u**2 + v**2) * 2.237  # Convert to mph
-                gusts = wind_speed * 1.4  # Approximate gust factor
-            else:
-                raise ValueError("Could not find wind components for gust calculation")
+                    raise ValueError("Could not find wind components for gust calculation")
 
         
         return gusts.isel(time=0) if 'time' in gusts.dims else gusts

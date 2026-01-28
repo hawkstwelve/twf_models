@@ -23,6 +23,9 @@ class VariableRequirements:
     # Whether this variable needs precipitation accumulation
     needs_precip_total: bool = False
     
+    # Whether this variable needs snowfall accumulation
+    needs_snow_total: bool = False
+    
     # Whether this variable needs 6-hour precip rate
     needs_precip_6hr_rate: bool = False
     
@@ -96,6 +99,16 @@ class VariableRegistry:
             needs_precip_6hr_rate=False,
             needs_radar=True,
         ),
+        
+        "snowfall": VariableRequirements(
+            raw_fields={"tp", "prate"},  # Base precip fields (always needed)
+            derived_fields={"tp_snow_total"},  # Must compute 0→H snowfall accumulation
+            optional_fields={"csnow", "tmp_850", "tmp2m", "t2m"},  # csnow for GFS, temps for AIGFS
+            needs_precip_total=False,
+            needs_snow_total=True,
+            needs_precip_6hr_rate=False,
+            needs_upper_air=True,  # AIGFS needs T850 for snow classification
+        ),
     }
     
     @classmethod
@@ -118,6 +131,11 @@ class VariableRegistry:
     def needs_precip_total(cls, variables: List[str]) -> bool:
         """Check if any variable needs total precipitation"""
         return any(cls.get(v).needs_precip_total for v in variables if cls.get(v))
+    
+    @classmethod
+    def needs_snow_total(cls, variables: List[str]) -> bool:
+        """Check if any variable needs total snowfall"""
+        return any(cls.get(v).needs_snow_total for v in variables if cls.get(v))
     
     @classmethod
     def needs_precip_6hr_rate(cls, variables: List[str]) -> bool:
