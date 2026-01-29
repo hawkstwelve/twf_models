@@ -165,23 +165,39 @@ async def get_maps(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid run_time format. Use ISO format: 2026-01-24T00:00:00Z")
     else:
-        # If no run_time specified, default to latest run to avoid showing old maps
-        # Find the latest run by scanning all files
-        all_runs = set()
+        # If no run_time specified, default to latest run FOR THE REQUESTED MODEL
+        # This prevents cross-model run time conflicts (e.g., HRRR 19Z vs GFS 12Z)
+        all_runs_by_model = {}  # {model: [run_times]}
+        
         for image_file in images_path.glob("*.png"):
             try:
                 parts = image_file.stem.split("_")
                 if len(parts) >= 3:
+                    file_model = parts[0].upper()
                     file_run_time = f"{parts[1]}_{parts[2]}"
-                    all_runs.add(file_run_time)
+                    
+                    if file_model not in all_runs_by_model:
+                        all_runs_by_model[file_model] = set()
+                    all_runs_by_model[file_model].add(file_run_time)
             except (ValueError, IndexError):
                 continue
         
-        if all_runs:
-            # Sort runs (newest first) and use the latest
+        # Select latest run for the requested model (or first available model if no filter)
+        target_model = model.upper() if model else None
+        
+        if target_model and target_model in all_runs_by_model:
+            # Get latest run for this specific model
+            sorted_runs = sorted(all_runs_by_model[target_model], reverse=True)
+            run_time_filter = sorted_runs[0]
+            logger.debug(f"No run_time specified, defaulting to latest {target_model} run: {run_time_filter}")
+        elif not target_model and all_runs_by_model:
+            # No model filter - use the globally latest run
+            all_runs = set()
+            for runs in all_runs_by_model.values():
+                all_runs.update(runs)
             sorted_runs = sorted(all_runs, reverse=True)
             run_time_filter = sorted_runs[0]
-            logger.debug(f"No run_time specified, defaulting to latest run: {run_time_filter}")
+            logger.debug(f"No run_time or model specified, defaulting to globally latest run: {run_time_filter}")
     
     maps = []
     for image_file in images_path.glob("*.png"):
