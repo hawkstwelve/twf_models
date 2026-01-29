@@ -504,6 +504,7 @@ class NOMADSDataFetcher(BaseDataFetcher):
             logger.warning(f"  Surface level failed: {str(e)[:100]}")
         
         # Try 2m height (temperature)
+        temp_2m_found = False
         try:
             logger.info("Opening 2m heightAboveGround...")
             ds_2m = xr.open_dataset(
@@ -519,12 +520,45 @@ class NOMADSDataFetcher(BaseDataFetcher):
             for var in ds_2m.data_vars:
                 var_data = ds_2m[var].drop_vars(['heightAboveGround'], errors='ignore')
                 all_data_vars[var] = var_data
+                temp_2m_found = True
             if coords is None:
                 coords = {k: v for k, v in ds_2m.coords.items() if k != 'heightAboveGround'}
             logger.info(f"  2m variables: {list(ds_2m.data_vars)}")
             ds_2m.close()
         except Exception as e:
             logger.warning(f"  2m level failed: {str(e)[:100]}")
+        
+        # Fallback: Try to find temperature without level filtering (for analysis files)
+        if not temp_2m_found and any(f in raw_fields for f in ['tmp2m', 't2m']):
+            try:
+                logger.info("Trying 2m temperature without level filter (analysis file fallback)...")
+                # Try opening all messages and find t2m/tmp
+                ds_all = xr.open_dataset(
+                    path,
+                    engine='cfgrib',
+                    backend_kwargs={
+                        'indexpath': f"{index_base_path}_all.idx"
+                    },
+                    decode_timedelta=False
+                )
+                ds_all = self._subset_dataset(ds_all)
+                # Look for temperature variables that might be 2m
+                for var in ds_all.data_vars:
+                    var_lower = var.lower()
+                    if any(x in var_lower for x in ['t2m', 'tmp', 'temp']) and 't850' not in var_lower:
+                        # Check if this is likely a 2m temperature
+                        if hasattr(ds_all[var], 'GRIB_typeOfLevel'):
+                            level_type = ds_all[var].GRIB_typeOfLevel
+                            if 'heightAboveGround' in level_type or 'surface' in level_type:
+                                var_data = ds_all[var].drop_vars(['heightAboveGround'], errors='ignore')
+                                all_data_vars[var] = var_data
+                                logger.info(f"  Found 2m temperature as '{var}' (level: {level_type})")
+                                temp_2m_found = True
+                if coords is None and temp_2m_found:
+                    coords = {k: v for k, v in ds_all.coords.items() if k != 'heightAboveGround'}
+                ds_all.close()
+            except Exception as e:
+                logger.warning(f"  2m temperature fallback failed: {str(e)[:100]}")
         
         # Try 10m height (wind)
         try:
