@@ -603,8 +603,8 @@ class MapGenerator:
             raise ValueError(f"Unsupported variable: {variable}")
         
         # Determine base map colors based on variable type
-        # MSLP & Precip, Total Precip, and Radar maps: all white with black borders
-        if is_mslp_precip or variable in ["precipitation", "precip", "radar", "radar_reflectivity"]:
+        # MSLP & Precip, Total Precip, Snowfall, and Radar maps: all white with black borders
+        if is_mslp_precip or variable in ["precipitation", "precip", "snowfall", "radar", "radar_reflectivity"]:
             land_color = '#ffffff'
             ocean_color = '#ffffff'
             border_color = '#000000'
