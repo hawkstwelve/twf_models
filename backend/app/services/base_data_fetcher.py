@@ -185,44 +185,44 @@ class BaseDataFetcher(ABC):
             return tp
         
         else:
-            # Bucketed: use incremental accumulation
-            logger.info(f"    Computing bucketed precip incrementally")
-            
-            # Try to get previous accumulation
-            prev_hour = forecast_hour - self.model_config.forecast_increment
-            prev_key = (run_time_str, prev_hour)
+            # Bucketed: compute full accumulation from f000 to forecast_hour
+            # This is necessary because maps are generated in parallel (not sequentially),
+            # so we can't rely on previous hours being in the cache
+            logger.info(f"    Computing bucketed precip: summing all buckets from f000 to f{forecast_hour:03d}")
             
             precip_total = None
-            if prev_hour > 0 and prev_key in self._accumulation_cache:
-                precip_prev, _ = self._accumulation_cache[prev_key]
-                if precip_prev is not None:
-                    logger.info(f"    Reusing f{prev_hour:03d} total, adding f{forecast_hour:03d} bucket")
-                    precip_total = precip_prev.copy(deep=True)
+            increment = self.model_config.forecast_increment
             
-            # Fetch only the current bucket
-            try:
-                ds = self.fetch_raw_data(run_time, forecast_hour, {"tp"}, subset_region)
-                if 'tp' in ds:
-                    tp = ds['tp'].squeeze()
-                    drop_coords = [c for c in ['time', 'valid_time', 'step'] if c in tp.coords]
-                    if drop_coords:
-                        tp = tp.drop_vars(drop_coords)
+            # Loop through all forecast hours from increment to forecast_hour
+            # (skip f000 which has zero precip)
+            for fh in range(increment, forecast_hour + increment, increment):
+                if fh > forecast_hour:
+                    break
                     
-                    precip_total = tp.copy(deep=True) if precip_total is None else (precip_total + tp)
-                elif precip_total is None:
-                    # No data for first bucket
-                    raise ValueError(f"No tp in f{forecast_hour:03d}")
-            
-            except FileNotFoundError:
-                if precip_total is None:
-                    raise ValueError(f"No precipitation data available for f{forecast_hour:03d}")
-            except Exception as e:
-                logger.error(f"Error fetching precipitation for f{forecast_hour:03d}: {e}")
-                if precip_total is None:
-                    raise
+                try:
+                    ds = self.fetch_raw_data(run_time, fh, {"tp"}, subset_region)
+                    if 'tp' in ds:
+                        tp = ds['tp'].squeeze()
+                        drop_coords = [c for c in ['time', 'valid_time', 'step'] if c in tp.coords]
+                        if drop_coords:
+                            tp = tp.drop_vars(drop_coords)
+                        
+                        if precip_total is None:
+                            precip_total = tp.copy(deep=True)
+                        else:
+                            precip_total = precip_total + tp
+                        
+                        logger.debug(f"      Added bucket f{fh:03d}")
+                    else:
+                        logger.warning(f"      No tp in f{fh:03d}, skipping")
+                
+                except FileNotFoundError:
+                    logger.warning(f"      f{fh:03d} not found, skipping")
+                except Exception as e:
+                    logger.error(f"      Error fetching f{fh:03d}: {e}")
             
             if precip_total is None:
-                raise ValueError(f"No precipitation data available up to f{forecast_hour:03d}")
+                raise ValueError(f"No precipitation data available from f000 to f{forecast_hour:03d}")
             
             # Cache the result
             self._accumulation_cache[cache_key] = (precip_total, None)
