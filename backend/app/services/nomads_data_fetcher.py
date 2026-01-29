@@ -519,8 +519,15 @@ class NOMADSDataFetcher(BaseDataFetcher):
             ds_2m = self._subset_dataset(ds_2m)
             for var in ds_2m.data_vars:
                 var_data = ds_2m[var].drop_vars(['heightAboveGround'], errors='ignore')
-                all_data_vars[var] = var_data
-                temp_2m_found = True
+                # Rename temperature variables to standard names
+                if var in ['t', 'tmp']:
+                    all_data_vars['t2m'] = var_data
+                    temp_2m_found = True
+                    logger.info(f"  Mapped '{var}' -> 't2m'")
+                else:
+                    all_data_vars[var] = var_data
+                    if var in ['t2m', 'tmp2m']:
+                        temp_2m_found = True
             if coords is None:
                 coords = {k: v for k, v in ds_2m.coords.items() if k != 'heightAboveGround'}
             logger.info(f"  2m variables: {list(ds_2m.data_vars)}")
@@ -551,9 +558,11 @@ class NOMADSDataFetcher(BaseDataFetcher):
                             level_type = ds_all[var].GRIB_typeOfLevel
                             if 'heightAboveGround' in level_type or 'surface' in level_type:
                                 var_data = ds_all[var].drop_vars(['heightAboveGround'], errors='ignore')
-                                all_data_vars[var] = var_data
-                                logger.info(f"  Found 2m temperature as '{var}' (level: {level_type})")
+                                # Always map to 't2m' for consistency
+                                all_data_vars['t2m'] = var_data
+                                logger.info(f"  Found 2m temperature as '{var}' (level: {level_type}), mapped to 't2m'")
                                 temp_2m_found = True
+                                break  # Found it, stop looking
                 if coords is None and temp_2m_found:
                     coords = {k: v for k, v in ds_all.coords.items() if k != 'heightAboveGround'}
                 ds_all.close()
