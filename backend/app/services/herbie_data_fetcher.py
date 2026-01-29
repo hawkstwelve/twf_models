@@ -61,6 +61,7 @@ class HerbieDataFetcher(BaseDataFetcher):
         # Be specific to avoid pulling extra levels (e.g., ":2 m" not just "TMP")
         self._variable_map = {
             'tmp2m': ':TMP:2 m',
+            't2m': ':TMP:2 m',  # Alternative name
             'dpt2m': ':DPT:2 m',
             'ugrd10m': ':UGRD:10 m',
             'vgrd10m': ':VGRD:10 m',
@@ -73,9 +74,13 @@ class HerbieDataFetcher(BaseDataFetcher):
             'cicep': ':CICEP:surface',
             'cfrzr': ':CFRZR:surface',
             'gh500': ':HGT:500 mb',
+            # Upper air fields - support both naming conventions
             'tmp850': ':TMP:850 mb',
+            'tmp_850': ':TMP:850 mb',  # Underscored variant
             'ugrd850': ':UGRD:850 mb',
+            'ugrd_850': ':UGRD:850 mb',  # Underscored variant
             'vgrd850': ':VGRD:850 mb',
+            'vgrd_850': ':VGRD:850 mb',  # Underscored variant
         }
         
         # Data source priority (fallback order)
@@ -219,9 +224,10 @@ class HerbieDataFetcher(BaseDataFetcher):
         Standardize Herbie variable names to our naming convention.
         
         Herbie may return variables with GRIB2 naming (e.g., "t2m", "u10", "v10")
-        We need to rename them to match our standard names (tmp2m, ugrd10m, etc.)
+        We need to rename them to match our standard names with underscores.
         """
         # Common Herbie → Standard name mappings
+        # Use underscored format to match variable_requirements.py
         rename_map = {
             't2m': 'tmp2m',
             'd2m': 'dpt2m',
@@ -230,10 +236,14 @@ class HerbieDataFetcher(BaseDataFetcher):
             'msl': 'prmsl',
             'tp': 'tp',
             'refc': 'refc',
-            't': 'tmp850',  # May need level-specific handling
-            'u': 'ugrd850',
-            'v': 'vgrd850',
+            't': 'tmp_850',  # Level-specific, use underscore
+            'u': 'ugrd_850',  # Level-specific, use underscore
+            'v': 'vgrd_850',  # Level-specific, use underscore
             'gh': 'gh500',
+            # Also handle if they come through without renaming
+            'tmp850': 'tmp_850',
+            'ugrd850': 'ugrd_850',
+            'vgrd850': 'vgrd_850',
         }
         
         # Find which variables exist and need renaming
