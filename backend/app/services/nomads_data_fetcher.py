@@ -1,5 +1,6 @@
 """NOMADS-based data fetcher for models using NCEP NOMADS"""
 from datetime import datetime
+from pathlib import Path
 from typing import Set
 import xarray as xr
 import logging
