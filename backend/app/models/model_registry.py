@@ -36,10 +36,13 @@ class ModelConfig:
     description: str
     provider: ModelProvider
     
+    # Data fetcher configuration
+    fetcher_type: Optional[str] = None  # "nomads", "herbie", None=auto-detect from provider
+    
     # NOMADS URL structure
-    nomads_base_path: str  # e.g., "gfs/prod" or "aigfs/prod"
-    url_layout: URLLayout  # Which directory pattern
-    subdir_template: str  # e.g., "{model}.{date}/{hour}/atmos" or "{model}.{date}/{hour}/model/atmos/grib2"
+    nomads_base_path: str = ""  # e.g., "gfs/prod" or "aigfs/prod"
+    url_layout: Optional[URLLayout] = None  # Which directory pattern
+    subdir_template: str = ""  # e.g., "{model}.{date}/{hour}/atmos" or "{model}.{date}/{hour}/model/atmos/grib2"
     
     # Products (multiple GRIB files per forecast time)
     products: Dict[str, ProductPattern] = field(default_factory=dict)
@@ -196,13 +199,15 @@ ModelRegistry.register(ModelConfig(
     enabled=True
 ))
 
-# Register HRRR Model (future example - disabled)
+# Register HRRR Model (Herbie-based example - disabled for now)
 ModelRegistry.register(ModelConfig(
     id="HRRR",
     name="HRRR",
     full_name="High-Resolution Rapid Refresh",
     description="NOAA's high-resolution short-range model",
     provider=ModelProvider.NOMADS,
+    fetcher_type="herbie",  # Use Herbie instead of NOMADS fetcher
+    # NOMADS fields optional when using Herbie
     nomads_base_path="hrrr/prod",
     url_layout=URLLayout.HRRR_STYLE,
     subdir_template="hrrr.{date}/conus",
@@ -226,5 +231,5 @@ ModelRegistry.register(ModelConfig(
     products_supported={"2d"},
     excluded_variables=["temp_850_wind_mslp"],
     color="#FF6347",
-    enabled=False  # Not yet implemented
+    enabled=True  # Enabled: MapGenerator now supports 2D coordinates
 ))

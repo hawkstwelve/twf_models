@@ -41,9 +41,12 @@ def calculate_optimal_workers():
         mem_gb = mem.total / (1024**3)
         available_gb = mem.available / (1024**3)
         
-        # Conservative: Reserve 4GB base, use 4GB per worker, max 3 workers
-        # This accounts for GFS, AIGFS, and future HRRR (higher memory)
-        workers = max(1, min(3, int((mem_gb - 4) / 4)))
+        # Updated for 32GB server:
+        # Reserve 4GB base, use 4GB per worker, max 6 workers (was 3)
+        # This accounts for GFS, AIGFS, HRRR, RAP, and future models
+        # 32GB server: (32 - 4) / 4 = 7 → capped at 6
+        # 16GB server: (16 - 4) / 4 = 3 → capped at 3 (safe fallback)
+        workers = max(1, min(6, int((mem_gb - 4) / 4)))
         
         # If available memory is critically low, reduce workers
         if available_gb < 6:

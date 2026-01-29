@@ -5,12 +5,14 @@ pydantic==2.5.0
 pydantic-settings==2.1.0
 
 # Weather Data Processing
+# NOTE: numpy must be <2.0 for compatibility with scipy 1.11.4 and matplotlib 3.8.2
+# Herbie will try to install numpy 2.x, so we pin it explicitly
+numpy>=1.21.6,<2.0  # Pin to v1.x for scipy/matplotlib compatibility
 xarray==2023.11.0
 netcdf4==1.6.4
 cfgrib==0.9.10.4  # For GRIB file support
 metpy==1.5.1
 scipy==1.11.4
-numpy==1.26.2
 
 # Map Generation
 cartopy==0.22.0
@@ -31,6 +33,14 @@ python-dotenv==1.0.0
 python-dateutil==2.8.2
 pytz==2023.3
 psutil>=5.9.0  # System monitoring for dynamic worker calculation
+
+# Optional: Herbie for multi-model data access
+# IMPORTANT: Install with explicit numpy constraint to maintain compatibility
+# Installation command:
+#   pip install herbie-data 'numpy>=1.21.6,<2.0'
+# 
+# Or uncomment below after confirming your scipy/matplotlib versions support numpy 2.x
+herbie-data>=2024.1.0  # Enabled for Phase 0 testing
 
 # Optional: For async processing
 # celery==5.3.4

@@ -231,10 +231,12 @@ class NOMADSDataFetcher(BaseDataFetcher):
         )
         
         # Decide: filter or direct download
+        # Note: Skip filter for analysis files as they have different GRIB structure
         if (self.model_config.use_filter and 
             product.filter_script and 
             subset_region and 
-            raw_fields):
+            raw_fields and 
+            not is_analysis):  # Don't use filter for analysis files
             # Use filter CGI
             return self._build_filter_url(
                 date_str, run_hour, forecast_hour_str,
@@ -242,7 +244,7 @@ class NOMADSDataFetcher(BaseDataFetcher):
                 raw_fields, subset_region
             )
         else:
-            # Direct file download
+            # Direct file download (always use this for analysis files)
             base_url = "https://nomads.ncep.noaa.gov/pub/data/nccf/com"
             return f"{base_url}/{self.model_config.nomads_base_path}/{subdir}/{file_pattern}"
     

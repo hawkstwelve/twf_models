@@ -921,16 +921,16 @@ class MapGenerator:
                 )
         elif is_wind_speed_map:
             # Wind Speed with Streamlines
-            lon_vals = data.coords.get('lon', data.coords.get('longitude'))
-            lat_vals = data.coords.get('lat', data.coords.get('latitude'))
+            # Use helper to get correct coordinates and transform
+            X, Y, transform = self._get_plot_coords_and_transform(data, ax)
             
             # Wind speed levels matching the screenshot (0-100 mph)
             wind_levels = [0, 4, 6, 8, 9, 10, 12, 14, 16, 20, 22, 24, 26, 30, 34, 36, 40, 44, 48, 52, 58, 64, 70, 75, 85, 95, 100]
             
             # Plot filled contours for wind speed
             im = ax.contourf(
-                lon_vals, lat_vals, data,
-                transform=ccrs.PlateCarree(),
+                X, Y, data,
+                transform=transform,
                 cmap=cmap,
                 levels=wind_levels,
                 extend='max',
@@ -940,12 +940,12 @@ class MapGenerator:
             # Add contour lines with labels for key wind speeds
             contour_levels = [3, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80, 90]
             cs = ax.contour(
-                lon_vals, lat_vals, data,
+                X, Y, data,
                 levels=contour_levels,
                 colors='black',
                 linewidths=0.5,
                 alpha=0.6,
-                transform=ccrs.PlateCarree(),
+                transform=transform,
                 zorder=3
             )
             # Add labels to contour lines
@@ -977,9 +977,9 @@ class MapGenerator:
                 # Add streamlines to show wind direction
                 # Use a moderate density for clarity
                 ax.streamplot(
-                    lon_vals.values, lat_vals.values, 
+                    X, Y, 
                     u.values, v.values,
-                    transform=ccrs.PlateCarree(),
+                    transform=transform,
                     color='black',
                     linewidth=0.6,
                     density=1.5,
@@ -1980,53 +1980,111 @@ class MapGenerator:
         
         return precip
 
+    def _get_plot_coords_and_transform(self, da: xr.DataArray, ax):
+        """
+        Returns (X, Y, transform) suitable for contourf/pcolormesh.
+        
+        Handles both lat/lon (degrees) and projected (meters) coordinates correctly:
+        - If 2D lon/lat exist: use them with PlateCarree() (HRRR curvilinear)
+        - If 1D lon/lat exist: use them with PlateCarree() (GFS regular)
+        - Else fall back to x/y with ax.projection (already projected coordinates)
+        
+        This prevents the bug where x/y in meters gets plotted with PlateCarree()
+        transform (which expects degrees), causing blank or shifted plots.
+        """
+        import cartopy.crs as ccrs
+        
+        # Prefer explicit 2D lon/lat coords (HRRR)
+        for lon_name, lat_name in [('longitude', 'latitude'), ('lon', 'lat')]:
+            if lon_name in da.coords and lat_name in da.coords:
+                lonc = da.coords[lon_name]
+                latc = da.coords[lat_name]
+                if lonc.ndim == 2 and latc.ndim == 2:
+                    logger.debug(f"Using 2D {lon_name}/{lat_name} with PlateCarree()")
+                    return lonc, latc, ccrs.PlateCarree()
+                if lonc.ndim == 1 and latc.ndim == 1:
+                    logger.debug(f"Using 1D {lon_name}/{lat_name} with PlateCarree()")
+                    return lonc, latc, ccrs.PlateCarree()
+        
+        # Fallback: projected grid coordinates (meters) - use ax.projection
+        if 'x' in da.coords and 'y' in da.coords:
+            logger.debug("Using x/y coords with ax.projection (projected coordinates)")
+            return da.coords['x'], da.coords['y'], ax.projection
+        
+        if 'x' in da.dims and 'y' in da.dims:
+            logger.debug("Using x/y dims with ax.projection (projected coordinates)")
+            return da['x'], da['y'], ax.projection
+        
+        raise ValueError(
+            f"Could not determine plot coords for DataArray. "
+            f"coords={list(da.coords)} dims={list(da.dims)}"
+        )
+
     def _normalize_lonlat(self, da: xr.DataArray) -> xr.DataArray:
+        """
+        Normalize lon/lat coordinates to standard ranges and orientations.
+        
+        Handles both:
+        - 1D regular grids (GFS): lon(lon), lat(lat)
+        - 2D curvilinear grids (HRRR): lon(y,x), lat(y,x)
+        """
+        import numpy as np
+        
         logger.info(f"_normalize_lonlat input - coords: {list(da.coords.keys())}, dims: {list(da.dims)}")
         
-        # Check for longitude coordinate (try multiple common names)
-        lon = None
-        for lon_name in ['longitude', 'lon', 'x']:
-            if lon_name in da.coords:
-                lon = lon_name
-                break
-            elif lon_name in da.dims:
-                # Coordinate is actually a dimension, not in coords
-                lon = lon_name
-                break
+        # Identify lon/lat coord names (coords preferred; dims fallback)
+        lon = next((n for n in ['longitude', 'lon'] if n in da.coords), None)
+        lat = next((n for n in ['latitude', 'lat'] if n in da.coords), None)
         
-        # Check for latitude coordinate (try multiple common names)
-        lat = None
-        for lat_name in ['latitude', 'lat', 'y']:
-            if lat_name in da.coords:
-                lat = lat_name
-                break
-            elif lat_name in da.dims:
-                # Coordinate is actually a dimension, not in coords
-                lat = lat_name
-                break
-        
-        # If we can't find coordinates, return as-is
+        # If lon/lat not present as coords, leave unchanged
         if lon is None or lat is None:
-            logger.warning(f"Could not find lon/lat coordinates. Available coords: {list(da.coords.keys())}, dims: {list(da.dims)}")
+            logger.info("No explicit lon/lat coords found; leaving data unchanged for normalization.")
             return da
         
-        logger.info(f"Found coords - lon: {lon}, lat: {lat}")
+        lon_vals = da.coords[lon].values
+        lat_vals = da.coords[lat].values
         
-        # Get the coordinate values (whether from coords or dims)
-        lon_vals = da.coords[lon] if lon in da.coords else da[lon]
-        lat_vals = da.coords[lat] if lat in da.coords else da[lat]
+        logger.info(f"Found coords - lon: {lon} (shape: {lon_vals.shape}), lat: {lat} (shape: {lat_vals.shape})")
         
-        logger.info(f"Coordinate values - lon shape: {lon_vals.shape if hasattr(lon_vals, 'shape') else 'no shape'}, lat shape: {lat_vals.shape if hasattr(lat_vals, 'shape') else 'no shape'}")
+        # --- 2D curvilinear grid path (HRRR etc.) ---
+        if np.ndim(lon_vals) == 2 or np.ndim(lat_vals) == 2:
+            logger.info("Detected 2D curvilinear grid (HRRR-style)")
+            
+            # Wrap 0..360 -> -180..180 elementwise (no sorting possible on 2D)
+            if np.nanmax(lon_vals) > 180:
+                lon_wrapped = (((lon_vals + 180) % 360) - 180)
+                da = da.assign_coords({lon: (da.coords[lon].dims, lon_wrapped)})
+                logger.info("Applied 0-360 to -180-180 longitude wrapping (2D)")
+            
+            # Flip "north-up" if needed by comparing mean lat on first vs last row
+            lat2 = da.coords[lat].values
+            if np.ndim(lat2) == 2:
+                # Pick a y-like dim: first dim of lat coord
+                ydim = da.coords[lat].dims[0]
+                first_row_mean = float(np.nanmean(lat2[0, :]))
+                last_row_mean = float(np.nanmean(lat2[-1, :]))
+                logger.info(f"Checking orientation: first row mean={first_row_mean:.2f}, last row mean={last_row_mean:.2f}")
+                
+                if first_row_mean > last_row_mean:
+                    da = da.isel({ydim: slice(None, None, -1)})
+                    logger.info(f"Flipped {ydim} dimension for north-up orientation")
+            
+            logger.info(f"_normalize_lonlat 2D output - coords: {list(da.coords.keys())}, dims: {list(da.dims)}")
+            return da
         
-        # Normalize longitude to -180..180 if needed
-        if lon_vals.max() > 180:
+        # --- 1D regular lat/lon path (GFS etc.) ---
+        logger.info("Detected 1D regular grid (GFS-style)")
+        
+        if np.nanmax(lon_vals) > 180:
             da = da.assign_coords({lon: (((lon_vals + 180) % 360) - 180)})
             da = da.sortby(lon)
-        # Normalize latitude to ascending order if needed
+            logger.info("Applied 0-360 to -180-180 longitude wrapping and sorting (1D)")
+        
         if lat_vals[0] > lat_vals[-1]:
             da = da.reindex({lat: lat_vals[::-1]})
+            logger.info("Reindexed latitude to ascending order (1D)")
         
-        logger.info(f"_normalize_lonlat output - coords: {list(da.coords.keys())}, dims: {list(da.dims)}")
+        logger.info(f"_normalize_lonlat 1D output - coords: {list(da.coords.keys())}, dims: {list(da.dims)}")
         return da
 
     def _normalize_coords(self, obj):
