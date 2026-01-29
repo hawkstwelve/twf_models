@@ -231,20 +231,20 @@ class NOMADSDataFetcher(BaseDataFetcher):
         )
         
         # Decide: filter or direct download
-        # Note: Skip filter for analysis files as they have different GRIB structure
+        # Note: Analysis files (f000) have different GRIB structure - download direct and handle renaming
         if (self.model_config.use_filter and 
             product.filter_script and 
             subset_region and 
             raw_fields and 
             not is_analysis):  # Don't use filter for analysis files
-            # Use filter CGI
+            # Use filter CGI for forecast files
             return self._build_filter_url(
                 date_str, run_hour, forecast_hour_str,
                 is_analysis, product, subdir, file_pattern,
                 raw_fields, subset_region
             )
         else:
-            # Direct file download (always use this for analysis files)
+            # Direct file download (always for analysis files, or when filter unavailable)
             base_url = "https://nomads.ncep.noaa.gov/pub/data/nccf/com"
             return f"{base_url}/{self.model_config.nomads_base_path}/{subdir}/{file_pattern}"
     
@@ -521,14 +521,14 @@ class NOMADSDataFetcher(BaseDataFetcher):
             ds_2m = self._subset_dataset(ds_2m)
             for var in ds_2m.data_vars:
                 var_data = ds_2m[var].drop_vars(['heightAboveGround'], errors='ignore')
-                # Rename temperature variables to standard names
-                if var in ['t', 'tmp']:
-                    all_data_vars['t2m'] = var_data
+                # Rename temperature variables to standard names (tmp2m for consistency)
+                if var in ['t', 'tmp', 't2m']:
+                    all_data_vars['tmp2m'] = var_data
                     temp_2m_found = True
-                    logger.info(f"  Mapped '{var}' -> 't2m'")
+                    logger.info(f"  Mapped '{var}' -> 'tmp2m'")
                 else:
                     all_data_vars[var] = var_data
-                    if var in ['t2m', 'tmp2m']:
+                    if var in ['tmp2m']:
                         temp_2m_found = True
             if coords is None:
                 coords = {k: v for k, v in ds_2m.coords.items() if k != 'heightAboveGround'}
@@ -563,10 +563,10 @@ class NOMADSDataFetcher(BaseDataFetcher):
                                 
                                 if has_2m_level or 'heightAboveGround' in str(ds_msg[var].attrs):
                                     var_data = ds_msg[var].drop_vars(['heightAboveGround', 'height'], errors='ignore')
-                                    all_data_vars['t2m'] = var_data
+                                    all_data_vars['tmp2m'] = var_data
                                     if coords is None:
                                         coords = {k: v for k, v in ds_msg.coords.items() if k not in ['heightAboveGround', 'height']}
-                                    logger.info(f"  Found and mapped '{var}' -> 't2m' in message {i}")
+                                    logger.info(f"  Found and mapped '{var}' -> 'tmp2m' in message {i}")
                                     temp_2m_found = True
                                     ds_msg.close()
                                     break

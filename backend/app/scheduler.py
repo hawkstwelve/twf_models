@@ -429,6 +429,13 @@ class ForecastScheduler:
                     filename = f"aigfs.t{run_hour}z.sfc.f{forecast_hour_str}.grib2"
                 url = f"{base_url}/aigfs/prod/aigfs.{date_str}/{run_hour}/model/atmos/grib2/{filename}"
                 
+            elif model_id == "HRRR":
+                # Check HRRR location (Herbie handles the actual download, we just check top-level availability)
+                # HRRR is on AWS, not NOMADS, so just assume it's available if run time is recent
+                # Herbie will handle the actual availability check internally
+                logger.debug(f"HRRR availability check - assuming available (Herbie handles download)")
+                return True
+                
             else:
                 logger.warning(f"Don't know how to check availability for {model_id}")
                 return True  # Assume available for unknown models
