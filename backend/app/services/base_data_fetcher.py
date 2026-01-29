@@ -364,61 +364,70 @@ class BaseDataFetcher(ABC):
         prev_key = (run_time_str, prev_hour)
         
         snow_liq_mm_total = None
+        hours_to_process = []
+        
         if prev_hour > 0 and prev_key in self._accumulation_cache:
             _, snow_prev_in = self._accumulation_cache[prev_key]
             if snow_prev_in is not None:
                 logger.info(f"    Reusing f{prev_hour:03d} snowfall, adding f{forecast_hour:03d} bucket")
                 # Convert previous snow (in inches) back to liquid mm for accumulation
                 snow_liq_mm_total = (snow_prev_in / 10.0) * 25.4  # inches -> mm liquid
+                # Only process the current bucket
+                hours_to_process = [forecast_hour]
         
-        # Process only the current forecast hour bucket
-        fh = forecast_hour
+        # If no cached data, accumulate from all hours
+        if not hours_to_process:
+            increment = self.model_config.forecast_increment
+            hours_to_process = list(range(increment, forecast_hour + increment, increment))
+            logger.info(f"    No cache, accumulating snowfall from f000 through {hours_to_process}")
         
-        # Branch: model has native precip-type masks?
-        if self.model_config.has_precip_type_masks:
-            # -------- GFS PATH (native csnow) --------
-            logger.info(f"    Using native CSNOW mask (GFS path) for f{fh:03d}")
-            
-            try:
-                ds = self.fetch_raw_data(run_time, fh, {'tp', 'apcp', 'csnow'}, subset_region)
+        # Process each forecast hour bucket
+        for fh in hours_to_process:
+            # Branch: model has native precip-type masks?
+            if self.model_config.has_precip_type_masks:
+                # -------- GFS PATH (native csnow) --------
+                logger.info(f"    Using native CSNOW mask (GFS path) for f{fh:03d}")
                 
-                p_mm = _get_bucket_precip_mm(ds)
+                try:
+                    ds = self.fetch_raw_data(run_time, fh, {'tp', 'apcp', 'csnow'}, subset_region)
+                    
+                    p_mm = _get_bucket_precip_mm(ds)
+                    
+                    if 'csnow' not in ds:
+                        # Model claims masks but csnow missing => treat as no-snow for this bucket
+                        logger.warning(f"CSNOW missing at f{fh:03d}, skipping bucket")
+                        if snow_liq_mm_total is None:
+                            raise ValueError(f"No snowfall data for f{fh:03d}")
+                    else:
+                        cs = _drop_timeish(ds['csnow'])
+                        
+                        # Normalize csnow to [0,1]
+                        cs_units = (cs.attrs.get('units') or '').lower()
+                        if cs_units in ('%', 'percent'):
+                            cs_frac = (cs / 100.0)
+                        else:
+                            # Heuristic: if max > 1.5 => likely 0-100 scale
+                            cs_frac = (cs / 100.0) if float(cs.max()) > 1.5 else cs
+                        
+                        cs_frac = cs_frac.clip(0.0, 1.0)
+                        
+                        snow_bucket_mm = p_mm * cs_frac
+                        
+                        snow_liq_mm_total = (snow_bucket_mm.copy(deep=True) if snow_liq_mm_total is None 
+                                            else (snow_liq_mm_total + snow_bucket_mm))
                 
-                if 'csnow' not in ds:
-                    # Model claims masks but csnow missing => treat as no-snow for this bucket
-                    logger.warning(f"CSNOW missing at f{fh:03d}, skipping bucket")
+                except FileNotFoundError:
+                    logger.warning(f"Data not found for f{fh:03d}")
                     if snow_liq_mm_total is None:
                         raise ValueError(f"No snowfall data for f{fh:03d}")
-                else:
-                    cs = _drop_timeish(ds['csnow'])
-                    
-                    # Normalize csnow to [0,1]
-                    cs_units = (cs.attrs.get('units') or '').lower()
-                    if cs_units in ('%', 'percent'):
-                        cs_frac = (cs / 100.0)
-                    else:
-                        # Heuristic: if max > 1.5 => likely 0-100 scale
-                        cs_frac = (cs / 100.0) if float(cs.max()) > 1.5 else cs
-                    
-                    cs_frac = cs_frac.clip(0.0, 1.0)
-                    
-                    snow_bucket_mm = p_mm * cs_frac
-                    
-                    snow_liq_mm_total = (snow_bucket_mm.copy(deep=True) if snow_liq_mm_total is None 
-                                        else (snow_liq_mm_total + snow_bucket_mm))
+                except Exception as e:
+                    logger.error(f"Error computing snowfall (mask path) for f{fh:03d}: {e}")
+                    if snow_liq_mm_total is None:
+                        raise
             
-            except FileNotFoundError:
-                logger.warning(f"Data not found for f{fh:03d}")
-                if snow_liq_mm_total is None:
-                    raise ValueError(f"No snowfall data for f{fh:03d}")
-            except Exception as e:
-                logger.error(f"Error computing snowfall (mask path) for f{fh:03d}: {e}")
-                if snow_liq_mm_total is None:
-                    raise
-        
-        else:
-            # -------- AIGFS PATH (derive snow fraction from temperature) --------
-            logger.info(f"    Deriving snow fraction from T850/T2m (AIGFS path) for f{fh:03d}")
+            else:
+                # -------- AIGFS PATH (derive snow fraction from temperature) --------
+                logger.info(f"    Deriving snow fraction from T850/T2m (AIGFS path) for f{fh:03d}")
             
             try:
                 # Need precip from surface and thermal from pressure levels

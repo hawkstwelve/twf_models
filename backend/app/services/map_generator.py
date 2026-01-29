@@ -442,26 +442,40 @@ class MapGenerator:
             data = self._normalize_lonlat(data)
             units = "in"  # Inches (10:1 ratio)
             
-            # Snowfall colormap - blues and whites for snow
+            # Snowfall colormap - custom hex colors for different accumulation levels
             from matplotlib import colors
             
-            # Define colors for snowfall accumulation
+            # Define hex colors for snowfall accumulation (from user specification)
             snow_colors = [
-                '#E8E8E8', '#D0D0D0', '#B8B8B8',           # 0.1, 0.5, 1.0
-                '#C0D8FF', '#A0C8FF', '#80B8FF', '#60A8FF', # 2.0, 3.0, 4.0, 6.0
-                '#4090FF', '#2070FF', '#1050D0', '#0040B0', # 8.0, 10.0, 12.0, 15.0
-                '#0030A0', '#002080', '#001060', '#000850', # 18.0, 24.0, 30.0, 36.0
-                '#600060', '#800080', '#A000A0', '#C000C0'  # 42.0, 48.0, 60.0, 72.0+
+                '#ffffff', '#dbdbdb', '#959595', '#6e6e6e', '#505050',  # 0.1-2.0"
+                '#96d1fa', '#78b9fb', '#50a5f5', '#3c97f5', '#3083f1',  # 2.0-4.5"
+                '#2b6eeb', '#2664d3', '#215ac3',                         # 4.5-6.0"
+                '#3e0091', '#4c008f', '#5a008d', '#67008a', '#860087',  # 6.0-8.5"
+                '#a10285', '#c90181', '#f3027c',                         # 8.5-10.0"
+                '#f41484', '#f53b9b', '#f65faf', '#f76eb7', '#f885c3',  # 10-15"
+                '#f58dc7', '#ea95ca', '#e79dcd', '#d9acd5', '#cfb2d6',  # 15-20"
+                '#c1c7dd', '#b6d8ec', '#a9e3ef', '#a1eff3', '#94f8f6',  # 20-25"
+                '#8dedeb', '#7edbd9', '#73c0c7', '#7cb9ca', '#81b7cd',  # 25-30"
+                '#88b0ce', '#8db0d0', '#90b0d2', '#93abd7', '#93abd7',  # 30-35"
+                '#99a7db', '#9da5dd', '#a5a0df', '#a5a0df', '#af9be7',  # 35-40"
+                '#af9be7', '#ad95e2', '#b795eb', '#b291e5', '#bf91f1',  # 40-45"
+                '#c68df5', '#c488f0', '#d187f9', '#cb84f3'               # 45-48"+
             ]
             
             # Define boundaries for snowfall levels (inches)
-            snow_levels = [0.1, 0.5, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0, 12.0, 15.0,
-                          18.0, 24.0, 30.0, 36.0, 42.0, 48.0, 60.0, 72.0]
+            snow_levels = [
+                0.1, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5,      # 0.1-5.0"
+                5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0, 9.5,      # 5.0-10.0"
+                10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0, 19.0,  # 10-20"
+                20.0, 21.0, 22.0, 23.0, 24.0, 25.0, 26.0, 27.0, 28.0, 29.0,  # 20-30"
+                30.0, 31.0, 32.0, 33.0, 34.0, 35.0, 36.0, 37.0, 38.0, 39.0,  # 30-40"
+                40.0, 41.0, 42.0, 43.0, 44.0, 45.0, 46.0, 47.0, 48.0         # 40-48"
+            ]
             
             # Create discrete colormap
             custom_snow_cmap = colors.ListedColormap(snow_colors[:len(snow_levels)-1])
-            custom_snow_cmap.set_over(snow_colors[-1])  # Use last color for values > 72.0
-            custom_snow_cmap.set_under((1, 1, 1, 0))    # Transparent for < 0.1
+            custom_snow_cmap.set_over('#cb84f3')     # Purple for values > 48"
+            custom_snow_cmap.set_under((1, 1, 1, 0))  # Transparent for < 0.1"
             
             # Use BoundaryNorm for discrete levels
             snow_norm = colors.BoundaryNorm(snow_levels, custom_snow_cmap.N)
