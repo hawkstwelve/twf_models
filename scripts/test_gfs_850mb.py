@@ -44,7 +44,11 @@ try:
     for var in expected:
         if var in ds.data_vars:
             found.append(var)
-            print(f'  ✓ {var} present')
+            shape = ds[var].shape
+            ndim = ds[var].ndim
+            print(f'  ✓ {var} present - shape: {shape}, ndim: {ndim}')
+            if ndim != 2:
+                print(f'    ⚠ WARNING: Expected 2D, got {ndim}D')
         else:
             missing.append(var)
             print(f'  ✗ {var} MISSING')
@@ -53,8 +57,16 @@ try:
         print(f'\n❌ FAILED: Missing variables: {missing}')
         print(f'   Available: {list(ds.data_vars)}')
         sys.exit(1)
+    
+    # Check all variables are 2D
+    non_2d = [var for var in expected if var in ds.data_vars and ds[var].ndim != 2]
+    if non_2d:
+        print(f'\n❌ FAILED: Non-2D variables: {non_2d}')
+        for var in non_2d:
+            print(f'   {var}: {ds[var].shape} (dims: {ds[var].dims})')
+        sys.exit(1)
     else:
-        print(f'\n✅ ALL REQUIRED VARIABLES PRESENT')
+        print(f'\n✅ ALL VARIABLES ARE 2D AND PRESENT')
         
 except Exception as e:
     print(f'\n✗ FAILED: {e}')

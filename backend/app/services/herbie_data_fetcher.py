@@ -209,6 +209,9 @@ class HerbieDataFetcher(BaseDataFetcher):
             # Rename variables to our standard names
             ds = self._standardize_variable_names(ds)
             
+            # Select specific pressure levels and remove extra dimensions
+            ds = self._select_pressure_levels(ds)
+            
             return ds
             
         except Exception as e:
@@ -255,6 +258,55 @@ class HerbieDataFetcher(BaseDataFetcher):
         if vars_to_rename:
             ds = ds.rename(vars_to_rename)
             logger.debug(f"Renamed variables: {vars_to_rename}")
+        
+        return ds
+    
+    def _select_pressure_levels(self, ds: xr.Dataset) -> xr.Dataset:
+        """
+        Select specific pressure levels for upper air variables and remove extra dimensions.
+        
+        When requesting specific pressure levels (e.g., 850mb), the data may still have
+        an isobaricInhPa dimension. This method selects the correct level and squeezes
+        out the dimension to return 2D (lat, lon) arrays.
+        """
+        import xarray as xr
+        
+        # Check if isobaricInhPa dimension exists
+        if 'isobaricInhPa' not in ds.dims:
+            return ds
+        
+        # Map variables to their expected pressure levels (in hPa)
+        level_map = {
+            'tmp_850': 850,
+            'ugrd_850': 850,
+            'vgrd_850': 850,
+            'gh500': 500,
+        }
+        
+        # Process each variable that needs level selection
+        vars_to_process = []
+        for var_name, level in level_map.items():
+            if var_name in ds.data_vars:
+                if 'isobaricInhPa' in ds[var_name].dims:
+                    vars_to_process.append((var_name, level))
+        
+        if not vars_to_process:
+            return ds
+        
+        # Select levels for each variable
+        for var_name, level in vars_to_process:
+            if level in ds['isobaricInhPa'].values:
+                # Select the specific level and drop the dimension
+                ds[var_name] = ds[var_name].sel(isobaricInhPa=level, drop=True)
+                logger.debug(f"Selected {level}mb for {var_name}, dropped isobaricInhPa dimension")
+            else:
+                logger.warning(f"Level {level}mb not found for {var_name}, available: {ds['isobaricInhPa'].values}")
+        
+        # If no variables still use isobaricInhPa, drop it as a coordinate
+        vars_with_level = [v for v in ds.data_vars if 'isobaricInhPa' in ds[v].dims]
+        if not vars_with_level and 'isobaricInhPa' in ds.coords:
+            ds = ds.drop_vars('isobaricInhPa')
+            logger.debug("Dropped isobaricInhPa coordinate (no variables use it)")
         
         return ds
     
