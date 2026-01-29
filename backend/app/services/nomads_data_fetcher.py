@@ -535,39 +535,46 @@ class NOMADSDataFetcher(BaseDataFetcher):
         except Exception as e:
             logger.warning(f"  2m level failed: {str(e)[:100]}")
         
-        # Fallback: Try to find temperature without level filtering (for analysis files)
+        # Fallback: Try without filter_by_keys for analysis files
         if not temp_2m_found and any(f in raw_fields for f in ['tmp2m', 't2m']):
             try:
-                logger.info("Trying 2m temperature without level filter (analysis file fallback)...")
-                # Try opening all messages and find t2m/tmp
-                ds_all = xr.open_dataset(
-                    path,
-                    engine='cfgrib',
-                    backend_kwargs={
-                        'indexpath': f"{index_base_path}_all.idx"
-                    },
-                    decode_timedelta=False
-                )
-                ds_all = self._subset_dataset(ds_all)
-                # Look for temperature variables that might be 2m
-                for var in ds_all.data_vars:
-                    var_lower = var.lower()
-                    if any(x in var_lower for x in ['t2m', 'tmp', 'temp']) and 't850' not in var_lower:
-                        # Check if this is likely a 2m temperature
-                        if hasattr(ds_all[var], 'GRIB_typeOfLevel'):
-                            level_type = ds_all[var].GRIB_typeOfLevel
-                            if 'heightAboveGround' in level_type or 'surface' in level_type:
-                                var_data = ds_all[var].drop_vars(['heightAboveGround'], errors='ignore')
-                                # Always map to 't2m' for consistency
-                                all_data_vars['t2m'] = var_data
-                                logger.info(f"  Found 2m temperature as '{var}' (level: {level_type}), mapped to 't2m'")
-                                temp_2m_found = True
-                                break  # Found it, stop looking
-                if coords is None and temp_2m_found:
-                    coords = {k: v for k, v in ds_all.coords.items() if k != 'heightAboveGround'}
-                ds_all.close()
+                logger.info("Trying 2m without level filter (analysis file)...")
+                # Open each message separately to find 2m temperature
+                for i in range(10):  # Try first 10 messages to find it
+                    try:
+                        ds_msg = xr.open_dataset(
+                            path,
+                            engine='cfgrib',
+                            backend_kwargs={'indexpath': f"{index_base_path}_2m_msg{i}.idx"},
+                            decode_timedelta=False
+                        )
+                        ds_msg = self._subset_dataset(ds_msg)
+                        # Check if this message has 2m temperature
+                        for var in ds_msg.data_vars:
+                            if var in ['t', 'tmp', 't2m', 'tmp2m']:
+                                # Check level attribute
+                                has_2m_level = False
+                                if hasattr(ds_msg[var], 'GRIB_level'):
+                                    has_2m_level = ds_msg[var].GRIB_level == 2
+                                elif hasattr(ds_msg[var], 'height'):
+                                    has_2m_level = ds_msg[var].height == 2
+                                
+                                if has_2m_level or 'heightAboveGround' in str(ds_msg[var].attrs):
+                                    var_data = ds_msg[var].drop_vars(['heightAboveGround', 'height'], errors='ignore')
+                                    all_data_vars['t2m'] = var_data
+                                    if coords is None:
+                                        coords = {k: v for k, v in ds_msg.coords.items() if k not in ['heightAboveGround', 'height']}
+                                    logger.info(f"  Found and mapped '{var}' -> 't2m' in message {i}")
+                                    temp_2m_found = True
+                                    ds_msg.close()
+                                    break
+                        ds_msg.close()
+                        if temp_2m_found:
+                            break
+                    except Exception:
+                        continue
             except Exception as e:
-                logger.warning(f"  2m temperature fallback failed: {str(e)[:100]}")
+                logger.warning(f"  2m temperature message scan failed: {str(e)[:100]}")
         
         # Try 10m height (wind)
         try:
