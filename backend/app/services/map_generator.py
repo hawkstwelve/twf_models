@@ -1183,50 +1183,58 @@ class MapGenerator:
             cbar.set_ticks(tick_positions)
             cbar.set_label("10m Wind Speed + Streamlines (mph)")
         elif variable == "radar" or variable == "radar_reflectivity":
-            # Create horizontal color bars for each precipitation type
-            # Position them at the bottom of the figure
+            # Create vertical color bars for each precipitation type on the right side
             from matplotlib.colors import ListedColormap, BoundaryNorm
-            from mpl_toolkits.axes_grid1 import make_axes_locatable
             
-            # Create a single axis at the bottom for all colorbars
             fig = plt.gcf()
             
-            # Adjust the main plot to make room for colorbars
-            # Need more space for 4 colorbars
-            fig.subplots_adjust(bottom=0.20)
+            # Adjust the main plot to make room for colorbars on the right
+            fig.subplots_adjust(right=0.85)
             
             # Create color bars for each precipitation type
+            # Order from top to bottom: Rain, FrzR, Sleet, Snow
             precip_types = [
                 ('rain', 'Rain'),
-                ('snow', 'Snow'),
+                ('frzr', 'FrzR'),
                 ('sleet', 'Sleet'),
-                ('frzr', 'Freezing Rain')
+                ('snow', 'Snow')
             ]
             
-            # Create a grid of colorbars at the bottom
+            # Create vertical colorbars stacked on the right side
             num_types = len(precip_types)
-            cbar_height = 0.012  # Slightly smaller height
-            cbar_spacing = 0.015  # Slightly smaller spacing
+            cbar_width = 0.015  # Width of each colorbar
+            cbar_spacing = 0.02  # Vertical spacing between colorbars
+            
+            # Calculate total height available and divide by number of colorbars
+            total_height = 0.80  # Use 80% of figure height
+            cbar_height = (total_height - (num_types - 1) * cbar_spacing) / num_types
+            
+            # Start position (top of the first colorbar)
+            top_start = 0.90
             
             for idx, (p_type, label) in enumerate(precip_types):
                 cmap_type, norm_type, levels_type = self.get_radar_cmap(p_type)
                 
-                # Position from bottom: small bottom margin + (idx * (height + spacing))
-                # Start lower to avoid overlapping with map
-                bottom_pos = 0.02 + idx * (cbar_height + cbar_spacing)
-                cbar_ax = fig.add_axes([0.15, bottom_pos, 0.7, cbar_height])
+                # Position from top: top_start - idx * (height + spacing)
+                bottom_pos = top_start - (idx + 1) * cbar_height - idx * cbar_spacing
+                cbar_ax = fig.add_axes([0.87, bottom_pos, cbar_width, cbar_height])
                 
                 # Create a scalar mappable for the colorbar
                 sm = plt.cm.ScalarMappable(cmap=cmap_type, norm=norm_type)
                 sm.set_array([])
                 
-                cbar = plt.colorbar(sm, cax=cbar_ax, orientation='horizontal')
-                cbar.set_label(f"{label} (dBZ)", fontsize=8)
+                cbar = plt.colorbar(sm, cax=cbar_ax, orientation='vertical')
+                cbar.set_label(label, fontsize=9, rotation=0, ha='left', va='center', labelpad=15)
                 cbar.ax.tick_params(labelsize=7)
                 
                 # Set appropriate tick positions based on the levels
-                # Show every other level to avoid crowding
-                tick_positions = levels_type[::2] if len(levels_type) > 8 else levels_type
+                # Show fewer ticks for vertical orientation to avoid crowding
+                if len(levels_type) > 10:
+                    tick_positions = levels_type[::3]  # Every third level
+                elif len(levels_type) > 6:
+                    tick_positions = levels_type[::2]  # Every other level
+                else:
+                    tick_positions = levels_type
                 cbar.set_ticks(tick_positions)
         elif variable in ["precipitation", "precip"]:
             # Custom colorbar with specific tick labels matching the increments
