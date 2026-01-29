@@ -179,7 +179,7 @@ class ForecastScheduler:
     def __init__(self):
         self.scheduler = BlockingScheduler()
         self.map_generator = MapGenerator()
-        self.variables = ['temp', 'precip', 'wind_speed', 'mslp_precip', 'temp_850_wind_mslp', 'radar']
+        self.variables = ['temp', 'precip', 'wind_speed', 'mslp_precip', 'temp_850_wind_mslp', 'radar', 'snowfall']
         # Initialize S3 filesystem only if using AWS
         self.s3 = None
         if settings.gfs_source == "aws":
