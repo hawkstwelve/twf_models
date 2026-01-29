@@ -198,7 +198,7 @@ async def get_maps(
                     run_time=file_run_time,
                     forecast_hour=int(parts[-1]),
                     variable="_".join(parts[3:-1]),
-                    image_url=f"{settings.api_prefix}/images/{image_file.name}",
+                    image_url=f"/images/{image_file.name}",  # Static files mounted at root /images, not under /api
                     created_at=datetime.fromtimestamp(image_file.stat().st_mtime).isoformat()
                 )
                 
@@ -316,7 +316,7 @@ async def get_map(map_id: str):
                 run_time=f"{parts[1]}_{parts[2]}",
                 forecast_hour=int(parts[-1]),
                 variable="_".join(parts[3:-1]),
-                image_url=f"{settings.api_prefix}/images/{image_file.name}",
+                image_url=f"/images/{image_file.name}",  # Static files mounted at root /images, not under /api
                 created_at=datetime.fromtimestamp(stat.st_mtime).isoformat(),
                 file_size=stat.st_size
             )
