@@ -644,112 +644,124 @@ class MapGenerator:
             lon_name = 'longitude' if 'longitude' in rate.coords else 'lon'
             lat_name = 'latitude' if 'latitude' in rate.coords else 'lat'
 
-            # B. Create a master categorical "Owner" grid via per-type masks
-            crain = ds.get('crain', xr.zeros_like(rate))
-            csnow = ds.get('csnow', xr.zeros_like(rate))
-            cicep = ds.get('cicep', xr.zeros_like(rate))
-            cfrzr = ds.get('cfrzr', xr.zeros_like(rate))
-
-            if 'time' in crain.dims: crain = crain.isel(time=0)
-            if 'time' in csnow.dims: csnow = csnow.isel(time=0)
-            if 'time' in cicep.dims: cicep = cicep.isel(time=0)
-            if 'time' in cfrzr.dims: cfrzr = cfrzr.isel(time=0)
-
-            # Upsample to MUCH finer grid for smooth contours (~0.02 degree for professional look)
-            from scipy.ndimage import gaussian_filter
-            
-            # Use even finer resolution - 0.02 degrees (~2km) for maximum refinement
-            # This provides smoother gradients and better detail than 0.03 degrees
-            new_lon = np.arange(float(rate[lon_name].min()), float(rate[lon_name].max()), 0.02)
-            new_lat = np.arange(float(rate[lat_name].min()), float(rate[lat_name].max()), 0.02)
-            rate_smooth = rate.interp({lon_name: new_lon, lat_name: new_lat}, method="linear")
-            
-            # Apply refined Gaussian smoothing to reduce blockiness while preserving features
-            # Sigma=0.7 provides smoother appearance without excessive blurring
-            rate_smooth.values = gaussian_filter(rate_smooth.values, sigma=0.7)
-
-            # C. Winner-Takes-All with Overlap: Plot in reverse order so dominant types overlay
-            precip_types = [('crain', 'rain', 4), ('csnow', 'snow', 3),
-                            ('cicep', 'sleet', 2), ('cfrzr', 'frzr', 1)]
-            
-            # Collect all categorical masks with smooth interpolation
-            from scipy.ndimage import gaussian_filter
-            masks = {}
-            for var_key, p_type, z_val in precip_types:
-                if var_key in ds:
-                    mask_src = ds[var_key]
-                    if 'time' in mask_src.dims:
-                        mask_src = mask_src.isel(time=0)
-                    mask = self._normalize_coords(mask_src)
-                    # Use linear interpolation for smooth boundaries
-                    mask_hi = mask.interp({lon_name: new_lon, lat_name: new_lat}, method='linear')
-                    # Apply refined smoothing to categorical masks for better blending
-                    mask_hi.values = gaussian_filter(mask_hi.values, sigma=0.5)
-                    masks[p_type] = mask_hi
-                else:
-                    # Create zero mask if categorical data not available
-                    masks[p_type] = xr.zeros_like(rate_smooth)
-            
-            # Stack masks and determine winner at each grid point
-            # Stack order: rain, snow, sleet, frzr
-            mask_stack = np.stack([
-                masks['rain'].values,
-                masks['snow'].values,
-                masks['sleet'].values,
-                masks['frzr'].values
-            ], axis=0)
-            
-            # Find the index of maximum probability at each point
-            winner_idx = np.argmax(mask_stack, axis=0)
-            
-            # Apply minimum rate threshold to avoid plotting trace amounts
+            # PERFORMANCE: Early threshold - skip expensive processing if rate is negligible
             min_rate_threshold = 0.1  # mm/hr
-            has_precip = rate_smooth.values > min_rate_threshold
+            max_rate = float(rate.max())
             
-            # Plot in REVERSE priority order (frzr->sleet->snow->rain) with slight overlap
-            # This way dominant types paint over less dominant ones, eliminating gaps
+            if max_rate < min_rate_threshold:
+                # No significant precipitation - skip expensive upsampling/smoothing
+                rate_smooth = rate
+                new_lon = rate[lon_name].values
+                new_lat = rate[lat_name].values
+                has_precip = np.zeros_like(rate.values, dtype=bool)
+                masks = {
+                    'rain': xr.zeros_like(rate),
+                    'snow': xr.zeros_like(rate),
+                    'sleet': xr.zeros_like(rate),
+                    'frzr': xr.zeros_like(rate)
+                }
+            else:
+                # B. Create a master categorical "Owner" grid via per-type masks
+                crain = ds.get('crain', xr.zeros_like(rate))
+                csnow = ds.get('csnow', xr.zeros_like(rate))
+                cicep = ds.get('cicep', xr.zeros_like(rate))
+                cfrzr = ds.get('cfrzr', xr.zeros_like(rate))
+
+                if 'time' in crain.dims: crain = crain.isel(time=0)
+                if 'time' in csnow.dims: csnow = csnow.isel(time=0)
+                if 'time' in cicep.dims: cicep = cicep.isel(time=0)
+                if 'time' in cfrzr.dims: cfrzr = cfrzr.isel(time=0)
+
+                # PERFORMANCE: Precompute hi-res grid once (reusable across variables)
+                # Store in instance cache for reuse if needed by other variables same hour
+                cache_key = f"{forecast_hour}_{lon_name}_{lat_name}"
+                if not hasattr(self, '_hires_grid_cache'):
+                    self._hires_grid_cache = {}
+                
+                if cache_key not in self._hires_grid_cache:
+                    # Use 0.02 degrees (~2km) for smooth contours
+                    new_lon = np.arange(float(rate[lon_name].min()), float(rate[lon_name].max()), 0.02)
+                    new_lat = np.arange(float(rate[lat_name].min()), float(rate[lat_name].max()), 0.02)
+                    self._hires_grid_cache[cache_key] = (new_lon, new_lat)
+                else:
+                    new_lon, new_lat = self._hires_grid_cache[cache_key]
+                
+                # Upsample rate and masks ONCE with linear interpolation
+                rate_smooth = rate.interp({lon_name: new_lon, lat_name: new_lat}, method="linear")
+                
+                # PERFORMANCE: Collect masks at native resolution first, stack, then upsample winner field
+                # This avoids 4 separate interp() calls + 4 gaussian_filter() calls
+                precip_types = [('crain', 'rain'), ('csnow', 'snow'), ('cicep', 'sleet'), ('cfrzr', 'frzr')]
+                
+                # Stack masks at native resolution
+                mask_list = []
+                for var_key, p_type in precip_types:
+                    if var_key in ds:
+                        mask_src = ds[var_key]
+                        if 'time' in mask_src.dims:
+                            mask_src = mask_src.isel(time=0)
+                        mask = self._normalize_coords(mask_src)
+                        mask_list.append(mask.values)
+                    else:
+                        mask_list.append(np.zeros_like(rate.values))
+                
+                # Find winner at native resolution (cheaper than hi-res)
+                mask_stack = np.stack(mask_list, axis=0)
+                winner_idx = np.argmax(mask_stack, axis=0)
+                
+                # Create categorical winner field and upsample it once
+                # This is much faster than upsampling 4 separate masks
+                winner_field = xr.DataArray(
+                    winner_idx,
+                    coords=rate.coords,
+                    dims=rate.dims
+                )
+                winner_field_hi = winner_field.interp({lon_name: new_lon, lat_name: new_lat}, method='nearest')
+                
+                # PERFORMANCE: Single smoothing pass on final rate field (not per-type)
+                from scipy.ndimage import gaussian_filter
+                rate_smooth.values = gaussian_filter(rate_smooth.values, sigma=0.7)
+                
+                # Apply threshold after smoothing
+                has_precip = rate_smooth.values > min_rate_threshold
+                
+                # Create masks dict from upsampled winner field
+                masks = {
+                    'rain': xr.DataArray((winner_field_hi.values == 0) & has_precip, coords=rate_smooth.coords, dims=rate_smooth.dims),
+                    'snow': xr.DataArray((winner_field_hi.values == 1) & has_precip, coords=rate_smooth.coords, dims=rate_smooth.dims),
+                    'sleet': xr.DataArray((winner_field_hi.values == 2) & has_precip, coords=rate_smooth.coords, dims=rate_smooth.dims),
+                    'frzr': xr.DataArray((winner_field_hi.values == 3) & has_precip, coords=rate_smooth.coords, dims=rate_smooth.dims)
+                }
+            
+            # C. Plot precip types (simplified - no complex overlap logic)
+            # Plot in REVERSE priority order (frzr->sleet->snow->rain)
             precip_contours = {}
+            plot_order = [('frzr', 1), ('sleet', 2), ('snow', 3), ('rain', 4)]
             
-            # Plot types in reverse order with expanded masks for overlap
-            plot_order = [('cfrzr', 'frzr', 1, 0), ('cicep', 'sleet', 2, 1), 
-                         ('csnow', 'snow', 3, 2), ('crain', 'rain', 4, 3)]
-            
-            for var_key, p_type, z_val, idx in plot_order:
+            for p_type, z_val in plot_order:
                 cmap, norm, edges = self.get_precip_cmap(p_type)
                 
-                # Create many more intermediate levels for ultra-smooth appearance
-                # Insert 2 intermediate levels between each pair for finest gradients
+                # Create many intermediate levels for smooth appearance
                 smooth_levels = []
                 for i in range(len(edges) - 1):
                     smooth_levels.append(edges[i])
-                    # Add 2 intermediate levels between each pair
                     smooth_levels.append(edges[i] + (edges[i+1] - edges[i]) / 3)
                     smooth_levels.append(edges[i] + 2 * (edges[i+1] - edges[i]) / 3)
                 smooth_levels.append(edges[-1])
                 
-                # Create mask: plot where this type wins OR is close to winning (within 0.15 for overlap)
-                is_winner = (winner_idx == idx)
-                mask_value = masks[p_type].values
-                is_close = mask_value > (mask_stack.max(axis=0) - 0.15)
-                type_mask = (is_winner | is_close) & has_precip
-                
-                # Skip if no data for this type
-                if not np.any(type_mask):
-                    precip_contours[p_type] = (None, cmap, norm, edges)
-                    continue
-                
-                # Create data for this type with expanded mask
-                # Ensure we only plot where rate is above the minimum threshold for this type
-                # This prevents white gaps from very light precipitation
+                # Create data for this type using simplified mask
+                type_mask = masks[p_type].values if hasattr(masks[p_type], 'values') else masks[p_type]
                 type_min_threshold = edges[0] if p_type != 'rain' else 0.01
+                
+                # Apply mask and threshold
                 type_data = np.where(type_mask & (rate_smooth.values >= type_min_threshold), 
                                     rate_smooth.values, np.nan)
                 
                 # Only plot if there's actual data
-                if np.nanmax(type_data) > 0.001:
+                if np.any(~np.isnan(type_data)) and np.nanmax(type_data) > 0.001:
                     pm = ax.contourf(
                         new_lon, new_lat, type_data,
-                        levels=smooth_levels,  # Use finer levels for smoother gradients
+                        levels=smooth_levels,
                         transform=ccrs.PlateCarree(),
                         cmap=cmap, norm=norm,
                         extend='neither',

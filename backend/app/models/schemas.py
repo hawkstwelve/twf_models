@@ -65,6 +65,7 @@ class ModelInfo(BaseModel):
     provider: Optional[str] = None  # e.g., "NOMADS"
     has_refc: Optional[bool] = None
     has_upper_air: Optional[bool] = None
+    has_precip_type_masks: Optional[bool] = None  # True if model has CSNOW, CRAIN, etc.
 
 
 class ModelListResponse(BaseModel):

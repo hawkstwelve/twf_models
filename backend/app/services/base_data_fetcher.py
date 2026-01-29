@@ -2,7 +2,7 @@
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, List, Set
+from typing import Optional, List, Set, Dict, Tuple
 import xarray as xr
 import logging
 import tempfile
@@ -29,9 +29,21 @@ class BaseDataFetcher(ABC):
         
         # GRIB file cache (shared logic across all models)
         self._grib_cache = {}
-        self._cache_dir = Path(tempfile.gettempdir()) / f"{model_id.lower()}_cache"
-        self._cache_dir.mkdir(exist_ok=True)
+        # Use a persistent cache directory (not tempfile) so it survives restarts
+        # and is shared across workers
+        self._cache_dir = Path(settings.storage_path).parent / "grib_cache" / f"{model_id.lower()}"
+        self._cache_dir.mkdir(parents=True, exist_ok=True)
         self._cache_max_age_seconds = 2 * 3600
+        
+        # cfgrib index cache directory (critical for performance!)
+        # Store .idx files alongside GRIB files for persistent indexing
+        self._index_cache_dir = self._cache_dir / "indexes"
+        self._index_cache_dir.mkdir(exist_ok=True)
+        
+        # Incremental accumulation cache (prevents O(H²) explosion)
+        # Key: (run_time_str, forecast_hour) -> Value: (precip_total, snow_total)
+        self._accumulation_cache: Dict[Tuple[str, int], Tuple[Optional[xr.DataArray], Optional[xr.DataArray]]] = {}
+        self._current_run_time_str: Optional[str] = None
     
     def get_latest_run_time(self) -> datetime:
         """Get the latest available run time for this model"""
@@ -125,16 +137,40 @@ class BaseDataFetcher(ABC):
         """
         Compute total precipitation from hour 0 to forecast_hour.
         
+        **OPTIMIZED**: Uses incremental accumulation to avoid O(H²) complexity.
+        Instead of re-fetching all hours 0→H for each forecast hour, we:
+        1. Check cache for previous hour's total
+        2. Fetch only the current bucket
+        3. Add to previous total
+        
         Handles both accumulated and bucketed precip based on model config.
         """
+        run_time_str = run_time.strftime("%Y%m%d_%H")
+        
+        # Clear cache if we're processing a new run
+        if self._current_run_time_str != run_time_str:
+            logger.info(f"    New run detected ({run_time_str}), clearing accumulation cache")
+            self._accumulation_cache.clear()
+            self._current_run_time_str = run_time_str
+        
+        # Check if we already computed this
+        cache_key = (run_time_str, forecast_hour)
+        if cache_key in self._accumulation_cache:
+            cached_precip, _ = self._accumulation_cache[cache_key]
+            if cached_precip is not None:
+                logger.info(f"    Using cached precip total for f{forecast_hour:03d}")
+                return cached_precip
+        
         if forecast_hour == 0:
             # No accumulation at f000
             ds0 = self.fetch_raw_data(run_time, 0, {"tp", "prate"}, subset_region)
             base = ds0['tp'] if 'tp' in ds0 else ds0['prate']
-            return base.squeeze() * 0.0
+            result = base.squeeze() * 0.0
+            self._accumulation_cache[cache_key] = (result, None)
+            return result
         
         if self.model_config.tp_is_accumulated_from_init:
-            # Cumulative: tp(fH) already represents 0→H
+            # Cumulative: tp(fH) already represents 0→H, no incremental needed
             logger.info(f"    Using accumulated precip (cumulative from init)")
             ds_target = self.fetch_raw_data(run_time, forecast_hour, {"tp"}, subset_region)
             if 'tp' not in ds_target:
@@ -145,41 +181,51 @@ class BaseDataFetcher(ABC):
             if drop_coords:
                 tp = tp.drop_vars(drop_coords)
             
+            self._accumulation_cache[cache_key] = (tp, None)
             return tp
         
         else:
-            # Bucketed: sum all buckets from 0→H
-            logger.info(f"    Summing bucketed precip")
-            hours_to_fetch = list(range(
-                self.model_config.forecast_increment,
-                forecast_hour + 1,
-                self.model_config.forecast_increment
-            ))
+            # Bucketed: use incremental accumulation
+            logger.info(f"    Computing bucketed precip incrementally")
+            
+            # Try to get previous accumulation
+            prev_hour = forecast_hour - self.model_config.forecast_increment
+            prev_key = (run_time_str, prev_hour)
             
             precip_total = None
+            if prev_hour > 0 and prev_key in self._accumulation_cache:
+                precip_prev, _ = self._accumulation_cache[prev_key]
+                if precip_prev is not None:
+                    logger.info(f"    Reusing f{prev_hour:03d} total, adding f{forecast_hour:03d} bucket")
+                    precip_total = precip_prev.copy(deep=True)
             
-            for hour in hours_to_fetch:
-                try:
-                    ds = self.fetch_raw_data(run_time, hour, {"tp"}, subset_region)
-                    if 'tp' not in ds:
-                        continue
-                    
+            # Fetch only the current bucket
+            try:
+                ds = self.fetch_raw_data(run_time, forecast_hour, {"tp"}, subset_region)
+                if 'tp' in ds:
                     tp = ds['tp'].squeeze()
                     drop_coords = [c for c in ['time', 'valid_time', 'step'] if c in tp.coords]
                     if drop_coords:
                         tp = tp.drop_vars(drop_coords)
                     
                     precip_total = tp.copy(deep=True) if precip_total is None else (precip_total + tp)
-                
-                except FileNotFoundError:
-                    continue
-                except Exception as e:
-                    logger.error(f"Error fetching precipitation for f{hour:03d}: {e}")
-                    continue
+                elif precip_total is None:
+                    # No data for first bucket
+                    raise ValueError(f"No tp in f{forecast_hour:03d}")
+            
+            except FileNotFoundError:
+                if precip_total is None:
+                    raise ValueError(f"No precipitation data available for f{forecast_hour:03d}")
+            except Exception as e:
+                logger.error(f"Error fetching precipitation for f{forecast_hour:03d}: {e}")
+                if precip_total is None:
+                    raise
             
             if precip_total is None:
                 raise ValueError(f"No precipitation data available up to f{forecast_hour:03d}")
             
+            # Cache the result
+            self._accumulation_cache[cache_key] = (precip_total, None)
             return precip_total
     
     def _compute_total_snowfall(
@@ -190,6 +236,8 @@ class BaseDataFetcher(ABC):
     ) -> xr.DataArray:
         """
         Compute total snowfall from hour 0 to forecast_hour using 10:1 ratio.
+        
+        **OPTIMIZED**: Uses incremental accumulation to avoid O(H²) complexity.
         
         Two approaches based on model capabilities:
         
@@ -204,6 +252,22 @@ class BaseDataFetcher(ABC):
         Returns:
             DataArray with total snowfall in inches (10:1 ratio), 2D grid (lat, lon)
         """
+        
+        run_time_str = run_time.strftime("%Y%m%d_%H")
+        
+        # Ensure cache is for current run
+        if self._current_run_time_str != run_time_str:
+            logger.info(f"    New run detected ({run_time_str}), clearing accumulation cache")
+            self._accumulation_cache.clear()
+            self._current_run_time_str = run_time_str
+        
+        # Check if we already computed this
+        cache_key = (run_time_str, forecast_hour)
+        if cache_key in self._accumulation_cache:
+            _, cached_snow = self._accumulation_cache[cache_key]
+            if cached_snow is not None:
+                logger.info(f"    Using cached snowfall total for f{forecast_hour:03d}")
+                return cached_snow
         
         # Helper functions
         def _drop_timeish(da: xr.DataArray) -> xr.DataArray:
@@ -283,40 +347,49 @@ class BaseDataFetcher(ABC):
             return snow_frac
         
         # Main logic
-        # Main logic
         
         # f000 => no accumulation
         if forecast_hour == 0:
             ds0 = self.fetch_raw_data(run_time, 0, {'tmp2m', 't2m'}, subset_region)
             base = ds0['t2m'] if 't2m' in ds0 else ds0['tmp2m']
             base = _drop_timeish(base)
-            return base * 0.0
+            result = base * 0.0
+            # Cache both precip and snow as zeros
+            precip_cached, _ = self._accumulation_cache.get(cache_key, (None, None))
+            self._accumulation_cache[cache_key] = (precip_cached, result)
+            return result
         
-        # List of bucket endpoints to sum
-        hours_to_fetch = list(range(
-            self.model_config.forecast_increment,
-            forecast_hour + 1,
-            self.model_config.forecast_increment
-        ))
+        # Try to get previous accumulation for incremental update
+        prev_hour = forecast_hour - self.model_config.forecast_increment
+        prev_key = (run_time_str, prev_hour)
         
-        snow_liq_mm_total = None  # Liquid-equivalent mm classified as snow
+        snow_liq_mm_total = None
+        if prev_hour > 0 and prev_key in self._accumulation_cache:
+            _, snow_prev_in = self._accumulation_cache[prev_key]
+            if snow_prev_in is not None:
+                logger.info(f"    Reusing f{prev_hour:03d} snowfall, adding f{forecast_hour:03d} bucket")
+                # Convert previous snow (in inches) back to liquid mm for accumulation
+                snow_liq_mm_total = (snow_prev_in / 10.0) * 25.4  # inches -> mm liquid
+        
+        # Process only the current forecast hour bucket
+        fh = forecast_hour
         
         # Branch: model has native precip-type masks?
         if self.model_config.has_precip_type_masks:
             # -------- GFS PATH (native csnow) --------
-            logger.info(f"    Using native CSNOW masks (GFS path)")
+            logger.info(f"    Using native CSNOW mask (GFS path) for f{fh:03d}")
             
-            for fh in hours_to_fetch:
-                try:
-                    ds = self.fetch_raw_data(run_time, fh, {'tp', 'apcp', 'csnow'}, subset_region)
-                    
-                    p_mm = _get_bucket_precip_mm(ds)
-                    
-                    if 'csnow' not in ds:
-                        # Model claims masks but csnow missing => treat as no-snow for this bucket
-                        logger.warning(f"CSNOW missing at f{fh:03d}, skipping bucket")
-                        continue
-                    
+            try:
+                ds = self.fetch_raw_data(run_time, fh, {'tp', 'apcp', 'csnow'}, subset_region)
+                
+                p_mm = _get_bucket_precip_mm(ds)
+                
+                if 'csnow' not in ds:
+                    # Model claims masks but csnow missing => treat as no-snow for this bucket
+                    logger.warning(f"CSNOW missing at f{fh:03d}, skipping bucket")
+                    if snow_liq_mm_total is None:
+                        raise ValueError(f"No snowfall data for f{fh:03d}")
+                else:
                     cs = _drop_timeish(ds['csnow'])
                     
                     # Normalize csnow to [0,1]
@@ -333,31 +406,33 @@ class BaseDataFetcher(ABC):
                     
                     snow_liq_mm_total = (snow_bucket_mm.copy(deep=True) if snow_liq_mm_total is None 
                                         else (snow_liq_mm_total + snow_bucket_mm))
-                
-                except FileNotFoundError:
-                    logger.warning(f"Data not found for f{fh:03d}")
-                    continue
-                except Exception as e:
-                    logger.error(f"Error computing snowfall (mask path) for f{fh:03d}: {e}")
-                    continue
+            
+            except FileNotFoundError:
+                logger.warning(f"Data not found for f{fh:03d}")
+                if snow_liq_mm_total is None:
+                    raise ValueError(f"No snowfall data for f{fh:03d}")
+            except Exception as e:
+                logger.error(f"Error computing snowfall (mask path) for f{fh:03d}: {e}")
+                if snow_liq_mm_total is None:
+                    raise
         
         else:
             # -------- AIGFS PATH (derive snow fraction from temperature) --------
-            logger.info(f"    Deriving snow fraction from T850/T2m (AIGFS path)")
+            logger.info(f"    Deriving snow fraction from T850/T2m (AIGFS path) for f{fh:03d}")
             
-            for fh in hours_to_fetch:
-                try:
-                    # Need precip from surface and thermal from pressure levels
-                    ds_sfc = self.fetch_raw_data(run_time, fh, {'tp', 'apcp', 'tmp2m', 't2m'}, subset_region)
-                    ds_pres = self.fetch_raw_data(run_time, fh, {'tmp_850'}, subset_region)
-                    
-                    p_mm = _get_bucket_precip_mm(ds_sfc)
-                    
-                    if 'tmp_850' not in ds_pres:
-                        # Cannot classify without T850; skip bucket
-                        logger.warning(f"tmp_850 missing at f{fh:03d}, skipping bucket")
-                        continue
-                    
+            try:
+                # Need precip from surface and thermal from pressure levels
+                ds_sfc = self.fetch_raw_data(run_time, fh, {'tp', 'apcp', 'tmp2m', 't2m'}, subset_region)
+                ds_pres = self.fetch_raw_data(run_time, fh, {'tmp_850'}, subset_region)
+                
+                p_mm = _get_bucket_precip_mm(ds_sfc)
+                
+                if 'tmp_850' not in ds_pres:
+                    # Cannot classify without T850; skip bucket
+                    logger.warning(f"tmp_850 missing at f{fh:03d}, skipping bucket")
+                    if snow_liq_mm_total is None:
+                        raise ValueError(f"No snowfall data for f{fh:03d}")
+                else:
                     t850_c = _to_celsius(ds_pres['tmp_850'])
                     
                     # Optional 2m temp if present
@@ -380,13 +455,15 @@ class BaseDataFetcher(ABC):
                     
                     snow_liq_mm_total = (snow_bucket_mm.copy(deep=True) if snow_liq_mm_total is None 
                                         else (snow_liq_mm_total + snow_bucket_mm))
-                
-                except FileNotFoundError:
-                    logger.warning(f"Data not found for f{fh:03d}")
-                    continue
-                except Exception as e:
-                    logger.error(f"Error computing snowfall (thermal path) for f{fh:03d}: {e}")
-                    continue
+            
+            except FileNotFoundError:
+                logger.warning(f"Data not found for f{fh:03d}")
+                if snow_liq_mm_total is None:
+                    raise ValueError(f"No snowfall data for f{fh:03d}")
+            except Exception as e:
+                logger.error(f"Error computing snowfall (thermal path) for f{fh:03d}: {e}")
+                if snow_liq_mm_total is None:
+                    raise
         
         if snow_liq_mm_total is None:
             raise ValueError(f"No snowfall/precip data available up to f{forecast_hour:03d}")
@@ -397,6 +474,10 @@ class BaseDataFetcher(ABC):
         
         # Final cleanup of time-like coords
         snow_in_10to1 = _drop_timeish(snow_in_10to1)
+        
+        # Cache the result
+        precip_cached, _ = self._accumulation_cache.get(cache_key, (None, None))
+        self._accumulation_cache[cache_key] = (precip_cached, snow_in_10to1)
         
         return snow_in_10to1
     

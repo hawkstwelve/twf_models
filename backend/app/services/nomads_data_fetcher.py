@@ -95,9 +95,9 @@ class NOMADSDataFetcher(BaseDataFetcher):
         
         logger.info(f"{self.model_id} URL: {file_url}")
         
-        # Cache and download
-        url_hash = hashlib.sha1(file_url.encode()).hexdigest()[:16]
-        cache_key = f"{self.model_id.lower()}_{url_hash}"
+        # Create deterministic cache key based on run_time + forecast_hour + model + product
+        # This ensures the same GRIB file has the same cache key across workers/runs
+        cache_key = f"{self.model_id.lower()}_{date_str}_{run_hour_str}_f{forecast_hour:03d}_{product_name}"
         tmp_path = self._get_cached_grib_path(cache_key)
         
         if not tmp_path:
@@ -143,8 +143,8 @@ class NOMADSDataFetcher(BaseDataFetcher):
             )
             logger.info(f"  {self.model_id} SFC URL: {url_sfc}")
             
-            url_hash = hashlib.sha1(url_sfc.encode()).hexdigest()[:16]
-            cache_key = f"{self.model_id.lower()}_sfc_{url_hash}"
+            # Deterministic cache key
+            cache_key = f"{self.model_id.lower()}_{date_str}_{run_hour_str}_f{forecast_hour:03d}_sfc"
             tmp_path = self._get_cached_grib_path(cache_key)
             
             if not tmp_path:
@@ -164,8 +164,8 @@ class NOMADSDataFetcher(BaseDataFetcher):
             )
             logger.info(f"  {self.model_id} PRES URL: {url_pres}")
             
-            url_hash = hashlib.sha1(url_pres.encode()).hexdigest()[:16]
-            cache_key = f"{self.model_id.lower()}_pres_{url_hash}"
+            # Deterministic cache key
+            cache_key = f"{self.model_id.lower()}_{date_str}_{run_hour_str}_f{forecast_hour:03d}_pres"
             tmp_path = self._get_cached_grib_path(cache_key)
             
             if not tmp_path:
@@ -416,8 +416,16 @@ class NOMADSDataFetcher(BaseDataFetcher):
         """
         Open GRIB file and extract needed variables.
         Shared logic for all NOMADS/GRIB2 models.
+        
+        **PERFORMANCE**: Uses persistent cfgrib index files to avoid re-parsing.
+        This is critical - cfgrib indexing can take 10-30 seconds per file!
         """
         logger.info("Opening GRIB file with cfgrib...")
+        
+        # Generate persistent index path based on GRIB file
+        # This allows cfgrib to reuse the index instead of re-scanning
+        grib_basename = Path(path).stem  # e.g., "gfs_20260128_18_f003"
+        index_base_path = str(self._index_cache_dir / grib_basename)
         
         all_data_vars = {}
         coords = None
@@ -434,10 +442,13 @@ class NOMADSDataFetcher(BaseDataFetcher):
                     ds_surf_accum = xr.open_dataset(
                         path,
                         engine='cfgrib',
-                        backend_kwargs={'filter_by_keys': {
-                            'typeOfLevel': 'surface',
-                            'stepType': 'accum'
-                        }},
+                        backend_kwargs={
+                            'filter_by_keys': {
+                                'typeOfLevel': 'surface',
+                                'stepType': 'accum'
+                            },
+                            'indexpath': f"{index_base_path}_surface_accum.idx"
+                        },
                         decode_timedelta=False
                     )
                     ds_surf_accum = self._subset_dataset(ds_surf_accum)
@@ -451,10 +462,13 @@ class NOMADSDataFetcher(BaseDataFetcher):
                     ds_surf_instant = xr.open_dataset(
                         path,
                         engine='cfgrib',
-                        backend_kwargs={'filter_by_keys': {
-                            'typeOfLevel': 'surface',
-                            'stepType': 'instant'
-                        }},
+                        backend_kwargs={
+                            'filter_by_keys': {
+                                'typeOfLevel': 'surface',
+                                'stepType': 'instant'
+                            },
+                            'indexpath': f"{index_base_path}_surface_instant.idx"
+                        },
                         decode_timedelta=False
                     )
                     ds_surf_instant = self._subset_dataset(ds_surf_instant)
@@ -466,7 +480,10 @@ class NOMADSDataFetcher(BaseDataFetcher):
                 ds_surface = xr.open_dataset(
                     path,
                     engine='cfgrib',
-                    backend_kwargs={'filter_by_keys': {'typeOfLevel': 'surface'}},
+                    backend_kwargs={
+                        'filter_by_keys': {'typeOfLevel': 'surface'},
+                        'indexpath': f"{index_base_path}_surface.idx"
+                    },
                     decode_timedelta=False
                 )
                 ds_surface = self._subset_dataset(ds_surface)
@@ -491,7 +508,10 @@ class NOMADSDataFetcher(BaseDataFetcher):
             ds_2m = xr.open_dataset(
                 path,
                 engine='cfgrib',
-                backend_kwargs={'filter_by_keys': {'typeOfLevel': 'heightAboveGround', 'level': 2}},
+                backend_kwargs={
+                    'filter_by_keys': {'typeOfLevel': 'heightAboveGround', 'level': 2},
+                    'indexpath': f"{index_base_path}_2m.idx"
+                },
                 decode_timedelta=False
             )
             ds_2m = self._subset_dataset(ds_2m)
@@ -511,7 +531,10 @@ class NOMADSDataFetcher(BaseDataFetcher):
             ds_10m = xr.open_dataset(
                 path,
                 engine='cfgrib',
-                backend_kwargs={'filter_by_keys': {'typeOfLevel': 'heightAboveGround', 'level': 10}},
+                backend_kwargs={
+                    'filter_by_keys': {'typeOfLevel': 'heightAboveGround', 'level': 10},
+                    'indexpath': f"{index_base_path}_10m.idx"
+                },
                 decode_timedelta=False
             )
             ds_10m = self._subset_dataset(ds_10m)
@@ -531,7 +554,10 @@ class NOMADSDataFetcher(BaseDataFetcher):
             ds_msl = xr.open_dataset(
                 path,
                 engine='cfgrib',
-                backend_kwargs={'filter_by_keys': {'typeOfLevel': 'meanSea'}},
+                backend_kwargs={
+                    'filter_by_keys': {'typeOfLevel': 'meanSea'},
+                    'indexpath': f"{index_base_path}_msl.idx"
+                },
                 decode_timedelta=False
             )
             ds_msl = self._subset_dataset(ds_msl)
@@ -550,7 +576,10 @@ class NOMADSDataFetcher(BaseDataFetcher):
             ds_atmos = xr.open_dataset(
                 path,
                 engine='cfgrib',
-                backend_kwargs={'filter_by_keys': {'typeOfLevel': 'atmosphere'}},
+                backend_kwargs={
+                    'filter_by_keys': {'typeOfLevel': 'atmosphere'},
+                    'indexpath': f"{index_base_path}_atmosphere.idx"
+                },
                 decode_timedelta=False
             )
             ds_atmos = self._subset_dataset(ds_atmos)
@@ -582,10 +611,13 @@ class NOMADSDataFetcher(BaseDataFetcher):
                         ds_level = xr.open_dataset(
                             path,
                             engine='cfgrib',
-                            backend_kwargs={'filter_by_keys': {
-                                'typeOfLevel': 'isobaricInhPa',
-                                'level': level
-                            }},
+                            backend_kwargs={
+                                'filter_by_keys': {
+                                    'typeOfLevel': 'isobaricInhPa',
+                                    'level': level
+                                },
+                                'indexpath': f"{index_base_path}_isobaric_{level}mb.idx"
+                            },
                             decode_timedelta=False
                         )
                         ds_level = self._subset_dataset(ds_level)

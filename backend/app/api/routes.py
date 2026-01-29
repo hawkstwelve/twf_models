@@ -59,7 +59,11 @@ async def get_models(response: Response):
             run_hours=config.run_hours,
             excluded_variables=config.excluded_variables,
             color=config.color,
-            enabled=config.enabled
+            enabled=config.enabled,
+            provider=config.provider.value,
+            has_refc=config.has_refc,
+            has_upper_air=config.has_upper_air,
+            has_precip_type_masks=config.has_precip_type_masks
         )
         for model_id, config in models.items()
     ]
@@ -110,7 +114,8 @@ async def get_model_info(model_id: str, response: Response):
         enabled=config.enabled,
         provider=config.provider.value,
         has_refc=config.has_refc,
-        has_upper_air=config.has_upper_air
+        has_upper_air=config.has_upper_air,
+        has_precip_type_masks=config.has_precip_type_masks
     )
 
 
