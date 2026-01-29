@@ -133,6 +133,8 @@ ModelRegistry.register(ModelConfig(
     full_name="Global Forecast System",
     description="NOAA's global weather model",
     provider=ModelProvider.NOMADS,
+    fetcher_type="herbie",  # Use Herbie for robust GRIB handling (analysis + forecast)
+    # NOMADS fields kept for reference but Herbie handles downloads
     nomads_base_path="gfs/prod",
     url_layout=URLLayout.GFS_STANDARD,
     subdir_template="gfs.{date}/{hour}/atmos",

@@ -389,10 +389,13 @@ class ForecastScheduler:
     
     def check_forecast_hour_available(self, model_id: str, run_time: datetime, forecast_hour: int) -> bool:
         """
-        Check if a specific forecast hour is available on NOMADS.
+        Check if a specific forecast hour is available.
+        
+        For Herbie-based models (GFS, HRRR), delegate to Herbie's availability check.
+        For NOMADS-based models (AIGFS), check NOMADS directly.
         
         Args:
-            model_id: Model ID (e.g., 'GFS', 'AIGFS')
+            model_id: Model ID (e.g., 'GFS', 'AIGFS', 'HRRR')
             run_time: Model run time
             forecast_hour: Forecast hour to check
         
@@ -400,11 +403,53 @@ class ForecastScheduler:
             bool: True if data is available
         """
         try:
-            import requests
-            
             model_config = ModelRegistry.get(model_id)
             if not model_config:
                 return False
+            
+            # Route based on fetcher type
+            if model_config.fetcher_type == "herbie":
+                # Use Herbie's built-in availability check
+                logger.debug(f"{model_id} uses Herbie - checking availability via Herbie")
+                try:
+                    from herbie import Herbie
+                    
+                    # Map to Herbie model name
+                    herbie_model_map = {
+                        "GFS": "gfs",
+                        "HRRR": "hrrr",
+                        "RAP": "rap",
+                    }
+                    herbie_model = herbie_model_map.get(model_id)
+                    if not herbie_model:
+                        logger.warning(f"{model_id} not in Herbie model map, assuming available")
+                        return True
+                    
+                    # Check if Herbie can find the file
+                    run_time_naive = run_time.replace(tzinfo=None) if run_time.tzinfo else run_time
+                    H = Herbie(
+                        date=run_time_naive,
+                        model=herbie_model,
+                        fxx=forecast_hour,
+                        verbose=False
+                    )
+                    
+                    # If Herbie found a grib file, it's available
+                    available = H.grib is not None
+                    if available:
+                        logger.debug(f"✓ {model_id} f{forecast_hour:03d} available via Herbie")
+                    return available
+                    
+                except ImportError:
+                    logger.warning("Herbie not installed, assuming data available")
+                    return True
+                except Exception as e:
+                    logger.debug(f"Herbie availability check failed for {model_id} f{forecast_hour:03d}: {e}")
+                    # If Herbie fails, let the fetcher handle it (may succeed or fail gracefully)
+                    return True
+            
+            # NOMADS direct check (for AIGFS and legacy models)
+            import requests
             
             date_str = run_time.strftime("%Y%m%d")
             run_hour = run_time.strftime("%H")
@@ -413,31 +458,15 @@ class ForecastScheduler:
             # Build check URL based on model
             base_url = "https://nomads.ncep.noaa.gov/pub/data/nccf/com"
             
-            if model_id == "GFS":
-                # Check GFS standard location
-                if forecast_hour == 0 and model_config.has_analysis_file:
-                    filename = f"gfs.t{run_hour}z.pgrb2.0p25.anl"
-                else:
-                    filename = f"gfs.t{run_hour}z.pgrb2.0p25.f{forecast_hour_str}"
-                url = f"{base_url}/gfs/prod/gfs.{date_str}/{run_hour}/atmos/{filename}"
-                
-            elif model_id == "AIGFS":
+            if model_id == "AIGFS":
                 # Check AIGFS location (try sfc first as it's most common)
                 if forecast_hour == 0 and model_config.has_analysis_file:
-                    filename = "aigfs.t{run_hour}z.sfc.f000.grib2"
+                    filename = f"aigfs.t{run_hour}z.sfc.f000.grib2"
                 else:
                     filename = f"aigfs.t{run_hour}z.sfc.f{forecast_hour_str}.grib2"
                 url = f"{base_url}/aigfs/prod/aigfs.{date_str}/{run_hour}/model/atmos/grib2/{filename}"
-                
-            elif model_id == "HRRR":
-                # Check HRRR location (Herbie handles the actual download, we just check top-level availability)
-                # HRRR is on AWS, not NOMADS, so just assume it's available if run time is recent
-                # Herbie will handle the actual availability check internally
-                logger.debug(f"HRRR availability check - assuming available (Herbie handles download)")
-                return True
-                
             else:
-                logger.warning(f"Don't know how to check availability for {model_id}")
+                logger.warning(f"Don't know how to check availability for {model_id} (not Herbie, not AIGFS)")
                 return True  # Assume available for unknown models
             
             # Try HEAD request (faster than GET)
