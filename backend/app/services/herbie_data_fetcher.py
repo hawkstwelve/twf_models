@@ -331,9 +331,23 @@ class HerbieDataFetcher(BaseDataFetcher):
                 lon_min_adj = lon_min
                 lon_max_adj = lon_max
             
+            # Check latitude ordering (GFS is typically descending: 90 to -90)
+            lat_vals = ds[lat_coord].values
+            lat_ascending = lat_vals[0] < lat_vals[-1]
+            
+            if lat_ascending:
+                # Ascending latitude (south to north)
+                lat_slice = slice(lat_min, lat_max)
+            else:
+                # Descending latitude (north to south) - REVERSE the slice
+                lat_slice = slice(lat_max, lat_min)
+            
+            logger.debug(f"Latitude order: {'ascending' if lat_ascending else 'descending'}")
+            logger.debug(f"Subsetting: lat={lat_slice}, lon=slice({lon_min_adj}, {lon_max_adj})")
+            
             # Apply subset
             ds_subset = ds.sel(
-                {lat_coord: slice(lat_min, lat_max),
+                {lat_coord: lat_slice,
                  lon_coord: slice(lon_min_adj, lon_max_adj)}
             )
         
