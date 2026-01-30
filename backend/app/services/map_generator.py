@@ -881,6 +881,7 @@ class MapGenerator:
             min_dbz_threshold = 10  # Increased from 5 to 10 to match TropicalTidbits
             data_vals = np.asarray(data.values, dtype=float)
             data_vals = np.where(np.isfinite(data_vals), data_vals, np.nan)
+            data_vals = np.where((data_vals >= -10) & (data_vals <= 80), data_vals, np.nan)
             has_precip = np.isfinite(data_vals) & (data_vals >= min_dbz_threshold)
             try:
                 total = np.isfinite(data_vals).sum()
@@ -1808,6 +1809,12 @@ class MapGenerator:
                     f"Radar refc stats: min={float(ref_vals.min()):.2f}, "
                     f"max={float(ref_vals.max()):.2f}, mean={float(ref_vals.mean()):.2f}"
                 )
+        except Exception:
+            pass
+
+        # Mask implausible dBZ ranges (guards against bad fill values)
+        try:
+            reflectivity = reflectivity.where((reflectivity >= -10) & (reflectivity <= 80))
         except Exception:
             pass
 
