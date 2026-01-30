@@ -867,19 +867,28 @@ class MapGenerator:
             
             # Apply minimum reflectivity threshold first
             min_dbz_threshold = 10  # Increased from 5 to 10 to match TropicalTidbits
-            has_precip = data.values >= min_dbz_threshold
+            data_vals = np.asarray(data.values, dtype=float)
+            data_vals = np.where(np.isfinite(data_vals), data_vals, np.nan)
+            has_precip = np.isfinite(data_vals) & (data_vals >= min_dbz_threshold)
             
             # Check if we have any precipitation type data
-            has_type_data = (np.max(crain.values) > 0 or np.max(csnow.values) > 0 or 
-                           np.max(cicep.values) > 0 or np.max(cfrzr.values) > 0)
+            crain_vals = np.nan_to_num(np.asarray(crain.values, dtype=float), nan=0.0)
+            csnow_vals = np.nan_to_num(np.asarray(csnow.values, dtype=float), nan=0.0)
+            cicep_vals = np.nan_to_num(np.asarray(cicep.values, dtype=float), nan=0.0)
+            cfrzr_vals = np.nan_to_num(np.asarray(cfrzr.values, dtype=float), nan=0.0)
+
+            has_type_data = (
+                np.max(crain_vals) > 0 or np.max(csnow_vals) > 0 or
+                np.max(cicep_vals) > 0 or np.max(cfrzr_vals) > 0
+            )
             
             if has_type_data:
                 # Stack masks to determine dominant precipitation type
                 mask_stack = np.stack([
-                    crain.values,
-                    csnow.values,
-                    cicep.values,
-                    cfrzr.values
+                    crain_vals,
+                    csnow_vals,
+                    cicep_vals,
+                    cfrzr_vals
                 ], axis=0)
                 
                 # Find the index of maximum probability at each point
@@ -906,6 +915,7 @@ class MapGenerator:
                     
                     # Create mask where this type is dominant and has reflectivity
                     type_mask = (winner_idx == idx) & has_precip & has_type_info
+                    type_mask = np.asarray(type_mask, dtype=bool)
                     
                     # EXPAND the mask slightly to create overlap and eliminate white gaps
                     # Use binary dilation with a small structure to expand by ~2 grid points
@@ -913,7 +923,7 @@ class MapGenerator:
                     expanded_mask = binary_dilation(type_mask, structure=structure, iterations=1)
                     
                     # Mask the data for this precipitation type using expanded mask
-                    masked_data = np.where(expanded_mask, data.values, np.nan)
+                    masked_data = np.where(expanded_mask, data_vals, np.nan)
                     
                     if np.any(~np.isnan(masked_data)):
                         im_temp = ax.contourf(
@@ -931,7 +941,7 @@ class MapGenerator:
                 # Fall back to single rain colormap if no type data available
                 logger.warning("No precipitation type data available, using rain colormap for all reflectivity")
                 cmap_type, norm_type, levels_type = self.get_radar_cmap('rain')
-                masked_data = np.where(has_precip, data.values, np.nan)
+                masked_data = np.where(has_precip, data_vals, np.nan)
                 
                 im = ax.contourf(
                     lon_vals, lat_vals, masked_data,
@@ -1757,6 +1767,18 @@ class MapGenerator:
                     attrs={'units': 'dBZ', 'long_name': 'Simulated radar reflectivity from precipitation'}
                 )
         
+        # Clean fill values / invalids before plotting logic
+        try:
+            fill_values = []
+            for key in ['_FillValue', 'missing_value']:
+                if key in reflectivity.attrs:
+                    fill_values.append(reflectivity.attrs[key])
+            for fv in fill_values:
+                reflectivity = reflectivity.where(reflectivity != fv)
+            reflectivity = reflectivity.where(np.isfinite(reflectivity))
+        except Exception:
+            pass
+
         # Handle time dimension if present
         return reflectivity.isel(time=0) if 'time' in reflectivity.dims else reflectivity
     

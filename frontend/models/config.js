@@ -37,9 +37,9 @@ const CONFIG = {
             description: 'Mean Sea Level Pressure & Precipitation',
         },
         'temp_850_wind_mslp': {
-            label: '850mb Analysis',
+            label: '850mb Temperature',
             units: '°C / mph / mb',
-            description: '850mb Temperature, Wind, and MSLP',
+            description: '850mb Temperature',
         },
         'radar': {
             label: 'Radar',
@@ -47,10 +47,27 @@ const CONFIG = {
             description: 'Simulated Composite Radar Reflectivity',
         }
     },
+
+    // Variable dropdown display order
+    VARIABLE_ORDER: [
+        'mslp_precip',
+        'radar',
+        'precip',
+        'snowfall',
+        'temp',
+        'temp_850_wind_mslp',
+        'wind_speed'
+    ],
+
+    // Minimum forecast hour per variable
+    VARIABLE_MIN_FORECAST_HOUR: {
+        mslp_precip: 6,
+        radar: 6
+    },
     
     // Default selections (will be validated against API)
     DEFAULT_MODEL: 'GFS',
-    DEFAULT_VARIABLE: 'temp',
+    DEFAULT_VARIABLE: 'mslp_precip',
     DEFAULT_FORECAST_HOUR: 0,
     
     // Forecast hours (6-hour increments for smooth temporal resolution)

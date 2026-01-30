@@ -11,12 +11,14 @@ class MapViewer {
         this.currentModel = CONFIG.DEFAULT_MODEL;
         this.currentVariable = CONFIG.DEFAULT_VARIABLE;
         this.currentForecastHour = CONFIG.DEFAULT_FORECAST_HOUR;
+        this.currentRun = null;
         this.currentMap = null;
         
         // Available options (from API)
         this.availableModels = [];  // Loaded from API
         this.availableVariables = new Set();
         this.availableForecastHours = [];
+        this.availableRuns = [];
         
         // State
         this.isLoading = false;
@@ -27,6 +29,22 @@ class MapViewer {
     }
 
     /**
+     * Get minimum forecast hour for current variable
+     */
+    getMinForecastHourForVariable(variable) {
+        if (!CONFIG.VARIABLE_MIN_FORECAST_HOUR) return 0;
+        return CONFIG.VARIABLE_MIN_FORECAST_HOUR[variable] ?? 0;
+    }
+
+    /**
+     * Get forecast hours filtered for current variable
+     */
+    getActiveForecastHours() {
+        const minHour = this.getMinForecastHourForVariable(this.currentVariable);
+        return this.availableForecastHours.filter(hour => hour >= minHour);
+    }
+
+    /**
      * Initialize the map viewer
      */
     async init() {
@@ -34,34 +52,40 @@ class MapViewer {
         
         // 1. Fetch available models first
         await this.fetchModels();
+
+        // 2. Fetch available runs for default model
+        await this.fetchRuns();
         
-        // 2. Fetch available options for default model
+        // 3. Fetch available options for default model
         await this.fetchAvailableOptions();
         
-        // 3. Populate UI dropdowns
+        // 4. Populate UI dropdowns
         this.populateModelDropdown();
+        this.populateRunDropdown();
         this.populateVariableDropdown();
         this.populateForecastDropdown();
         
-        // 4. Setup event listeners
+        // 5. Setup event listeners
         this.setupEventListeners();
         
-        // 5. Load initial map
+        // 6. Load initial map
         await this.loadMap();
         
-        // 6. Preload next images
+        // 7. Preload next images
         this.preloadImages();
         
-        // 7. Start auto-refresh
+        // 8. Start auto-refresh
         setInterval(() => {
             if (!this.isAnimating) {
                 this.loadMap();
             }
         }, CONFIG.REFRESH_INTERVAL);
         
-        // 8. Refresh available options every 5 minutes
-        setInterval(() => {
-            this.fetchAvailableOptions();
+        // 9. Refresh available options every 5 minutes
+        setInterval(async () => {
+            await this.fetchRuns();
+            await this.fetchAvailableOptions();
+            this.populateRunDropdown();
             this.populateVariableDropdown();
             this.populateForecastDropdown();
         }, 300000); // 5 minutes
@@ -181,6 +205,7 @@ class MapViewer {
             
             const maps = await this.apiClient.getMaps({ 
                 model: this.currentModel,
+                run_time: this.currentRun || undefined,
                 limit: 1000  // Get all available
             });
             
@@ -221,8 +246,9 @@ class MapViewer {
                 console.log(`Switched variable to ${this.currentVariable}`);
             }
             
-            if (!this.availableForecastHours.includes(this.currentForecastHour)) {
-                this.currentForecastHour = this.availableForecastHours[0] || 0;
+            const activeHours = this.getActiveForecastHours();
+            if (!activeHours.includes(this.currentForecastHour)) {
+                this.currentForecastHour = activeHours[0] ?? 0;
                 console.log(`Switched forecast hour to ${this.currentForecastHour}`);
             }
             
@@ -231,6 +257,37 @@ class MapViewer {
             // Fallback to config values
             this.availableVariables = new Set(this.getAvailableVariablesForModel());
             this.availableForecastHours = CONFIG.FORECAST_HOURS.slice(0, 13);
+
+            const activeHours = this.getActiveForecastHours();
+            if (!activeHours.includes(this.currentForecastHour)) {
+                this.currentForecastHour = activeHours[0] ?? 0;
+                console.log(`Switched forecast hour to ${this.currentForecastHour}`);
+            }
+        }
+    }
+
+    /**
+     * Fetch available runs for current model
+     */
+    async fetchRuns() {
+        try {
+            console.log(`Fetching runs for ${this.currentModel}...`);
+            this.availableRuns = await this.apiClient.getRuns(this.currentModel);
+
+            if (this.availableRuns.length === 0) {
+                this.currentRun = null;
+                return;
+            }
+
+            const runTimes = new Set(this.availableRuns.map(run => run.run_time));
+            if (!this.currentRun || !runTimes.has(this.currentRun)) {
+                const latestRun = this.availableRuns.find(run => run.is_latest) || this.availableRuns[0];
+                this.currentRun = latestRun.run_time;
+            }
+        } catch (error) {
+            console.error('Failed to fetch runs:', error);
+            this.availableRuns = [];
+            this.currentRun = null;
         }
     }
 
@@ -253,17 +310,20 @@ class MapViewer {
         const supportedVars = this.getAvailableVariablesForModel();
         
         // Filter to only variables with available data
-        const variables = Array.from(this.availableVariables)
-            .filter(v => supportedVars.includes(v))
-            .sort((a, b) => {
-                const labelA = CONFIG.VARIABLES[a]?.label || a;
-                const labelB = CONFIG.VARIABLES[b]?.label || b;
-                return labelA.localeCompare(labelB);
-            });
+        const baseOrder = Array.isArray(CONFIG.VARIABLE_ORDER) && CONFIG.VARIABLE_ORDER.length
+            ? CONFIG.VARIABLE_ORDER
+            : Object.keys(CONFIG.VARIABLES);
+
+        const order = [...baseOrder, ...Array.from(this.availableVariables)];
+
+        const variables = order
+            .filter((v, index, self) => self.indexOf(v) === index)
+            .filter(v => this.availableVariables.has(v))
+            .filter(v => supportedVars.includes(v));
         
         // Fallback to all supported variables if no data yet
         if (variables.length === 0) {
-            supportedVars.forEach(v => variables.push(v));
+            order.filter(v => supportedVars.includes(v)).forEach(v => variables.push(v));
         }
         
         variables.forEach(variable => {
@@ -294,6 +354,48 @@ class MapViewer {
     }
 
     /**
+     * Populate run dropdown
+     */
+    populateRunDropdown() {
+        const select = document.getElementById('run-select');
+        if (!select) {
+            console.warn('Run select element not found');
+            return;
+        }
+
+        select.innerHTML = '';
+
+        if (this.availableRuns.length === 0) {
+            const option = document.createElement('option');
+            option.value = '';
+            option.textContent = 'Latest Run (Auto)';
+            option.selected = true;
+            select.appendChild(option);
+            return;
+        }
+
+        this.availableRuns.forEach((run, index) => {
+            const option = document.createElement('option');
+            option.value = run.run_time;
+
+            let label = run.run_time_formatted || run.hour || run.run_time;
+            if (run.is_latest) {
+                label += ' (Latest)';
+            }
+
+            option.textContent = label;
+
+            if (run.run_time === this.currentRun || (!this.currentRun && index === 0)) {
+                option.selected = true;
+            }
+
+            select.appendChild(option);
+        });
+
+        console.log('Run dropdown populated with', this.availableRuns.length, 'options');
+    }
+
+    /**
      * Populate forecast hour dropdown
      */
     populateForecastDropdown() {
@@ -303,13 +405,15 @@ class MapViewer {
             return;
         }
         
-        console.log('Populating forecast hours:', this.availableForecastHours);
+        const activeHours = this.getActiveForecastHours();
+
+        console.log('Populating forecast hours:', activeHours);
         
         // Clear existing options
         select.innerHTML = '';
         
         // Add available forecast hours
-        this.availableForecastHours.forEach(hour => {
+        activeHours.forEach(hour => {
             const option = document.createElement('option');
             option.value = hour;
             option.textContent = hour === 0 ? 'Now (Analysis)' : `+${hour}h`;
@@ -321,7 +425,7 @@ class MapViewer {
             select.appendChild(option);
         });
         
-        console.log('Forecast dropdown populated with', this.availableForecastHours.length, 'options');
+        console.log('Forecast dropdown populated with', activeHours.length, 'options');
         
         // Update slider
         this.updateTimeSlider();
@@ -334,14 +438,15 @@ class MapViewer {
         const slider = document.getElementById('time-slider');
         const maxLabel = document.getElementById('slider-max-label');
         
-        if (!slider || this.availableForecastHours.length === 0) return;
+        const activeHours = this.getActiveForecastHours();
+        if (!slider || activeHours.length === 0) return;
         
         slider.min = 0;
-        slider.max = this.availableForecastHours.length - 1;
-        slider.value = this.availableForecastHours.indexOf(this.currentForecastHour);
+        slider.max = activeHours.length - 1;
+        slider.value = activeHours.indexOf(this.currentForecastHour);
         
         // Update max label
-        const maxHour = this.availableForecastHours[this.availableForecastHours.length - 1];
+        const maxHour = activeHours[activeHours.length - 1];
         if (maxLabel) {
             maxLabel.textContent = `+${maxHour}h`;
         }
@@ -382,6 +487,15 @@ class MapViewer {
             });
         }
 
+        // Run selector
+        const runSelect = document.getElementById('run-select');
+        if (runSelect) {
+            runSelect.addEventListener('change', (e) => {
+                const value = e.target.value || null;
+                this.selectRun(value);
+            });
+        }
+
         // Variable selector
         const variableSelect = document.getElementById('variable-select');
         if (variableSelect) {
@@ -403,7 +517,9 @@ class MapViewer {
         if (timeSlider) {
             timeSlider.addEventListener('input', (e) => {
                 const index = parseInt(e.target.value);
-                const hour = this.availableForecastHours[index];
+                const activeHours = this.getActiveForecastHours();
+                const hour = activeHours[index];
+                if (hour === undefined) return;
                 this.selectForecastHour(hour, false); // Don't update slider to avoid recursion
                 this.updateSliderLabel();
             });
@@ -472,8 +588,11 @@ class MapViewer {
         
         try {
             // Fetch new data for this model
+            await this.fetchRuns();
             await this.fetchAvailableOptions();
             
+            // Update dropdowns
+            this.populateRunDropdown();
             // Update dropdowns (variables may differ between models)
             this.populateVariableDropdown();
             this.populateForecastDropdown();
@@ -487,6 +606,52 @@ class MapViewer {
         } catch (error) {
             console.error('Error switching models:', error);
             this.showError(`Failed to switch to ${modelId}`);
+        } finally {
+            this.hideLoading();
+        }
+    }
+
+    /**
+     * Select a run time
+     */
+    async selectRun(runTime) {
+        if (this.currentRun === runTime) return;
+
+        console.log(`Run changed: ${this.currentRun} → ${runTime}`);
+
+        // Stop any animation
+        this.stopAnimation();
+
+        // Clear image cache
+        this.imageCache.clear();
+
+        // Update current run
+        this.currentRun = runTime;
+
+        // Update dropdown
+        const select = document.getElementById('run-select');
+        if (select) {
+            select.value = runTime || '';
+        }
+
+        // Show loading state
+        this.showLoading();
+
+        try {
+            await this.fetchAvailableOptions();
+
+            // Update dropdowns
+            this.populateVariableDropdown();
+            this.populateForecastDropdown();
+
+            // Load map for selected run
+            await this.loadMap();
+
+            // Preload images
+            this.preloadImages();
+        } catch (error) {
+            console.error('Error switching runs:', error);
+            this.showError('Failed to switch run time');
         } finally {
             this.hideLoading();
         }
@@ -509,6 +674,19 @@ class MapViewer {
         // Stop animation if running
         this.stopAnimation();
         
+        // Update forecast options for variable
+        this.populateForecastDropdown();
+
+        const activeHours = this.getActiveForecastHours();
+        if (!activeHours.includes(this.currentForecastHour)) {
+            this.currentForecastHour = activeHours[0] ?? 0;
+            const forecastSelect = document.getElementById('forecast-select');
+            if (forecastSelect) {
+                forecastSelect.value = this.currentForecastHour;
+            }
+            this.updateTimeSlider();
+        }
+
         // Clear cache and load new map
         this.imageCache.clear();
         this.loadMap();
@@ -519,6 +697,10 @@ class MapViewer {
      * Select a forecast hour
      */
     selectForecastHour(hour, updateSlider = true) {
+        const minHour = this.getMinForecastHourForVariable(this.currentVariable);
+        if (hour < minHour) {
+            hour = this.getActiveForecastHours()[0] ?? minHour;
+        }
         if (this.currentForecastHour === hour) return;
         
         this.currentForecastHour = hour;
@@ -532,8 +714,9 @@ class MapViewer {
         // Update slider if requested
         if (updateSlider) {
             const slider = document.getElementById('time-slider');
+            const activeHours = this.getActiveForecastHours();
             if (slider) {
-                slider.value = this.availableForecastHours.indexOf(hour);
+                slider.value = activeHours.indexOf(hour);
                 this.updateSliderLabel();
             }
         }
@@ -546,7 +729,7 @@ class MapViewer {
      * Start animation
      */
     startAnimation() {
-        if (this.isAnimating || this.availableForecastHours.length <= 1) return;
+        if (this.isAnimating || this.getActiveForecastHours().length <= 1) return;
         
         this.isAnimating = true;
         
@@ -588,9 +771,10 @@ class MapViewer {
      * Advance to next frame in animation
      */
     advanceFrame() {
-        const currentIndex = this.availableForecastHours.indexOf(this.currentForecastHour);
-        const nextIndex = (currentIndex + 1) % this.availableForecastHours.length;
-        const nextHour = this.availableForecastHours[nextIndex];
+        const activeHours = this.getActiveForecastHours();
+        const currentIndex = activeHours.indexOf(this.currentForecastHour);
+        const nextIndex = (currentIndex + 1) % activeHours.length;
+        const nextHour = activeHours[nextIndex];
         
         this.selectForecastHour(nextHour);
     }
@@ -600,8 +784,8 @@ class MapViewer {
      */
     async preloadImages() {
         // Preload images for current model, variable and all forecast hours
-        for (const hour of this.availableForecastHours) {
-            const cacheKey = `${this.currentModel}_${this.currentVariable}_${hour}`;
+        for (const hour of this.getActiveForecastHours()) {
+            const cacheKey = `${this.currentModel}_${this.currentRun || 'latest'}_${this.currentVariable}_${hour}`;
             if (!this.imageCache.has(cacheKey)) {
                 this.preloadImage(this.currentVariable, hour);
             }
@@ -616,12 +800,13 @@ class MapViewer {
             const maps = await this.apiClient.getMaps({
                 model: this.currentModel,
                 variable: variable,
-                forecast_hour: forecastHour
+                forecast_hour: forecastHour,
+                run_time: this.currentRun || undefined
             });
             
             if (maps.length > 0) {
                 const imageUrl = this.apiClient.getImageUrl(maps[0].image_url);
-                const cacheKey = `${this.currentModel}_${variable}_${forecastHour}`;
+                const cacheKey = `${this.currentModel}_${this.currentRun || 'latest'}_${variable}_${forecastHour}`;
                 
                 // Create and load image
                 const img = new Image();
@@ -649,7 +834,7 @@ class MapViewer {
         
         try {
             // Check cache first
-            const cacheKey = `${this.currentModel}_${this.currentVariable}_${this.currentForecastHour}`;
+            const cacheKey = `${this.currentModel}_${this.currentRun || 'latest'}_${this.currentVariable}_${this.currentForecastHour}`;
             let imageUrl;
             
             if (this.imageCache.has(cacheKey)) {
@@ -659,7 +844,8 @@ class MapViewer {
                 const maps = await this.apiClient.getMaps({
                     model: this.currentModel,
                     variable: this.currentVariable,
-                    forecast_hour: this.currentForecastHour
+                    forecast_hour: this.currentForecastHour,
+                    run_time: this.currentRun || undefined
                 });
                 
                 if (maps.length === 0) {
