@@ -206,7 +206,7 @@ class ForecastScheduler:
             
             # Determine forecast hours
             configured_hours = [int(h) for h in settings.forecast_hours.split(',')]
-            max_hour = min(max(configured_hours), model_config.max_forecast_hour)
+            max_hour = self._get_effective_max_forecast_hour(model_id, run_time, model_config)
             forecast_hours = [h for h in configured_hours if h <= max_hour]
             
             logger.info(f"🎯 Forecast hours: {forecast_hours}")
@@ -277,7 +277,7 @@ class ForecastScheduler:
             
             # Determine forecast hours
             configured_hours = [int(h) for h in settings.forecast_hours.split(',')]
-            max_hour = min(max(configured_hours), model_config.max_forecast_hour)
+            max_hour = self._get_effective_max_forecast_hour(model_id, run_time, model_config)
             forecast_hours = sorted([h for h in configured_hours if h <= max_hour])
             
             logger.info(f"🎯 Forecast hours needed: {forecast_hours}")
@@ -478,6 +478,23 @@ class ForecastScheduler:
         except Exception as e:
             logger.debug(f"Error checking availability for {model_id} f{forecast_hour:03d}: {e}")
             return False
+
+    def _get_effective_max_forecast_hour(self, model_id: str, run_time: datetime, model_config) -> int:
+        """
+        Determine the effective max forecast hour for a model/run.
+
+        HRRR runs out to f48 only at 00z/06z/12z/18z. Other cycles run to f18.
+        """
+        configured_hours = [int(h) for h in settings.forecast_hours.split(',')]
+        max_configured = max(configured_hours)
+        max_model = model_config.max_forecast_hour
+
+        if model_id == "HRRR":
+            run_hour = run_time.hour
+            if run_hour not in {0, 6, 12, 18}:
+                max_model = min(max_model, 18)
+
+        return min(max_configured, max_model)
     def generate_all_models(self, use_progressive: bool = True):
         """
         Generate forecasts for all enabled models.
