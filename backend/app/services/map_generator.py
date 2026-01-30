@@ -864,18 +864,37 @@ class MapGenerator:
             csnow = self._normalize_coords(csnow)
             cicep = self._normalize_coords(cicep)
             cfrzr = self._normalize_coords(cfrzr)
+
+            def _sanitize_type_mask(mask_da: xr.DataArray) -> np.ndarray:
+                vals = np.asarray(mask_da.values, dtype=float)
+                # Remove declared fill values
+                for key in ['_FillValue', 'missing_value']:
+                    if key in mask_da.attrs:
+                        vals = np.where(vals == mask_da.attrs[key], np.nan, vals)
+                vals = np.where(np.isfinite(vals), vals, np.nan)
+                # Keep only valid probability range
+                vals = np.where((vals >= 0.0) & (vals <= 1.0), vals, 0.0)
+                vals = np.nan_to_num(vals, nan=0.0)
+                return vals
             
             # Apply minimum reflectivity threshold first
             min_dbz_threshold = 10  # Increased from 5 to 10 to match TropicalTidbits
             data_vals = np.asarray(data.values, dtype=float)
             data_vals = np.where(np.isfinite(data_vals), data_vals, np.nan)
             has_precip = np.isfinite(data_vals) & (data_vals >= min_dbz_threshold)
+            try:
+                total = np.isfinite(data_vals).sum()
+                if total:
+                    frac = has_precip.sum() / total
+                    logger.info(f"Radar refc >= {min_dbz_threshold} dBZ coverage: {frac:.3%}")
+            except Exception:
+                pass
             
             # Check if we have any precipitation type data
-            crain_vals = np.nan_to_num(np.asarray(crain.values, dtype=float), nan=0.0)
-            csnow_vals = np.nan_to_num(np.asarray(csnow.values, dtype=float), nan=0.0)
-            cicep_vals = np.nan_to_num(np.asarray(cicep.values, dtype=float), nan=0.0)
-            cfrzr_vals = np.nan_to_num(np.asarray(cfrzr.values, dtype=float), nan=0.0)
+            crain_vals = _sanitize_type_mask(crain)
+            csnow_vals = _sanitize_type_mask(csnow)
+            cicep_vals = _sanitize_type_mask(cicep)
+            cfrzr_vals = _sanitize_type_mask(cfrzr)
 
             has_type_data = (
                 np.max(crain_vals) > 0 or np.max(csnow_vals) > 0 or
@@ -1776,6 +1795,19 @@ class MapGenerator:
             for fv in fill_values:
                 reflectivity = reflectivity.where(reflectivity != fv)
             reflectivity = reflectivity.where(np.isfinite(reflectivity))
+            if fill_values:
+                logger.info(f"Radar refc fill values filtered: {fill_values}")
+        except Exception:
+            pass
+
+        try:
+            ref_vals = np.asarray(reflectivity.values, dtype=float)
+            ref_vals = ref_vals[np.isfinite(ref_vals)]
+            if ref_vals.size:
+                logger.info(
+                    f"Radar refc stats: min={float(ref_vals.min()):.2f}, "
+                    f"max={float(ref_vals.max()):.2f}, mean={float(ref_vals.mean()):.2f}"
+                )
         except Exception:
             pass
 
