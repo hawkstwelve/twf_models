@@ -75,6 +75,8 @@ class HerbieDataFetcher(BaseDataFetcher):
             'csnow': ':CSNOW:surface',
             'cicep': ':CICEP:surface',
             'cfrzr': ':CFRZR:surface',
+            'gh_500': ':HGT:500 mb',
+            'gh_1000': ':HGT:1000 mb',
             'gh500': ':HGT:500 mb',
             # Upper air fields - support both naming conventions
             'tmp850': ':TMP:850 mb',
@@ -265,7 +267,6 @@ class HerbieDataFetcher(BaseDataFetcher):
             't': 'tmp_850',  # Level-specific, use underscore
             'u': 'ugrd_850',  # Level-specific, use underscore
             'v': 'vgrd_850',  # Level-specific, use underscore
-            'gh': 'gh500',
             # Also handle if they come through without renaming
             'tmp850': 'tmp_850',
             'ugrd850': 'ugrd_850',

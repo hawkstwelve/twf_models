@@ -582,6 +582,18 @@ class BaseDataFetcher(ABC):
         
         # Get precip for this 6-hour bucket
         # Depends on whether precip is accumulated or bucketed
+        def _to_mm(da: xr.DataArray) -> xr.DataArray:
+            """Convert precipitation to mm using units + heuristics."""
+            units = (da.attrs.get('units') or '').lower()
+            if units in ('m', 'meter', 'meters'):
+                return da * 1000.0
+            if units in ('mm', 'millimeter', 'millimeters'):
+                return da
+            if 'kg' in units and ('m-2' in units or 'm**-2' in units or 'm^2' in units or 'kg/m^2' in units):
+                return da
+            # Heuristic: if max < 5, likely meters
+            return (da * 1000.0) if float(da.max()) < 5.0 else da
+
         if self.model_config.tp_is_accumulated_from_init:
             # tp(H) - tp(H-6)
             ds_current = self.fetch_raw_data(run_time, forecast_hour, {"tp"}, subset_region)
@@ -603,9 +615,10 @@ class BaseDataFetcher(ABC):
                 raise ValueError(f"No tp in f{forecast_hour:03d}")
             bucket_precip = ds['tp'].squeeze()
         
-        # Convert to mm/hr (assuming tp is in meters)
-        # bucket is 6 hours of accumulation in meters
-        rate_mmhr = (bucket_precip * 1000.0) / 6.0  # mm/hr
+        # Convert to mm/hr (unit-safe)
+        # bucket is 6 hours of accumulation
+        bucket_mm = _to_mm(bucket_precip)
+        rate_mmhr = bucket_mm / 6.0  # mm/hr
         
         # Drop time coords
         drop_coords = [c for c in ['time', 'valid_time', 'step'] if c in rate_mmhr.coords]

@@ -652,7 +652,7 @@ class MapGenerator:
             rate = self._normalize_coords(data).squeeze()
             mslp_data = self._normalize_coords(self._process_mslp(ds))
             has_gh = ('gh_1000' in ds and 'gh_500' in ds) or 'gh' in ds or any('gh' in str(v).lower() for v in ds.data_vars)
-            thickness_data = self._process_thickness(ds) if has_gh else None
+            thickness_data = self._normalize_coords(self._process_thickness(ds)) if has_gh else None
 
             # Detect coordinate names
             lon_name = 'longitude' if 'longitude' in rate.coords else 'lon'
@@ -703,34 +703,31 @@ class MapGenerator:
                 # Upsample rate and masks ONCE with linear interpolation
                 rate_smooth = rate.interp({lon_name: new_lon, lat_name: new_lat}, method="linear")
                 
-                # PERFORMANCE: Collect masks at native resolution first, stack, then upsample winner field
-                # This avoids 4 separate interp() calls + 4 gaussian_filter() calls
+                # Build hi-res masks first, then pick the winner on the hi-res grid
+                # This avoids blocky edges from nearest-neighbor upsampling
                 precip_types = [('crain', 'rain'), ('csnow', 'snow'), ('cicep', 'sleet'), ('cfrzr', 'frzr')]
                 
-                # Stack masks at native resolution
-                mask_list = []
+                mask_hi_list = []
                 for var_key, p_type in precip_types:
                     if var_key in ds:
                         mask_src = ds[var_key]
                         if 'time' in mask_src.dims:
                             mask_src = mask_src.isel(time=0)
-                        mask = self._normalize_coords(mask_src)
-                        mask_list.append(mask.values)
+                        mask_src = self._normalize_coords(mask_src)
                     else:
-                        mask_list.append(np.zeros_like(rate.values))
+                        mask_src = xr.zeros_like(rate)
+                    
+                    mask_hi = mask_src.interp({lon_name: new_lon, lat_name: new_lat}, method='linear')
+                    mask_hi_list.append(mask_hi.values)
                 
-                # Find winner at native resolution (cheaper than hi-res)
-                mask_stack = np.stack(mask_list, axis=0)
-                winner_idx = np.argmax(mask_stack, axis=0)
-                
-                # Create categorical winner field and upsample it once
-                # This is much faster than upsampling 4 separate masks
-                winner_field = xr.DataArray(
+                # Find winner on hi-res grid for smoother boundaries
+                mask_stack_hi = np.stack(mask_hi_list, axis=0)
+                winner_idx = np.argmax(mask_stack_hi, axis=0)
+                winner_field_hi = xr.DataArray(
                     winner_idx,
-                    coords=rate.coords,
-                    dims=rate.dims
+                    coords=rate_smooth.coords,
+                    dims=rate_smooth.dims
                 )
-                winner_field_hi = winner_field.interp({lon_name: new_lon, lat_name: new_lat}, method='nearest')
                 
                 # PERFORMANCE: Single smoothing pass on final rate field (not per-type)
                 from scipy.ndimage import gaussian_filter
@@ -795,16 +792,41 @@ class MapGenerator:
             )
             ax.clabel(cs_mslp, inline=True, fontsize=9, fmt='%d', zorder=13)
             if thickness_data is not None:
-                cold_levels = np.arange(480, 541, 6)
-                cs_cold = ax.contour(
-                    thickness_data[lon_name].values, thickness_data[lat_name].values, thickness_data.values,
-                    levels=cold_levels,
-                    colors='blue',
-                    linewidths=1.2,
-                    linestyles='dashed',
-                    transform=ccrs.PlateCarree(),
-                )
-                ax.clabel(cs_cold, inline=True, fontsize=8, fmt='%d', zorder=13)
+                # Blue dashed for <= 540 dam, red dashed for > 540 dam
+                cold_levels = np.arange(480, 542, 6)
+                warm_levels = np.arange(546, 601, 6)
+
+                # Clip levels to data range
+                tmin = float(thickness_data.min())
+                tmax = float(thickness_data.max())
+
+                if tmin <= 540:
+                    cold_levels_in = cold_levels[(cold_levels >= tmin) & (cold_levels <= min(540, tmax))]
+                    if cold_levels_in.size:
+                        cs_cold = ax.contour(
+                            thickness_data[lon_name].values, thickness_data[lat_name].values, thickness_data.values,
+                            levels=cold_levels_in,
+                            colors='blue',
+                            linewidths=1.2,
+                            linestyles='dashed',
+                            transform=ccrs.PlateCarree(),
+                            zorder=11,
+                        )
+                        ax.clabel(cs_cold, inline=True, fontsize=8, fmt='%d', zorder=13)
+
+                if tmax >= 546:
+                    warm_levels_in = warm_levels[(warm_levels >= max(546, tmin)) & (warm_levels <= tmax)]
+                    if warm_levels_in.size:
+                        cs_warm = ax.contour(
+                            thickness_data[lon_name].values, thickness_data[lat_name].values, thickness_data.values,
+                            levels=warm_levels_in,
+                            colors='red',
+                            linewidths=1.2,
+                            linestyles='dashed',
+                            transform=ccrs.PlateCarree(),
+                            zorder=11,
+                        )
+                        ax.clabel(cs_warm, inline=True, fontsize=8, fmt='%d', zorder=13)
         elif is_850mb_map:
             # 850mb Temp shading
             lon_vals = data.coords.get('lon', data.coords.get('longitude'))
