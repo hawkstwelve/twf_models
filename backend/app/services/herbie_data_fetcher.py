@@ -67,8 +67,10 @@ class HerbieDataFetcher(BaseDataFetcher):
             'vgrd10m': ':VGRD:10 m',
             'prmsl': ':PRMSL:mean sea level',
             'tp': ':APCP:surface',  # Accumulated precipitation
+            'apcp': ':APCP:surface',  # Accumulated precipitation (alias)
             'prate': ':PRATE:surface',  # Precipitation rate
             'refc': ':REFC:entire atmosphere',  # Composite reflectivity
+            'asnow': ':ASNOW:surface',  # Accumulated snowfall (HRRR)
             'crain': ':CRAIN:surface',
             'csnow': ':CSNOW:surface',
             'cicep': ':CICEP:surface',
@@ -84,7 +86,7 @@ class HerbieDataFetcher(BaseDataFetcher):
         }
         
         # Data source priority (fallback order)
-        self.priority_sources = ['nomads', 'aws', 'google', 'azure']
+        self.priority_sources = ['aws', 'nomads', 'google', 'azure']
         
         logger.info(f"HerbieDataFetcher initialized for {model_id}")
         logger.info(f"  Cache directory: {self.herbie_save_dir}")
@@ -100,7 +102,7 @@ class HerbieDataFetcher(BaseDataFetcher):
             )
         return herbie_name
     
-    def _build_search_string(self, raw_fields: Set[str]) -> str:
+    def _build_search_string(self, raw_fields: Set[str], forecast_hour: Optional[int] = None) -> str:
         """
         Build Herbie search string from raw field names.
         
@@ -113,6 +115,17 @@ class HerbieDataFetcher(BaseDataFetcher):
         
         for field in raw_fields:
             pattern = self._variable_map.get(field)
+            # Bucketed APCP to avoid double-counting for models with bucketed precip
+            if (
+                field == "apcp"
+                and forecast_hour is not None
+                and forecast_hour > 0
+                and not self.model_config.tp_is_accumulated_from_init
+            ):
+                increment = self.model_config.forecast_increment
+                bucket_start = max(forecast_hour - increment, 0)
+                bucket_pattern = f":APCP:surface:{bucket_start}-{forecast_hour} hour acc fcst"
+                pattern = bucket_pattern
             if pattern:
                 search_patterns.append(pattern)
             else:
@@ -176,7 +189,7 @@ class HerbieDataFetcher(BaseDataFetcher):
             )
             
             # Build search string for variable subsetting
-            search_string = self._build_search_string(raw_fields)
+            search_string = self._build_search_string(raw_fields, forecast_hour)
             
             # Download and convert to xarray
             # Herbie uses byte-range requests to download only matching variables
@@ -208,6 +221,16 @@ class HerbieDataFetcher(BaseDataFetcher):
             
             # Rename variables to our standard names
             ds = self._standardize_variable_names(ds)
+
+            # HRRR ASNOW/APCP can come back as an unnamed/unknown variable
+            # Ensure it matches requested raw_fields for pipeline contract
+            if 'unknown' in ds:
+                if 'asnow' in raw_fields and 'asnow' not in ds:
+                    ds = ds.rename({'unknown': 'asnow'})
+                    logger.debug("Renamed 'unknown' variable to 'asnow' for HRRR")
+                elif 'apcp' in raw_fields and 'apcp' not in ds and 'APCP_surface' not in ds and 'tp' not in ds:
+                    ds = ds.rename({'unknown': 'apcp'})
+                    logger.debug("Renamed 'unknown' variable to 'apcp' for HRRR")
             
             # Select specific pressure levels and remove extra dimensions
             ds = self._select_pressure_levels(ds)

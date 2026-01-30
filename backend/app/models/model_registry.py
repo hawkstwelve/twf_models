@@ -228,7 +228,7 @@ ModelRegistry.register(ModelConfig(
     availability_delay_hours=1.0,
     has_refc=True,
     has_precip_type_masks=False,  # HRRR may not have categorical types
-    has_upper_air=False,  # HRRR is primarily surface
+    has_upper_air=True,  # HRRR provides upper-air levels (e.g., 850mb)
     tp_is_accumulated_from_init=False,
     products_supported={"2d"},
     excluded_variables=["temp_850_wind_mslp"],

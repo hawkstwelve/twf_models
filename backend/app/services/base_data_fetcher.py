@@ -192,6 +192,21 @@ class BaseDataFetcher(ABC):
             
             precip_total = None
             increment = self.model_config.forecast_increment
+
+            def _drop_timeish(da: xr.DataArray) -> xr.DataArray:
+                drop_coords = [c for c in ['time', 'valid_time', 'step'] if c in da.coords]
+                if drop_coords:
+                    da = da.drop_vars(drop_coords)
+                return da.squeeze()
+
+            def _to_mm(da: xr.DataArray) -> xr.DataArray:
+                units = (da.attrs.get('units') or '').lower()
+                if units in ('m', 'meter', 'meters'):
+                    return da * 1000.0
+                if units in ('mm', 'millimeter', 'millimeters'):
+                    return da
+                # Heuristic: if max < 5, likely meters
+                return (da * 1000.0) if float(da.max()) < 5.0 else da
             
             # Loop through all forecast hours from increment to forecast_hour
             # (skip f000 which has zero precip)
@@ -200,21 +215,22 @@ class BaseDataFetcher(ABC):
                     break
                     
                 try:
-                    ds = self.fetch_raw_data(run_time, fh, {"tp"}, subset_region)
-                    if 'tp' in ds:
-                        tp = ds['tp'].squeeze()
-                        drop_coords = [c for c in ['time', 'valid_time', 'step'] if c in tp.coords]
-                        if drop_coords:
-                            tp = tp.drop_vars(drop_coords)
-                        
-                        if precip_total is None:
-                            precip_total = tp.copy(deep=True)
-                        else:
-                            precip_total = precip_total + tp
-                        
-                        logger.debug(f"      Added bucket f{fh:03d}")
+                    ds = self.fetch_raw_data(run_time, fh, {"apcp"}, subset_region)
+
+                    if 'apcp' in ds:
+                        p = _to_mm(_drop_timeish(ds['apcp']))
+                    elif 'tp' in ds:
+                        p = _to_mm(_drop_timeish(ds['tp']))
                     else:
-                        logger.warning(f"      No tp in f{fh:03d}, skipping")
+                        logger.warning(f"      No apcp/tp in f{fh:03d}, skipping")
+                        continue
+
+                    if precip_total is None:
+                        precip_total = p.copy(deep=True)
+                    else:
+                        precip_total = precip_total + p
+                    
+                    logger.debug(f"      Added bucket f{fh:03d}")
                 
                 except FileNotFoundError:
                     logger.warning(f"      f{fh:03d} not found, skipping")
@@ -310,6 +326,7 @@ class BaseDataFetcher(ABC):
             t = _drop_timeish(temp_k_or_c)
             # Heuristic: Kelvin if values typically > 100
             return (t - 273.15) if float(t.max()) > 100.0 else t
+
         
         def _snow_fraction_from_thermal(t850_c: xr.DataArray, t2m_c: xr.DataArray | None) -> xr.DataArray:
             """
@@ -358,6 +375,59 @@ class BaseDataFetcher(ABC):
             precip_cached, _ = self._accumulation_cache.get(cache_key, (None, None))
             self._accumulation_cache[cache_key] = (precip_cached, result)
             return result
+
+        if self.model_id == "HRRR":
+            logger.info("    Using APCP * 10 with CSNOW mask (HRRR path)")
+
+            snow_liq_mm_total = None
+            increment = self.model_config.forecast_increment
+            hours_to_process = list(range(increment, forecast_hour + increment, increment))
+            logger.info(f"    Accumulating HRRR snowfall from f000 through {hours_to_process}")
+
+            for fh in hours_to_process:
+                try:
+                    ds = self.fetch_raw_data(run_time, fh, {'apcp', 'csnow'}, subset_region)
+
+                    p_mm = _get_bucket_precip_mm(ds)
+
+                    if 'csnow' not in ds:
+                        logger.warning(f"CSNOW missing at f{fh:03d}, skipping bucket")
+                        if snow_liq_mm_total is None:
+                            raise ValueError(f"No snowfall data for f{fh:03d}")
+                        continue
+
+                    # Normalize csnow to [0,1]
+                    cs = _drop_timeish(ds['csnow'])
+                    cs_units = (cs.attrs.get('units') or '').lower()
+                    if cs_units in ('%', 'percent'):
+                        cs_frac = (cs / 100.0)
+                    else:
+                        cs_frac = (cs / 100.0) if float(cs.max()) > 1.5 else cs
+                    cs_frac = cs_frac.clip(0.0, 1.0)
+
+                    snow_bucket_mm = p_mm * cs_frac
+
+                    snow_liq_mm_total = (snow_bucket_mm.copy(deep=True) if snow_liq_mm_total is None
+                                        else (snow_liq_mm_total + snow_bucket_mm))
+
+                except FileNotFoundError:
+                    logger.warning(f"Data not found for f{fh:03d}")
+                    if snow_liq_mm_total is None:
+                        raise ValueError(f"No snowfall data for f{fh:03d}")
+                except Exception as e:
+                    logger.error(f"Error computing HRRR snowfall for f{fh:03d}: {e}")
+                    if snow_liq_mm_total is None:
+                        raise
+
+            if snow_liq_mm_total is None:
+                raise ValueError(f"No snowfall/precip data available up to f{forecast_hour:03d}")
+
+            snow_in_10to1 = (snow_liq_mm_total / 25.4) * 10.0
+            snow_in_10to1 = _drop_timeish(snow_in_10to1)
+
+            precip_cached, _ = self._accumulation_cache.get(cache_key, (None, None))
+            self._accumulation_cache[cache_key] = (precip_cached, snow_in_10to1)
+            return snow_in_10to1
         
         # Try to get previous accumulation for incremental update
         prev_hour = forecast_hour - self.model_config.forecast_increment
@@ -389,7 +459,7 @@ class BaseDataFetcher(ABC):
                 logger.info(f"    Using native CSNOW mask (GFS path) for f{fh:03d}")
                 
                 try:
-                    ds = self.fetch_raw_data(run_time, fh, {'tp', 'apcp', 'csnow'}, subset_region)
+                    ds = self.fetch_raw_data(run_time, fh, {'apcp', 'csnow'}, subset_region)
                     
                     p_mm = _get_bucket_precip_mm(ds)
                     
