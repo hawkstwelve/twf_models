@@ -1124,16 +1124,16 @@ class MapGenerator:
                 logger.info(f"Contourf completed successfully")
         
         # Add shared HIGH/LOW labels if MSLP data is available
-        if 'mslp_data_to_label' in locals() and mslp_data_to_label is not None:
+        if 'mslp_data' in locals() and mslp_data is not None:
             try:
                 from scipy.ndimage import maximum_filter, minimum_filter
-                mslp_array = mslp_data_to_label.values
+                mslp_array = mslp_data.values
                 local_max = maximum_filter(mslp_array, size=20) == mslp_array
                 local_min = minimum_filter(mslp_array, size=20) == mslp_array
                 
                 # Use lon/lat from the data itself
-                lons = mslp_data_to_label.coords.get('lon', mslp_data_to_label.coords.get('longitude'))
-                lats = mslp_data_to_label.coords.get('lat', mslp_data_to_label.coords.get('latitude'))
+                lons = mslp_data.coords.get('lon', mslp_data.coords.get('longitude'))
+                lats = mslp_data.coords.get('lat', mslp_data.coords.get('latitude'))
                 is_360 = lons.max() > 180
                 
                 west = -125.0 % 360 if is_360 else -125.0
@@ -1691,7 +1691,7 @@ class MapGenerator:
                     
                     # Get the actual coordinates of the selected point
                     actual_lon = float(precip.sel({lon_coord: test_lon_sel, lat_coord: test_lat}, method='nearest').coords[lon_coord].values)
-                    actual_lat = float(precip.sel({lon_coord: test_lon_sel, lat_coord: test_lat}, method='nearest').coords[latCoord].values)
+                    actual_lat = float(precip.sel({lon_coord: test_lon_sel, lat_coord: test_lat}, method='nearest').coords[lat_coord].values)
                     if lon_is_0_360 and actual_lon > 180:
                         actual_lon = actual_lon - 360
                     
@@ -1739,6 +1739,22 @@ class MapGenerator:
         If refc is not available, calculate simulated reflectivity from precipitation rate.
         This is a workaround since GFS GRIB files don't always include refc.
         """
+        def _derive_reflectivity_from_prate(prate_da: xr.DataArray) -> xr.DataArray:
+            prate = prate_da * 3600  # Convert kg/m²/s to mm/h
+            prate_values = prate.values if hasattr(prate, 'values') else prate
+            prate_values = np.nan_to_num(prate_values, nan=0.0, posinf=0.0, neginf=0.0)
+            prate_values = np.maximum(prate_values, 0.01)  # Minimum 0.01 mm/h
+            z_factor = 200 * (prate_values ** 1.6)
+            dbz = 10 * np.log10(z_factor)
+            dbz = np.clip(dbz, -10, 70)
+            dbz = np.nan_to_num(dbz, nan=-10.0, posinf=70.0, neginf=-10.0)
+            return xr.DataArray(
+                dbz,
+                coords=prate.coords,
+                dims=prate.dims,
+                attrs={'units': 'dBZ', 'long_name': 'Simulated radar reflectivity from precipitation'}
+            )
+
         # Try to find actual composite reflectivity first
         if 'refc' in ds:
             reflectivity = ds['refc']
@@ -1756,36 +1772,12 @@ class MapGenerator:
                 
                 # Get precipitation rate (mm/h)
                 if 'prate' in ds:
-                    prate = ds['prate'] * 3600  # Convert kg/m²/s to mm/h
+                    reflectivity = _derive_reflectivity_from_prate(ds['prate'])
                 elif 'tp' in ds:
                     # Cannot reliably derive a rate from accumulated tp alone
                     raise ValueError("Cannot derive reflectivity: prate missing and tp-to-rate is not reliable")
                 else:
                     raise ValueError("Cannot calculate radar reflectivity: need prate or refc")
-                
-                # Convert precipitation rate (mm/h) to dBZ using Marshall-Palmer relationship
-                # Z = 200 * R^1.6, where Z is reflectivity factor and R is rain rate (mm/h)
-                # dBZ = 10 * log10(Z)
-                # For R > 0.1 mm/h: dBZ ≈ 10 * log10(200 * R^1.6)
-                # For R <= 0.1 mm/h: use lower bound
-                prate_values = prate.values if hasattr(prate, 'values') else prate
-                # Handle NaN and inf values
-                prate_values = np.nan_to_num(prate_values, nan=0.0, posinf=0.0, neginf=0.0)
-                # Avoid log of zero/negative
-                prate_values = np.maximum(prate_values, 0.01)  # Minimum 0.01 mm/h
-                z_factor = 200 * (prate_values ** 1.6)
-                dbz = 10 * np.log10(z_factor)
-                # Clamp to reasonable range (-10 to 70 dBZ) and handle any remaining invalid values
-                dbz = np.clip(dbz, -10, 70)
-                dbz = np.nan_to_num(dbz, nan=-10.0, posinf=70.0, neginf=-10.0)
-                
-                # Create DataArray with same coordinates as prate
-                reflectivity = xr.DataArray(
-                    dbz,
-                    coords=prate.coords,
-                    dims=prate.dims,
-                    attrs={'units': 'dBZ', 'long_name': 'Simulated radar reflectivity from precipitation'}
-                )
         
         # Clean fill values / invalids before plotting logic
         try:
@@ -1809,6 +1801,17 @@ class MapGenerator:
                     f"Radar refc stats: min={float(ref_vals.min()):.2f}, "
                     f"max={float(ref_vals.max()):.2f}, mean={float(ref_vals.mean()):.2f}"
                 )
+                coverage = float(np.mean(ref_vals >= 10))
+                std = float(np.nanstd(ref_vals))
+                if coverage > 0.6 and std < 1.0 and 'prate' in ds:
+                    logger.warning("refc appears saturated/constant; using prate-derived reflectivity")
+                    reflectivity = _derive_reflectivity_from_prate(ds['prate'])
+        except Exception:
+            pass
+
+        # Mask implausible dBZ ranges (guards against bad fill values)
+        try:
+            reflectivity = reflectivity.where((reflectivity >= -10) & (reflectivity <= 80))
         except Exception:
             pass
 
