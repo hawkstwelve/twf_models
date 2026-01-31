@@ -561,14 +561,22 @@ class ForecastScheduler:
 
         HRRR runs out to f48 only at 00z/06z/12z/18z. Other cycles run to f18.
         """
-        configured_hours = [int(h) for h in settings.forecast_hours.split(',')]
-        max_configured = max(configured_hours)
+        # Use model-specific forecast hours if available
+        if model_id == "HRRR":
+            configured_hours = settings.hrrr_forecast_hours_list
+        else:
+            configured_hours = [int(h) for h in settings.forecast_hours.split(',')]
+        
+        max_configured = max(configured_hours) if configured_hours else 0
         max_model = model_config.max_forecast_hour
 
+        # HRRR special case: non-major runs only go to f18
         if model_id == "HRRR":
             run_hour = run_time.hour
             if run_hour not in {0, 6, 12, 18}:
-                max_model = min(max_model, 18)
+                # For non-major runs, limit to f18 regardless of config
+                max_model = 18
+                logger.info(f"HRRR {run_hour:02d}z run: Limited to f18 (non-major run cycle)")
 
         return min(max_configured, max_model)
     def generate_all_models(self, use_progressive: bool = True, parallel: bool = True):
