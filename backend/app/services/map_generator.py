@@ -1009,12 +1009,14 @@ class MapGenerator:
                         n_intervals = len(levels_used) - 1
                         
                         # Apply alpha to each interval collection
-                        for i in range(min(n_intervals, len(im_temp.collections))):
-                            im_temp.collections[i].set_alpha(_alpha_for_bin(levels_used[i]))
+                        # GeoContourSet (cartopy) stores collections differently than ContourSet
+                        collections = getattr(im_temp, 'collections', [])
+                        for i in range(min(n_intervals, len(collections))):
+                            collections[i].set_alpha(_alpha_for_bin(levels_used[i]))
                         
                         # If extend='max' adds an extra "over" collection, force it visible
-                        if len(im_temp.collections) > n_intervals:
-                            im_temp.collections[-1].set_alpha(1.0)
+                        if len(collections) > n_intervals:
+                            collections[-1].set_alpha(1.0)
                         
                         # Keep the last plotted image for colorbar
                         if im is None:
@@ -1050,12 +1052,14 @@ class MapGenerator:
                 n_intervals = len(levels_used) - 1
                 
                 # Apply alpha to each interval collection
-                for i in range(min(n_intervals, len(im.collections))):
-                    im.collections[i].set_alpha(_alpha_for_bin(levels_used[i]))
+                # GeoContourSet (cartopy) stores collections differently than ContourSet
+                collections = getattr(im, 'collections', [])
+                for i in range(min(n_intervals, len(collections))):
+                    collections[i].set_alpha(_alpha_for_bin(levels_used[i]))
                 
                 # If extend='max' adds an extra "over" collection, force it visible
-                if len(im.collections) > n_intervals:
-                    im.collections[-1].set_alpha(1.0)
+                if len(collections) > n_intervals:
+                    collections[-1].set_alpha(1.0)
         elif is_wind_speed_map:
             # Wind Speed with Streamlines
             # Use helper to get correct coordinates and transform

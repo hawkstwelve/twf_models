@@ -231,7 +231,7 @@ ModelRegistry.register(ModelConfig(
     has_upper_air=True,  # HRRR provides upper-air levels (e.g., 850mb)
     tp_is_accumulated_from_init=False,
     products_supported={"2d"},
-    excluded_variables=["temp_850_wind_mslp"],
+    excluded_variables=["temp_850_wind_mslp", "mslp_precip"],  # HRRR lacks gh_500/gh_1000 for thickness
     color="#FF6347",
     enabled=True  # Enabled: MapGenerator now supports 2D coordinates
 ))
