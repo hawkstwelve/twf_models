@@ -48,6 +48,13 @@ class VariableRegistry:
             needs_precip_total=False,
             needs_precip_6hr_rate=False,
         ),
+        "temperature_2m": VariableRequirements(  # Alias for temp
+            raw_fields={"tmp2m"},
+            derived_fields=set(),
+            optional_fields={"prate"},
+            needs_precip_total=False,
+            needs_precip_6hr_rate=False,
+        ),
         
         "precip": VariableRequirements(
             raw_fields={"tp", "prate"},
@@ -56,11 +63,25 @@ class VariableRegistry:
             needs_precip_total=True,
             needs_precip_6hr_rate=False,
         ),
+        "precipitation": VariableRequirements(  # Alias for precip
+            raw_fields={"tp", "prate"},
+            derived_fields={"tp_total"},
+            optional_fields={"crain", "csnow", "cicep", "cfrzr"},
+            needs_precip_total=True,
+            needs_precip_6hr_rate=False,
+        ),
         
         "wind_speed": VariableRequirements(
             raw_fields={"ugrd10m", "vgrd10m"},
             derived_fields=set(),
-            optional_fields=set(),
+            optional_fields={"u10", "v10"},  # AIGFS uses u10/v10 instead
+            needs_precip_total=False,
+            needs_precip_6hr_rate=False,
+        ),
+        "wind_speed_10m": VariableRequirements(  # Alias for wind_speed
+            raw_fields={"ugrd10m", "vgrd10m"},
+            derived_fields=set(),
+            optional_fields={"u10", "v10"},  # AIGFS uses u10/v10 instead
             needs_precip_total=False,
             needs_precip_6hr_rate=False,
         ),
@@ -72,8 +93,23 @@ class VariableRegistry:
             needs_precip_total=False,
             needs_precip_6hr_rate=True,
         ),
+        "mslp_pcpn": VariableRequirements(  # Alias for mslp_precip
+            raw_fields={"prmsl", "prate", "tp"},
+            derived_fields={"p6_rate_mmhr"},
+            optional_fields={"gh_500", "gh_1000", "crain", "csnow", "cicep", "cfrzr"},
+            needs_precip_total=False,
+            needs_precip_6hr_rate=True,
+        ),
         
         "temp_850_wind_mslp": VariableRequirements(
+            raw_fields={"tmp_850", "ugrd_850", "vgrd_850", "prmsl"},
+            derived_fields=set(),
+            optional_fields=set(),
+            needs_precip_total=False,
+            needs_precip_6hr_rate=False,
+            needs_upper_air=True,
+        ),
+        "850mb": VariableRequirements(  # Alias for temp_850_wind_mslp
             raw_fields={"tmp_850", "ugrd_850", "vgrd_850", "prmsl"},
             derived_fields=set(),
             optional_fields=set(),

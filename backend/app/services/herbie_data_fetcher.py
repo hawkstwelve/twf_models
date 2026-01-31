@@ -56,35 +56,32 @@ class HerbieDataFetcher(BaseDataFetcher):
             "ECMWF": "ecmwf",
         }
         
-        # Variable name mapping (your names → Herbie search strings)
+        # Variable name mapping (canonical names only → Herbie search strings)
         # Herbie uses GRIB2 search patterns (e.g., "TMP:2 m", "UGRD:10 m")
         # Be specific to avoid pulling extra levels (e.g., ":2 m" not just "TMP")
+        # CANONICAL NAMES: One name per variable for clarity and consistency
         self._variable_map = {
+            # Surface fields
             'tmp2m': ':TMP:2 m',
-            't2m': ':TMP:2 m',  # Alternative name
             'dpt2m': ':DPT:2 m',
             'ugrd10m': ':UGRD:10 m',
             'vgrd10m': ':VGRD:10 m',
             'prmsl': ':PRMSL:mean sea level',
-            'tp': ':APCP:surface',  # Accumulated precipitation
-            'apcp': ':APCP:surface',  # Accumulated precipitation (alias)
-            'prate': ':PRATE:surface',  # Precipitation rate
-            'refc': ':REFC:entire atmosphere',  # Composite reflectivity
-            'asnow': ':ASNOW:surface',  # Accumulated snowfall (HRRR)
+            'tp': ':APCP:surface',
+            'prate': ':PRATE:surface',
+            'refc': ':REFC:entire atmosphere',
+            'asnow': ':ASNOW:surface',
             'crain': ':CRAIN:surface',
             'csnow': ':CSNOW:surface',
             'cicep': ':CICEP:surface',
             'cfrzr': ':CFRZR:surface',
+            # Geopotential height
             'gh_500': ':HGT:500 mb',
             'gh_1000': ':HGT:1000 mb',
-            'gh500': ':HGT:500 mb',
-            # Upper air fields - support both naming conventions
-            'tmp850': ':TMP:850 mb',
-            'tmp_850': ':TMP:850 mb',  # Underscored variant
-            'ugrd850': ':UGRD:850 mb',
-            'ugrd_850': ':UGRD:850 mb',  # Underscored variant
-            'vgrd850': ':VGRD:850 mb',
-            'vgrd_850': ':VGRD:850 mb',  # Underscored variant
+            # Upper air fields (850mb)
+            'tmp_850': ':TMP:850 mb',
+            'ugrd_850': ':UGRD:850 mb',
+            'vgrd_850': ':VGRD:850 mb',
         }
         
         # Data source priority (fallback order)
@@ -218,7 +215,7 @@ class HerbieDataFetcher(BaseDataFetcher):
             
             # Apply regional subsetting if requested
             if subset_region:
-                ds = self._subset_to_region(ds)
+                ds = self._subset_dataset(ds)
                 logger.info(f"  ✓ Subset to region: {dict(ds.dims)}")
             
             # Rename variables to our standard names
@@ -254,23 +251,24 @@ class HerbieDataFetcher(BaseDataFetcher):
         Herbie may return variables with GRIB2 naming (e.g., "t2m", "u10", "v10")
         We need to rename them to match our standard names with underscores.
         """
-        # Common Herbie → Standard name mappings
-        # Use underscored format to match variable_requirements.py
+        # Herbie/GRIB2 → Canonical name mappings
+        # Convert all variations to our single canonical form
         rename_map = {
+            # Herbie's native short names → canonical
             't2m': 'tmp2m',
             'd2m': 'dpt2m',
             'u10': 'ugrd10m',
             'v10': 'vgrd10m',
             'msl': 'prmsl',
-            'tp': 'tp',
-            'refc': 'refc',
-            't': 'tmp_850',  # Level-specific, use underscore
-            'u': 'ugrd_850',  # Level-specific, use underscore
-            'v': 'vgrd_850',  # Level-specific, use underscore
-            # Also handle if they come through without renaming
+            't': 'tmp_850',
+            'u': 'ugrd_850',
+            'v': 'vgrd_850',
+            # Legacy naming variations → canonical
             'tmp850': 'tmp_850',
             'ugrd850': 'ugrd_850',
             'vgrd850': 'vgrd_850',
+            'apcp': 'tp',
+            'gh500': 'gh_500',
         }
         
         # Find which variables exist and need renaming
@@ -334,110 +332,6 @@ class HerbieDataFetcher(BaseDataFetcher):
         
         return ds
     
-    def _subset_to_region(self, ds: xr.Dataset) -> xr.Dataset:
-        """
-        Subset dataset to US region.
-        
-        Handles both 1D coordinates (GFS) and 2D coordinates (HRRR).
-        Uses same logic as NOMADSDataFetcher for consistency.
-        """
-        # US region bounds (same as NOMADS fetcher)
-        lat_min, lat_max = 20.0, 55.0
-        lon_min, lon_max = -130.0, -60.0
-        
-        # Detect coordinate names (Herbie may use different names)
-        lat_coord = None
-        lon_coord = None
-        
-        for coord in ['latitude', 'lat', 'y']:
-            if coord in ds.coords:
-                lat_coord = coord
-                break
-        
-        for coord in ['longitude', 'lon', 'x']:
-            if coord in ds.coords:
-                lon_coord = coord
-                break
-        
-        if not lat_coord or not lon_coord:
-            logger.warning(f"Could not find lat/lon coordinates in dataset: {list(ds.coords)}")
-            return ds
-        
-        # Check if coordinates are 1D or 2D
-        lat_dims = len(ds[lat_coord].dims)
-        lon_dims = len(ds[lon_coord].dims)
-        
-        if lat_dims == 2 and lon_dims == 2:
-            # 2D coordinates (HRRR) - use where() for boolean indexing
-            logger.debug("Using 2D coordinate subsetting (HRRR-style)")
-            
-            # Handle longitude wrapping (0-360 vs -180-180)
-            lon_vals = ds[lon_coord].values
-            if lon_vals.min() >= 0:  # 0-360 format
-                lon_min_adj = lon_min + 360
-                lon_max_adj = lon_max + 360
-            else:
-                lon_min_adj = lon_min
-                lon_max_adj = lon_max
-            
-            # Create boolean mask for region
-            mask = (
-                (ds[lat_coord] >= lat_min) & 
-                (ds[lat_coord] <= lat_max) &
-                (ds[lon_coord] >= lon_min_adj) & 
-                (ds[lon_coord] <= lon_max_adj)
-            )
-            
-            # For 2D coords, we need to find the bounding box in grid space
-            # Get the indices where mask is True
-            import numpy as np
-            indices = np.where(mask.values)
-            if len(indices[0]) == 0:
-                logger.warning("No data points in specified region")
-                return ds
-            
-            # Find bounding box in grid coordinates
-            y_min, y_max = indices[0].min(), indices[0].max()
-            x_min, x_max = indices[1].min(), indices[1].max()
-            
-            # Subset using isel (index-based selection)
-            ds_subset = ds.isel({ds[lat_coord].dims[0]: slice(y_min, y_max+1),
-                                 ds[lat_coord].dims[1]: slice(x_min, x_max+1)})
-            
-        else:
-            # 1D coordinates (GFS) - use sel() for label-based selection
-            logger.debug("Using 1D coordinate subsetting (GFS-style)")
-            
-            # Handle longitude wrapping (0-360 vs -180-180)
-            lon_vals = ds[lon_coord].values
-            if lon_vals.min() >= 0:  # 0-360 format
-                lon_min_adj = lon_min + 360
-                lon_max_adj = lon_max + 360
-            else:
-                lon_min_adj = lon_min
-                lon_max_adj = lon_max
-            
-            # Check latitude ordering (GFS is typically descending: 90 to -90)
-            lat_vals = ds[lat_coord].values
-            lat_ascending = lat_vals[0] < lat_vals[-1]
-            
-            if lat_ascending:
-                # Ascending latitude (south to north)
-                lat_slice = slice(lat_min, lat_max)
-            else:
-                # Descending latitude (north to south) - REVERSE the slice
-                lat_slice = slice(lat_max, lat_min)
-            
-            logger.debug(f"Latitude order: {'ascending' if lat_ascending else 'descending'}")
-            logger.debug(f"Subsetting: lat={lat_slice}, lon=slice({lon_min_adj}, {lon_max_adj})")
-            
-            # Apply subset
-            ds_subset = ds.sel(
-                {lat_coord: lat_slice,
-                 lon_coord: slice(lon_min_adj, lon_max_adj)}
-            )
-        
-        return ds_subset
     
     def wait_for_data(
         self,

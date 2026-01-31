@@ -548,9 +548,6 @@ class MapGenerator:
         region: Optional[str] = None
     ) -> Path:
         """Generate a map for a specific variable"""
-        import numpy as np
-        from scipy.ndimage import binary_dilation
-        
         logger.info(f"Generating map: {variable} from {model}, forecast hour {forecast_hour}")
         
         # Select variable and process
@@ -871,6 +868,9 @@ class MapGenerator:
             )
         elif variable == "radar" or variable == "radar_reflectivity":
             # Radar reflectivity with precipitation-type-specific colors
+            import numpy as np
+            from scipy.ndimage import binary_dilation
+            
             lon_vals = data.coords.get('lon', data.coords.get('longitude'))
             lat_vals = data.coords.get('lat', data.coords.get('latitude'))
             
@@ -1061,6 +1061,8 @@ class MapGenerator:
             # Use helper to get correct coordinates and transform
             X, Y, transform = self._get_plot_coords_and_transform(data, ax)
             
+            # Wind speed levels matching the screenshot (0-100 mph)
+            wind_levels = [0, 4, 6, 8, 9, 10, 12, 14, 16, 20, 22, 24, 26, 30, 34, 36, 40, 44, 48, 52, 58, 64, 70, 75, 85, 95, 100]
             
             # Plot filled contours for wind speed
             im = ax.contourf(
@@ -1093,13 +1095,10 @@ class MapGenerator:
             if 'ugrd10m' in ds and 'vgrd10m' in ds:
                 u_var = ds['ugrd10m']
                 v_var = ds['vgrd10m']
-            elif 'u10' in ds and 'v10' in ds:
-                u_var = ds['u10']
-                v_var = ds['v10']
             else:
                 # Fallback: search for any 10m wind variables
-                u_vars = [v for v in ds.data_vars if ('ugrd' in v.lower() or v.lower() == 'u10') and '10' in v.lower()]
-                v_vars = [v for v in ds.data_vars if ('vgrd' in v.lower() or v.lower() == 'v10') and '10' in v.lower()]
+                u_vars = [v for v in ds.data_vars if 'ugrd' in v.lower() and '10' in v.lower()]
+                v_vars = [v for v in ds.data_vars if 'vgrd' in v.lower() and '10' in v.lower()]
                 if u_vars and v_vars:
                     u_var = ds[u_vars[0]]
                     v_var = ds[v_vars[0]]
@@ -1319,6 +1318,8 @@ class MapGenerator:
             cbar.set_label("10m Wind Speed + Streamlines (mph)")
         elif variable == "radar" or variable == "radar_reflectivity":
             # Vertical colorbars for each precip type (opaque legend, even if map cmap uses alpha ramp)
+            import numpy as np
+            import matplotlib
             from matplotlib import colors as mcolors
 
             fig = plt.gcf()
@@ -1513,16 +1514,9 @@ class MapGenerator:
                     
                     for station_name, station_data in stations.items():
                         try:
-                            # Extract u and v components
-                            if 'ugrd10m' in ds:
-                                u_var = 'ugrd10m'
-                                v_var = 'vgrd10m' if 'vgrd10m' in ds else None
-                            elif 'u10' in ds:
-                                u_var = 'u10'
-                                v_var = 'v10' if 'v10' in ds else None
-                            else:
-                                u_var = None
-                                v_var = None
+                            # Extract u and v components (canonical names only)
+                            u_var = 'ugrd10m' if 'ugrd10m' in ds else None
+                            v_var = 'vgrd10m' if 'vgrd10m' in ds else None
                             
                             if u_var is None or v_var is None:
                                 logger.warning(f"Could not find wind components for station {station_name}")
@@ -1923,28 +1917,23 @@ class MapGenerator:
     
     def _process_wind_speed(self, ds: xr.Dataset) -> xr.DataArray:
         """Process wind speed data"""
-        # Try common wind variable names
+        # Try common GFS wind variable names
         u_var = None
         v_var = None
         
-        # Try standard GFS/HRRR names first
         if 'ugrd10m' in ds and 'vgrd10m' in ds:
             u_var = ds['ugrd10m']
             v_var = ds['vgrd10m']
-        # Try AIGFS names
-        elif 'u10' in ds and 'v10' in ds:
-            u_var = ds['u10']
-            v_var = ds['v10']
         else:
             # Try to find wind variables (canonical naming)
-            u_vars = [v for v in ds.data_vars if ('ugrd' in v.lower() or v.lower() == 'u10') and '10' in v.lower()]
-            v_vars = [v for v in ds.data_vars if ('vgrd' in v.lower() or v.lower() == 'v10') and '10' in v.lower()]
+            u_vars = [v for v in ds.data_vars if 'ugrd' in v.lower() and '10' in v.lower()]
+            v_vars = [v for v in ds.data_vars if 'vgrd' in v.lower() and '10' in v.lower()]
             if u_vars and v_vars:
                 u_var = ds[u_vars[0]]
                 v_var = ds[v_vars[0]]
         
         if u_var is None or v_var is None:
-            raise ValueError(f"Could not find wind components in dataset. Available vars: {list(ds.data_vars)}")
+            raise ValueError("Could not find wind components in dataset")
         
         wind_speed = np.sqrt(u_var**2 + v_var**2)
         # Convert m/s to mph
@@ -1965,8 +1954,8 @@ class MapGenerator:
                     gusts = gusts * 2.237  # Convert m/s to mph
             else:
                 # Calculate from wind components if available
-                u = ds.get('ugrd10m', ds.get('u10', None))
-                v = ds.get('vgrd10m', ds.get('v10', None))
+                u = ds.get('ugrd10m', None)
+                v = ds.get('vgrd10m', None)
                 if u is not None and v is not None:
                     wind_speed = np.sqrt(u**2 + v**2) * 2.237  # Convert to mph
                     gusts = wind_speed * 1.4  # Approximate gust factor

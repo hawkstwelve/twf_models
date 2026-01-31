@@ -45,8 +45,8 @@ class NOMADSDataFetcher(BaseDataFetcher):
         has_upper_air = bool(raw_fields & upper_air_fields)
         
         # Check if we need surface fields
-        surface_fields = {'tmp2m', 't2m', 'ugrd10m', 'u10', 'vgrd10m', 'v10', 'prmsl', 'msl', 
-                         'tp', 'prate', 'apcp', 'refc', 'crain', 'csnow', 'cicep', 'cfrzr'}
+        surface_fields = {'tmp2m', 'ugrd10m', 'vgrd10m', 'prmsl', 
+                         'tp', 'prate', 'refc', 'crain', 'csnow', 'cicep', 'cfrzr'}
         has_surface = bool(raw_fields & surface_fields)
         
         # Decision logic

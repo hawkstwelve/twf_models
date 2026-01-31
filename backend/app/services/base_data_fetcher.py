@@ -367,8 +367,8 @@ class BaseDataFetcher(ABC):
         
         # f000 => no accumulation
         if forecast_hour == 0:
-            ds0 = self.fetch_raw_data(run_time, 0, {'tmp2m', 't2m'}, subset_region)
-            base = ds0['t2m'] if 't2m' in ds0 else ds0['tmp2m']
+            ds0 = self.fetch_raw_data(run_time, 0, {'tmp2m'}, subset_region)
+            base = ds0['tmp2m']
             base = _drop_timeish(base)
             result = base * 0.0
             # Cache both precip and snow as zeros
@@ -501,7 +501,7 @@ class BaseDataFetcher(ABC):
             
             try:
                 # Need precip from surface and thermal from pressure levels
-                ds_sfc = self.fetch_raw_data(run_time, fh, {'tp', 'apcp', 'tmp2m', 't2m'}, subset_region)
+                ds_sfc = self.fetch_raw_data(run_time, fh, {'tp', 'tmp2m'}, subset_region)
                 ds_pres = self.fetch_raw_data(run_time, fh, {'tmp_850'}, subset_region)
                 
                 p_mm = _get_bucket_precip_mm(ds_sfc)
@@ -514,11 +514,9 @@ class BaseDataFetcher(ABC):
                 else:
                     t850_c = _to_celsius(ds_pres['tmp_850'])
                     
-                    # Optional 2m temp if present
+                    # Optional 2m temp if present (canonical name only)
                     t2m = None
-                    if 't2m' in ds_sfc:
-                        t2m = ds_sfc['t2m']
-                    elif 'tmp2m' in ds_sfc:
+                    if 'tmp2m' in ds_sfc:
                         t2m = ds_sfc['tmp2m']
                     
                     t2m_c = _to_celsius(t2m) if t2m is not None else None
@@ -667,42 +665,122 @@ class BaseDataFetcher(ABC):
         
         return None
     
-    def _subset_dataset(self, ds: xr.Dataset) -> xr.Dataset:
-        """Subset dataset to configured region"""
+    def _subset_dataset(self, ds: xr.Dataset, buffer: float = 4.0) -> xr.Dataset:
+        """
+        Subset dataset to configured region.
+        
+        Handles both 1D coordinates (GFS-style) and 2D coordinates (HRRR-style).
+        This unified method consolidates regional subsetting logic across all fetchers.
+        
+        Args:
+            ds: Dataset to subset
+            buffer: Buffer in degrees to add around region bounds (default: 4.0)
+            
+        Returns:
+            Subsetted dataset, or original dataset if subsetting not possible
+        """
         if ds is None:
             return ds
         
+        # Get region bounds from settings
         bounds = settings.map_region_bounds or {
             "west": -125.0, "east": -110.0,
             "south": 42.0, "north": 49.0
         }
-        buffer = 4.0
+        lat_min = bounds["south"]
+        lat_max = bounds["north"]
+        lon_min = bounds["west"]
+        lon_max = bounds["east"]
         
-        # Detect coordinate names
-        if 'lon' in ds.coords:
-            lon_name, lat_name = 'lon', 'lat'
-        elif 'longitude' in ds.coords:
-            lon_name, lat_name = 'longitude', 'latitude'
-        else:
+        # Detect coordinate names (standardized by cfgrib/Herbie)
+        lat_coord = None
+        lon_coord = None
+        
+        for coord in ['latitude', 'lat', 'y']:
+            if coord in ds.coords:
+                lat_coord = coord
+                break
+        
+        for coord in ['longitude', 'lon', 'x']:
+            if coord in ds.coords:
+                lon_coord = coord
+                break
+        
+        if not lat_coord or not lon_coord:
+            logger.debug(f"Could not find lat/lon coordinates in dataset: {list(ds.coords)}")
             return ds
         
-        # Handle 0-360 longitude
-        lon_vals = ds.coords[lon_name].values
-        if lon_vals.min() >= 0 and lon_vals.max() > 180:
-            west = bounds["west"] % 360
-            east = bounds["east"] % 360
+        # Check if coordinates are 1D or 2D
+        lat_dims = len(ds[lat_coord].dims)
+        lon_dims = len(ds[lon_coord].dims)
+        
+        if lat_dims == 2 and lon_dims == 2:
+            # 2D coordinates (HRRR-style) - use boolean indexing
+            logger.debug("Using 2D coordinate subsetting (HRRR-style)")
+            
+            # Handle longitude wrapping (0-360 vs -180-180)
+            lon_vals = ds[lon_coord].values
+            if lon_vals.min() >= 0:  # 0-360 format
+                lon_min_adj = lon_min + 360
+                lon_max_adj = lon_max + 360
+            else:
+                lon_min_adj = lon_min
+                lon_max_adj = lon_max
+            
+            # Create boolean mask for region (with buffer)
+            mask = (
+                (ds[lat_coord] >= lat_min - buffer) & 
+                (ds[lat_coord] <= lat_max + buffer) &
+                (ds[lon_coord] >= lon_min_adj - buffer) & 
+                (ds[lon_coord] <= lon_max_adj + buffer)
+            )
+            
+            # Find bounding box in grid space
+            import numpy as np
+            indices = np.where(mask.values)
+            if len(indices[0]) == 0:
+                logger.warning("No data points in specified region")
+                return ds
+            
+            # Get min/max indices for bounding box
+            y_min, y_max = indices[0].min(), indices[0].max()
+            x_min, x_max = indices[1].min(), indices[1].max()
+            
+            # Subset using isel (index-based selection)
+            ds_subset = ds.isel({ds[lat_coord].dims[0]: slice(y_min, y_max+1),
+                                 ds[lat_coord].dims[1]: slice(x_min, x_max+1)})
+            
         else:
-            west = bounds["west"]
-            east = bounds["east"]
+            # 1D coordinates (GFS-style) - use sel() for label-based selection
+            logger.debug("Using 1D coordinate subsetting (GFS-style)")
+            
+            # Handle longitude wrapping (0-360 vs -180-180)
+            lon_vals = ds[lon_coord].values
+            if lon_vals.min() >= 0:  # 0-360 format
+                lon_min_adj = lon_min + 360
+                lon_max_adj = lon_max + 360
+            else:
+                lon_min_adj = lon_min
+                lon_max_adj = lon_max
+            
+            # Check latitude ordering (GFS is typically descending: 90 to -90)
+            lat_vals = ds[lat_coord].values
+            lat_ascending = lat_vals[0] < lat_vals[-1]
+            
+            if lat_ascending:
+                # Ascending latitude (south to north)
+                lat_slice = slice(lat_min - buffer, lat_max + buffer)
+            else:
+                # Descending latitude (north to south) - REVERSE the slice
+                lat_slice = slice(lat_max + buffer, lat_min - buffer)
+            
+            logger.debug(f"Latitude order: {'ascending' if lat_ascending else 'descending'}")
+            logger.debug(f"Subsetting: lat={lat_slice}, lon=slice({lon_min_adj - buffer}, {lon_max_adj + buffer})")
+            
+            # Apply subset
+            ds_subset = ds.sel(
+                {lat_coord: lat_slice,
+                 lon_coord: slice(lon_min_adj - buffer, lon_max_adj + buffer)}
+            )
         
-        # Handle latitude direction
-        lat_vals = ds.coords[lat_name].values
-        lat_decreasing = lat_vals[0] > lat_vals[-1]
-        
-        lon_slice = slice(west - buffer, east + buffer)
-        if lat_decreasing:
-            lat_slice = slice(bounds["north"] + buffer, bounds["south"] - buffer)
-        else:
-            lat_slice = slice(bounds["south"] - buffer, bounds["north"] + buffer)
-        
-        return ds.sel({lon_name: lon_slice, lat_name: lat_slice})
+        return ds_subset
