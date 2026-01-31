@@ -35,8 +35,12 @@ class Settings(BaseSettings):
     
     # Processing
     update_interval: int = 6  # hours
-    max_forecast_hour: int = 120
-    forecast_hours: str = "0,6,12,18,24,30,36,42,48,54,60,66,72"  # 6-hour increments for smooth temporal resolution
+    max_forecast_hour: int = 384
+    # Recommended: 3h increments to 120h (short-range detail), 6h increments to 384h (extended range)
+    # For 32GB/12vCPU server: Can handle ~64 forecast hours efficiently with parallel generation
+    forecast_hours: str = "0,3,6,9,12,15,18,21,24,27,30,33,36,39,42,45,48,51,54,57,60,63,66,69,72,75,78,81,84,87,90,93,96,99,102,105,108,111,114,117,120,126,132,138,144,150,156,162,168,174,180,186,192,198,204,210,216,222,228,234,240,246,252,258,264,270,276,282,288,294,300,306,312,318,324,330,336,342,348,354,360,366,372,378,384"  # 3h to 120h, then 6h to 384h
+    # HRRR-specific: Hourly forecasts (short-range high-resolution model)
+    hrrr_forecast_hours: str = "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48"  # 1h increments to f48
     progressive_generation: bool = True  # Generate by forecast hour (f000 first) vs by variable
     
     # Map Generation
@@ -66,6 +70,11 @@ class Settings(BaseSettings):
     def forecast_hours_list(self) -> List[int]:
         """Parse forecast hours string into list"""
         return [int(h.strip()) for h in self.forecast_hours.split(",")]
+    
+    @property
+    def hrrr_forecast_hours_list(self) -> List[int]:
+        """Parse HRRR-specific forecast hours string into list"""
+        return [int(h.strip()) for h in self.hrrr_forecast_hours.split(",")]
     
     @property
     def cors_origins_list(self) -> List[str]:

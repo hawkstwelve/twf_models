@@ -7,6 +7,7 @@ import logging
 import time
 import s3fs
 import gc
+import threading
 from multiprocessing import Pool
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -32,7 +33,7 @@ logging.basicConfig(level=logging.INFO)
 
 # Global concurrency control - prevent resource thrashing
 # Dynamic worker count based on available memory
-# Reserve 4GB for OS/API/overhead, allocate 4GB per worker
+# Reserve 6GB for OS/API/overhead, allocate 3GB per worker
 def calculate_optimal_workers():
     """Calculate worker count based on available system memory"""
     try:
@@ -41,17 +42,17 @@ def calculate_optimal_workers():
         mem_gb = mem.total / (1024**3)
         available_gb = mem.available / (1024**3)
         
-        # Updated for 32GB server:
-        # Reserve 4GB base, use 4GB per worker, max 6 workers (was 3)
-        # This accounts for GFS, AIGFS, HRRR, RAP, and future models
-        # 32GB server: (32 - 4) / 4 = 7 → capped at 6
-        # 16GB server: (16 - 4) / 4 = 3 → capped at 3 (safe fallback)
-        workers = max(1, min(6, int((mem_gb - 4) / 4)))
+        # Optimized for 32GB server with 12 vCPUs:
+        # Reserve 6GB base (OS/API/overhead), use 3GB per worker, max 10 workers
+        # This provides better CPU utilization across 12 cores
+        # 32GB server: (32 - 6) / 3 = 8.7 → capped at 10 → 8 workers typical
+        # 16GB server: (16 - 6) / 3 = 3.3 → 3 workers (safe fallback)
+        workers = max(1, min(10, int((mem_gb - 6) / 3)))
         
         # If available memory is critically low, reduce workers
-        if available_gb < 6:
-            workers = 1
-            logger.warning(f"⚠️  Low memory ({available_gb:.1f}GB available), using 1 worker")
+        if available_gb < 8:
+            workers = max(1, workers // 2)
+            logger.warning(f"⚠️  Low memory ({available_gb:.1f}GB available), reduced to {workers} worker(s)")
         
         logger.info(f"💾 System: {mem_gb:.1f}GB total, {available_gb:.1f}GB available → {workers} workers")
         return workers
@@ -63,6 +64,67 @@ def calculate_optimal_workers():
         return 2
 
 _GLOBAL_POOL_SIZE = calculate_optimal_workers()
+
+def allocate_workers_per_model(total_workers: int, enabled_models: dict) -> dict:
+    """
+    Allocate workers across models based on their characteristics.
+    
+    Args:
+        total_workers: Total available workers
+        enabled_models: Dict of enabled model configs
+    
+    Returns:
+        Dict mapping model_id -> worker_count
+    """
+    if len(enabled_models) == 0:
+        return {}
+    
+    if len(enabled_models) == 1:
+        # Single model gets all workers
+        return {list(enabled_models.keys())[0]: total_workers}
+    
+    # Multi-model allocation strategy:
+    # - GFS: Highest priority (global model, most forecast hours)
+    # - AIGFS: Medium priority (global model, similar to GFS)
+    # - HRRR: Lower priority (regional, fewer variables, many hours but fast)
+    # 
+    # Strategy: Allocate proportionally based on expected workload
+    # GFS: 40%, AIGFS: 35%, HRRR: 25% of workers
+    
+    allocation = {}
+    model_ids = list(enabled_models.keys())
+    
+    if len(enabled_models) == 2:
+        # Two models: 60/40 split
+        allocation[model_ids[0]] = max(2, int(total_workers * 0.6))
+        allocation[model_ids[1]] = max(2, total_workers - allocation[model_ids[0]])
+    elif len(enabled_models) == 3:
+        # Three models: GFS/AIGFS/HRRR typical case
+        # Allocate based on model priority
+        for model_id in model_ids:
+            if model_id == "GFS":
+                allocation[model_id] = max(2, int(total_workers * 0.40))
+            elif model_id == "AIGFS":
+                allocation[model_id] = max(2, int(total_workers * 0.35))
+            elif model_id == "HRRR":
+                allocation[model_id] = max(2, int(total_workers * 0.25))
+            else:
+                # Unknown model: equal share
+                allocation[model_id] = max(2, total_workers // len(enabled_models))
+        
+        # Adjust if total doesn't match (due to rounding)
+        allocated = sum(allocation.values())
+        if allocated < total_workers:
+            # Give remainder to GFS (highest priority)
+            gfs_id = "GFS" if "GFS" in allocation else model_ids[0]
+            allocation[gfs_id] += (total_workers - allocated)
+    else:
+        # 4+ models: Equal distribution
+        per_model = max(2, total_workers // len(enabled_models))
+        for model_id in model_ids:
+            allocation[model_id] = per_model
+    
+    return allocation
 
 def generate_maps_for_hour(args):
     """
@@ -188,8 +250,11 @@ class ForecastScheduler:
         if settings.gfs_source == "aws":
             self.s3 = s3fs.S3FileSystem(anon=True)
     
-    def generate_forecast_for_model(self, model_id: str):
+    def generate_forecast_for_model(self, model_id: str, worker_count: int = None):
         """Generate forecast for a specific model"""
+        if worker_count is None:
+            worker_count = _GLOBAL_POOL_SIZE
+        
         logger.info(f"\n{'='*80}")
         logger.info(f"🌍 Starting forecast generation for {model_id}")
         logger.info(f"{'='*80}\n")
@@ -204,8 +269,11 @@ class ForecastScheduler:
             # Get model config
             model_config = ModelRegistry.get(model_id)
             
-            # Determine forecast hours
-            configured_hours = [int(h) for h in settings.forecast_hours.split(',')]
+            # Determine forecast hours (use model-specific if available)
+            if model_id == "HRRR":
+                configured_hours = settings.hrrr_forecast_hours_list
+            else:
+                configured_hours = [int(h) for h in settings.forecast_hours.split(',')]
             max_hour = self._get_effective_max_forecast_hour(model_id, run_time, model_config)
             forecast_hours = [h for h in configured_hours if h <= max_hour]
             
@@ -219,10 +287,10 @@ class ForecastScheduler:
             logger.info(f"📊 Variables: {variables}")
             
             # Generate maps in parallel by forecast hour
-            # Use GLOBAL pool size to prevent resource thrashing
-            logger.info(f"💻 Using {_GLOBAL_POOL_SIZE} worker processes")
+            # Use allocated worker count for this model
+            logger.info(f"💻 Using {worker_count} worker processes")
             
-            with Pool(processes=_GLOBAL_POOL_SIZE, maxtasksperchild=5) as pool:
+            with Pool(processes=worker_count, maxtasksperchild=5) as pool:
                 args = [(model_id, run_time, fh, variables) for fh in forecast_hours]
                 results = pool.map(generate_maps_for_hour, args)
             
@@ -242,7 +310,8 @@ class ForecastScheduler:
         self, 
         model_id: str,
         max_duration_minutes: int = 120,
-        check_interval_seconds: int = 60
+        check_interval_seconds: int = 60,
+        worker_count: int = None
     ):
         """
         Generate forecast for a specific model with progressive polling.
@@ -255,10 +324,14 @@ class ForecastScheduler:
             model_id: Model to generate (e.g., 'GFS', 'AIGFS')
             max_duration_minutes: Maximum time to poll (default 120 = 2 hours)
             check_interval_seconds: Seconds between availability checks (default 60)
+            worker_count: Number of workers to use (default: global pool size)
         
         Returns:
             bool: True if all forecast hours completed successfully
         """
+        if worker_count is None:
+            worker_count = _GLOBAL_POOL_SIZE
+        
         logger.info(f"\n{'='*80}")
         logger.info(f"🔄 Starting PROGRESSIVE generation for {model_id}")
         logger.info(f"{'='*80}\n")
@@ -275,8 +348,11 @@ class ForecastScheduler:
             # Get model config
             model_config = ModelRegistry.get(model_id)
             
-            # Determine forecast hours
-            configured_hours = [int(h) for h in settings.forecast_hours.split(',')]
+            # Determine forecast hours (use model-specific if available)
+            if model_id == "HRRR":
+                configured_hours = settings.hrrr_forecast_hours_list
+            else:
+                configured_hours = [int(h) for h in settings.forecast_hours.split(',')]
             max_hour = self._get_effective_max_forecast_hour(model_id, run_time, model_config)
             forecast_hours = sorted([h for h in configured_hours if h <= max_hour])
             
@@ -288,7 +364,7 @@ class ForecastScheduler:
                 model_config
             )
             logger.info(f"📊 Variables: {variables}")
-            logger.info(f"💻 Using {_GLOBAL_POOL_SIZE} worker processes")
+            logger.info(f"💻 Using {worker_count} worker processes")
             logger.info("")
             
             # Track which hours have been generated
@@ -326,7 +402,7 @@ class ForecastScheduler:
                     logger.info(f"✅ Found {len(available_hours)} available: {available_hours}")
                     
                     # Generate maps for available hours in parallel
-                    with Pool(processes=_GLOBAL_POOL_SIZE, maxtasksperchild=5) as pool:
+                    with Pool(processes=worker_count, maxtasksperchild=5) as pool:
                         args = [(model_id, run_time, fh, variables) for fh in available_hours]
                         results = pool.map(generate_maps_for_hour, args)
                     
@@ -495,15 +571,13 @@ class ForecastScheduler:
                 max_model = min(max_model, 18)
 
         return min(max_configured, max_model)
-    def generate_all_models(self, use_progressive: bool = True):
+    def generate_all_models(self, use_progressive: bool = True, parallel: bool = True):
         """
         Generate forecasts for all enabled models.
         
-        **CRITICAL: Run sequentially to avoid CPU/memory thrashing.**
-        Each model uses a shared pool of workers.
-        
         Args:
             use_progressive: If True, use progressive polling; if False, generate all at once
+            parallel: If True, run models in parallel; if False, run sequentially
         """
         logger.info(f"\n{'='*80}")
         logger.info(f"🌐 MULTI-MODEL FORECAST GENERATION")
@@ -516,48 +590,109 @@ class ForecastScheduler:
             return
         
         logger.info(f"Enabled models: {list(enabled_models.keys())}")
-        logger.info(f"Global pool size: {_GLOBAL_POOL_SIZE} workers")
-        logger.info(f"Generation mode: {'PROGRESSIVE (polling)' if use_progressive else 'IMMEDIATE (all at once)'}\n")
+        logger.info(f"Total workers available: {_GLOBAL_POOL_SIZE}")
+        logger.info(f"Generation mode: {'PROGRESSIVE (polling)' if use_progressive else 'IMMEDIATE (all at once)'}")
+        logger.info(f"Execution mode: {'PARALLEL' if parallel else 'SEQUENTIAL'}\n")
         
-        # Generate SEQUENTIALLY (safer, prevents resource contention)
-        # With global pool size limit, this is efficient enough
-        results = {}
-        for model_id in enabled_models.keys():
-            if use_progressive:
-                # Use progressive generation with polling
-                success = self.generate_forecast_for_model_progressive(
-                    model_id,
-                    max_duration_minutes=120,
-                    check_interval_seconds=60
+        if parallel and len(enabled_models) > 1:
+            # PARALLEL EXECUTION: Run all models concurrently with allocated workers
+            logger.info("🚀 Running models in PARALLEL")
+            
+            # Allocate workers per model
+            worker_allocation = allocate_workers_per_model(_GLOBAL_POOL_SIZE, enabled_models)
+            logger.info(f"Worker allocation: {worker_allocation}\n")
+            
+            # Thread-safe result storage
+            results = {}
+            results_lock = threading.Lock()
+            
+            def run_model(model_id: str, workers: int):
+                """Thread worker function to run a single model"""
+                try:
+                    if use_progressive:
+                        success = self.generate_forecast_for_model_progressive(
+                            model_id,
+                            max_duration_minutes=120,
+                            check_interval_seconds=60,
+                            worker_count=workers
+                        )
+                    else:
+                        success = self.generate_forecast_for_model(
+                            model_id,
+                            worker_count=workers
+                        )
+                    
+                    with results_lock:
+                        results[model_id] = success
+                        
+                except Exception as e:
+                    logger.error(f"❌ {model_id} thread failed: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    with results_lock:
+                        results[model_id] = False
+            
+            # Create and start threads for each model
+            threads = []
+            for model_id, worker_count in worker_allocation.items():
+                thread = threading.Thread(
+                    target=run_model,
+                    args=(model_id, worker_count),
+                    name=f"{model_id}-generator"
                 )
-            else:
-                # Generate all forecast hours immediately
-                success = self.generate_forecast_for_model(model_id)
+                thread.start()
+                threads.append(thread)
+                logger.info(f"✓ Started {model_id} thread with {worker_count} workers")
             
-            results[model_id] = success
+            logger.info(f"\n⏳ Waiting for {len(threads)} model threads to complete...\n")
             
-            # Memory cleanup between models to prevent accumulation
-            try:
-                import psutil
-                mem_before = psutil.virtual_memory()
-                logger.info(f"  🧹 Cleaning up after {model_id}...")
-                logger.info(f"     Memory before cleanup: {mem_before.percent:.1f}% used, {mem_before.available / (1024**3):.1f}GB available")
+            # Wait for all threads to complete
+            for thread in threads:
+                thread.join()
+                logger.info(f"✓ {thread.name} completed")
+            
+            logger.info(f"\n{'='*80}")
+            
+        else:
+            # SEQUENTIAL EXECUTION: Original behavior (safer fallback)
+            logger.info("🔄 Running models SEQUENTIALLY")
+            logger.info(f"Global pool size: {_GLOBAL_POOL_SIZE} workers\n")
+            
+            results = {}
+            for model_id in enabled_models.keys():
+                if use_progressive:
+                    success = self.generate_forecast_for_model_progressive(
+                        model_id,
+                        max_duration_minutes=120,
+                        check_interval_seconds=60
+                    )
+                else:
+                    success = self.generate_forecast_for_model(model_id)
                 
-                gc.collect()
-                time.sleep(5)  # Let OS reclaim memory
+                results[model_id] = success
                 
-                mem_after = psutil.virtual_memory()
-                freed_mb = (mem_after.available - mem_before.available) / (1024**2)
-                logger.info(f"     Memory after cleanup:  {mem_after.percent:.1f}% used, {mem_after.available / (1024**3):.1f}GB available")
-                if freed_mb > 0:
-                    logger.info(f"     ✓ Freed {freed_mb:.0f}MB")
-            except ImportError:
-                # Fallback if psutil not available
-                logger.info(f"  🧹 Cleaning up after {model_id}...")
-                gc.collect()
-                time.sleep(5)
-            
-            logger.info(f"\n{'-'*80}\n")
+                # Memory cleanup between models to prevent accumulation
+                try:
+                    import psutil
+                    mem_before = psutil.virtual_memory()
+                    logger.info(f"  🧹 Cleaning up after {model_id}...")
+                    logger.info(f"     Memory before cleanup: {mem_before.percent:.1f}% used, {mem_before.available / (1024**3):.1f}GB available")
+                    
+                    gc.collect()
+                    time.sleep(5)  # Let OS reclaim memory
+                    
+                    mem_after = psutil.virtual_memory()
+                    freed_mb = (mem_after.available - mem_before.available) / (1024**2)
+                    logger.info(f"     Memory after cleanup:  {mem_after.percent:.1f}% used, {mem_after.available / (1024**3):.1f}GB available")
+                    if freed_mb > 0:
+                        logger.info(f"     ✓ Freed {freed_mb:.0f}MB")
+                except ImportError:
+                    # Fallback if psutil not available
+                    logger.info(f"  🧹 Cleaning up after {model_id}...")
+                    gc.collect()
+                    time.sleep(5)
+                
+                logger.info(f"\n{'-'*80}\n")
         
         # Summary
         logger.info(f"\n{'='*80}")
@@ -638,6 +773,7 @@ class ForecastScheduler:
         
         This is the main entry point called by the scheduler.
         Uses progressive generation (polling) if enabled in config.
+        Runs models in parallel by default for 32GB server efficiency.
         """
         logger.info("="*80)
         logger.info("🚀 Starting forecast map generation")
@@ -646,7 +782,10 @@ class ForecastScheduler:
         try:
             # Use progressive generation setting from config
             use_progressive = settings.progressive_generation
-            self.generate_all_models(use_progressive=use_progressive)
+            
+            # Use parallel execution by default (2+ models run concurrently)
+            # Can be disabled via parallel=False for debugging
+            self.generate_all_models(use_progressive=use_progressive, parallel=True)
             
             logger.info("="*80)
             logger.info("✅ Forecast generation complete")

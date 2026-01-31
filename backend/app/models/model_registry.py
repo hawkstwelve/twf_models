@@ -35,6 +35,7 @@ class ModelConfig:
     full_name: str
     description: str
     provider: ModelProvider
+    herbie_product: Optional[str] = None  # e.g., "pgrb2.0p25", "pgrb2.1p00"
     
     # Data fetcher configuration
     fetcher_type: Optional[str] = None  # "nomads", "herbie", None=auto-detect from provider
@@ -133,7 +134,8 @@ ModelRegistry.register(ModelConfig(
     full_name="Global Forecast System",
     description="NOAA's global weather model",
     provider=ModelProvider.NOMADS,
-    fetcher_type="herbie",  # Use Herbie for robust GRIB handling (analysis + forecast)
+    fetcher_type="herbie",
+    herbie_product="pgrb2.0p25",
     # NOMADS fields kept for reference but Herbie handles downloads
     nomads_base_path="gfs/prod",
     url_layout=URLLayout.GFS_STANDARD,
@@ -208,7 +210,8 @@ ModelRegistry.register(ModelConfig(
     full_name="High-Resolution Rapid Refresh",
     description="NOAA's high-resolution short-range model",
     provider=ModelProvider.NOMADS,
-    fetcher_type="herbie",  # Use Herbie instead of NOMADS fetcher
+    fetcher_type="herbie",
+    herbie_product="sfc",  # Herbie uses "sfc" for HRRR surface product
     # NOMADS fields optional when using Herbie
     nomads_base_path="hrrr/prod",
     url_layout=URLLayout.HRRR_STYLE,
