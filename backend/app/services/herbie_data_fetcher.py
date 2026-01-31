@@ -176,16 +176,25 @@ class HerbieDataFetcher(BaseDataFetcher):
             # Herbie expects timezone-naive datetime
             run_time_naive = run_time.replace(tzinfo=None) if run_time.tzinfo else run_time
             
-            H = self.Herbie(
-                date=run_time_naive,
-                model=herbie_model,
-                fxx=forecast_hour,
-                # CRITICAL: Production configuration
-                save_dir=str(self.herbie_save_dir),
-                overwrite=False,  # Don't re-download existing files
-                priority=self.priority_sources,  # Multi-source fallback
-                verbose=False
-            )
+            # Get product from model config (e.g., "pgrb2.0p25" for GFS, "sfc" for HRRR)
+            product = self.model_config.herbie_product if hasattr(self.model_config, 'herbie_product') else None
+            
+            herbie_params = {
+                'date': run_time_naive,
+                'model': herbie_model,
+                'fxx': forecast_hour,
+                'save_dir': str(self.herbie_save_dir),
+                'overwrite': False,  # Don't re-download existing files
+                'priority': self.priority_sources,  # Multi-source fallback
+                'verbose': False
+            }
+            
+            # Add product if specified in model config
+            if product:
+                herbie_params['product'] = product
+                logger.info(f"  Using product: {product}")
+            
+            H = self.Herbie(**herbie_params)
             
             # Build search string for variable subsetting
             search_string = self._build_search_string(raw_fields, forecast_hour)
