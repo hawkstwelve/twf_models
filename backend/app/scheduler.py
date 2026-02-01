@@ -29,7 +29,9 @@ from app.models.model_registry import ModelRegistry
 from app.models.variable_requirements import VariableRegistry
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
+# Set log level from config (INFO, WARNING, ERROR, etc.)
+log_level = getattr(logging, settings.log_level.upper(), logging.INFO)
+logging.basicConfig(level=log_level)
 
 # Global concurrency control - prevent resource thrashing
 # Dynamic worker count based on available memory
@@ -998,8 +1000,9 @@ class ForecastScheduler:
 
 if __name__ == "__main__":
     # Configure logging for direct execution
+    log_level = getattr(logging, settings.log_level.upper(), logging.INFO)
     logging.basicConfig(
-        level=logging.INFO,
+        level=log_level,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     logger.info("Starting TWF Models Scheduler")
