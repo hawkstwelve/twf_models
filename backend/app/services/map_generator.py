@@ -24,7 +24,12 @@ matplotlib.rcParams['agg.path.chunksize'] = 10000  # Larger chunks for better pe
 os.environ['CARTOPY_OFFLINE'] = '0'  # Allow downloading map data if needed
 
 from app.config import settings
-from app.services.stations import get_stations_for_region, format_station_value
+from app.config.overlay_rules import is_overlay_enabled, get_overlay_config
+from app.config.regions import get_region_bbox
+from app.services.station_catalog import StationCatalog
+from app.services.station_selector import StationSelector
+from app.services.station_sampling import GridLocatorFactory
+from app.services.stations import format_station_value
 
 logger = logging.getLogger(__name__)
 
@@ -424,82 +429,34 @@ class MapGenerator:
         
         return fig, ax
     
-    def extract_station_values(self, ds: xr.Dataset, variable: str, region: str = 'pnw', 
-                               priority_level: int = 2):
+    def _render_station_overlays(self, ax, stations: list, station_values: dict, 
+                                 transform=None):
         """
-        Extract model values at station locations.
-        
-        Args:
-            ds: xarray Dataset with forecast data
-            variable: Variable name in dataset (e.g., 't2m', 'tp')
-            region: Region identifier for station selection
-            priority_level: Station priority level (1=major only, 2=major+secondary, 3=all)
-        
-        Returns:
-            Dictionary mapping station names to their values
-        """
-        stations = get_stations_for_region(region, priority_level)
-        values = {}
-        
-        # Detect coordinate names and 0-360 longitude format only once
-        lat_name = 'latitude' if 'latitude' in ds.coords else 'lat'
-        lon_name = 'longitude' if 'longitude' in ds.coords else 'lon'
-        lon_vals = ds.coords[lon_name].values
-        uses_360_format = lon_vals.min() >= 0 and lon_vals.max() > 180
-        for station_name, station_data in stations.items():
-            try:
-                station_lat = station_data['lat']
-                station_lon = station_data['lon']
-                if uses_360_format and station_lon < 0:
-                    station_lon = station_lon % 360
-                value = ds[variable].sel(
-                    {lat_name: station_lat, lon_name: station_lon},
-                    method='nearest'
-                ).values
-                if hasattr(value, 'item'):
-                    value = value.item()
-                
-                values[station_name] = float(value)
-                
-            except Exception as e:
-                logger.warning(f"Could not extract value for station {station_name}: {e}")
-                continue
-        
-        return values
-    
-    def plot_station_overlays(self, ax, station_values: dict, variable: str, 
-                              region: str = 'pnw', transform=None):
-        """
-        Plot station values as overlays on the map.
+        Render station overlays on the map (Phase 3).
         
         Args:
             ax: Matplotlib axes object
-            station_values: Dictionary of station names to values
-            variable: Variable type for formatting (temp, precip, wind_speed, etc.)
-            region: Region identifier
+            stations: List of Station objects to render
+            station_values: Dictionary mapping station IDs to values
             transform: Cartopy transform (defaults to PlateCarree)
         """
         if transform is None:
             transform = ccrs.PlateCarree()
         
-        stations = get_stations_for_region(region, priority_level=3)  # Get all for positioning
-        
-        for station_name, value in station_values.items():
-            if station_name not in stations:
+        for station in stations:
+            if station.id not in station_values:
                 continue
             
-            station = stations[station_name]
-            lat = station['lat']
-            lon = station['lon']
+            value = station_values[station.id]
             
             # Format the value for display
-            formatted_value = format_station_value(value, variable)
+            formatted_value = format_station_value(value, 'generic')
             
             if not formatted_value:  # Skip if empty
                 continue
             
             # Plot station dot
-            ax.plot(lon, lat, 'o', 
+            ax.plot(station.lon, station.lat, 'o', 
                    color='black', 
                    markersize=4,
                    markeredgecolor='white',
@@ -508,7 +465,7 @@ class MapGenerator:
                    zorder=100)
             
             # Plot value text with white background box for readability
-            ax.text(lon, lat, 
+            ax.text(station.lon, station.lat, 
                    formatted_value,
                    transform=transform,
                    fontsize=8,
@@ -524,19 +481,83 @@ class MapGenerator:
                        alpha=0.85
                    ),
                    zorder=101)
-            
-            # Optionally add station name below (for major stations only)
-            if station.get('priority', 3) == 1:  # Only major cities
-                ax.text(lon, lat - 0.15,  # Slight offset below
-                       station.get('abbr', station_name[:3].upper()),
-                       transform=transform,
-                       fontsize=6,
-                       ha='center',
-                       va='top',
-                       color='black',
-                       style='italic',
-                       alpha=0.7,
-                       zorder=99)
+    
+    def _sample_wind_speed(self, ds: xr.Dataset, stations: list) -> dict:
+        """
+        Sample wind speed at station locations (Phase 3).
+        
+        Wind speed requires special handling since it's computed from u/v components.
+        
+        Args:
+            ds: xarray Dataset with wind component data
+            stations: List of Station objects
+        
+        Returns:
+            Dictionary mapping station IDs to wind speed values (mph)
+        """
+        import numpy as np
+        
+        # Detect coordinate names in dataset
+        lat_coord_name = 'latitude' if 'latitude' in ds.coords else 'lat'
+        lon_coord_name = 'longitude' if 'longitude' in ds.coords else 'lon'
+        
+        # Detect if dataset uses 0-360 longitude format
+        lon_vals = ds.coords[lon_coord_name].values
+        uses_360_format = lon_vals.min() >= 0 and lon_vals.max() > 180
+        
+        # Identify wind component variables
+        if 'ugrd10m' in ds:
+            u_var = 'ugrd10m'
+            v_var = 'vgrd10m'
+        elif 'u10' in ds:
+            u_var = 'u10'
+            v_var = 'v10'
+        else:
+            logger.warning("Could not find wind component variables in dataset")
+            return {}
+        
+        if v_var not in ds:
+            logger.warning(f"V-component {v_var} not found in dataset")
+            return {}
+        
+        station_values = {}
+        
+        for station in stations:
+            try:
+                station_lat = station.lat
+                station_lon = station.lon
+                
+                # Convert longitude to match dataset format if needed
+                if uses_360_format and station_lon < 0:
+                    station_lon = station_lon % 360
+                
+                # Build selector dictionary
+                selector = {
+                    lat_coord_name: station_lat,
+                    lon_coord_name: station_lon
+                }
+                
+                # Extract u and v components
+                u = ds[u_var].sel(**selector, method='nearest').values
+                v = ds[v_var].sel(**selector, method='nearest').values
+                
+                # Handle numpy arrays
+                if hasattr(u, 'item'):
+                    u = u.item()
+                if hasattr(v, 'item'):
+                    v = v.item()
+                
+                # Calculate wind speed magnitude
+                wind_speed = np.sqrt(u**2 + v**2)
+                # Convert m/s to mph
+                wind_speed_mph = wind_speed * 2.23694
+                station_values[station.id] = float(wind_speed_mph)
+                
+            except Exception as e:
+                logger.warning(f"Could not extract wind speed for station {station.id}: {e}")
+                continue
+        
+        return station_values
     
     def generate_map(
         self,
@@ -1447,138 +1468,121 @@ class MapGenerator:
         # Add title with explicit position very close to map
         fig.suptitle(title_text, fontsize=12, fontweight='bold', y=0.995)
         
-        # Add station overlays if enabled
-        if settings.station_overlays and variable not in ["precipitation_type", "precip_type", "radar", "radar_reflectivity"]:
+        # Add station overlays if enabled (Phase 3 integration)
+        if settings.station_overlays:
             try:
-                station_values = None
+                # Map variable to product_id for overlay rules
+                product_id_map = {
+                    'temperature_2m': 'temp_2m',
+                    'temp': 'temp_2m',
+                    'temp_850_wind_mslp': 'temp_850mb',
+                    '850mb': 'temp_850mb',
+                    'wind_speed_10m': 'wind_speed_10m',
+                    'wind_speed': 'wind_speed_10m',
+                    'precipitation': 'precipitation',
+                    'precip': 'precipitation',
+                    'snowfall': 'snowfall',
+                    'radar': 'radar',
+                    'radar_reflectivity': 'radar',
+                    'mslp_precip': 'mslp_precip',
+                    'mslp_pcpn': 'mslp_precip'
+                }
                 
-                # Determine which dataset variable to use for extraction
-                if variable in ["temperature_2m", "temp"]:
-                    extract_var = 'tmp2m'
-                    station_values = self.extract_station_values(
-                        ds, extract_var, 
-                        region=region_to_use,
-                        priority_level=settings.station_priority
-                    )
-                    # Convert K to F for display
-                    station_values = {k: (v - 273.15) * 9/5 +  32 if v > 100 else v
-                                    for k, v in station_values.items()}
+                product_id = product_id_map.get(variable, variable)
                 
-                elif variable in ["temp_850_wind_mslp", "850mb"]:
-                    station_values = self.extract_station_values(
-                        ds, 'tmp_850', 
-                        region=region_to_use,
-                        priority_level=settings.station_priority
-                    )
-                    # Convert K to C for 850mb map
-                    station_values = {k: (v - 273.15) if v > 100 else v
-                                    for k, v in station_values.items()}
+                # Check if overlays are enabled for this product
+                if not is_overlay_enabled(product_id):
+                    logger.debug(f"Station overlays disabled for product: {product_id}")
+                else:
+                    # Get overlay configuration
+                    overlay_config = get_overlay_config(product_id)
+                    min_px_spacing = overlay_config.get('min_px_spacing', 100)
                     
-                elif variable in ["precipitation", "precip"]:
-                    # Use 'tp_total' (total precipitation accumulated from hour 0) for station overlays
-                    # This matches the total precip shown in contours/colors
-                    extract_var = 'tp_total' if 'tp_total' in ds else ('tp' if 'tp' in ds else 'prate')
-                    station_values = self.extract_station_values(
-                        ds, extract_var, 
-                        region=region_to_use,
-                        priority_level=settings.station_priority
-                    )
-                    # Convert based on variable type
-                    if extract_var in ['tp_total', 'tp']:
-                        # tp_total/tp is already in mm, just convert to inches
-                        station_values = {k: v / 25.4 for k, v in station_values.items()}
+                    logger.info(f"Station overlay enabled for {product_id} (spacing={min_px_spacing}px)")
+                    
+                    # 1. Load station catalog
+                    catalog = StationCatalog()
+                    all_stations = catalog.get_stations_for_region(region_to_use)
+                    
+                    if not all_stations:
+                        logger.warning(f"No stations found for region {region_to_use}")
                     else:
-                        # prate is in kg/m²/s, convert to inches (hourly accumulation)
-                        station_values = {k: v * 3600 * 0.0393701 
-                                        for k, v in station_values.items()}
-                
-                elif variable == "snowfall":
-                    # Use 'tp_snow_total' (total snowfall accumulated from hour 0) for station overlays
-                    extract_var = 'tp_snow_total'
-                    if extract_var in ds:
-                        station_values = self.extract_station_values(
-                            ds, extract_var, 
-                            region=region_to_use,
-                            priority_level=settings.station_priority
+                        # 2. Get region bbox for decluttering
+                        region_bbox = get_region_bbox(region_to_use)
+                        
+                        # 3. Declutter stations
+                        selector = StationSelector(region_bbox, grid_size_px=min_px_spacing)
+                        always_include_ids = catalog.get_always_include_ids()
+                        selected_stations = selector.select_decluttered_stations(
+                            all_stations, always_include_ids
                         )
-                        # tp_snow_total is already in inches, no conversion needed
-                    else:
-                        logger.warning("tp_snow_total not found in dataset for station overlays")
-                    
-                elif variable in ["wind_speed_10m", "wind_speed"]:
-                    # Wind speed requires calculating magnitude from u and v components
-                    from app.services.stations import get_stations_for_region
-                    stations = get_stations_for_region(region_to_use, settings.station_priority)
-                    station_values = {}
-                    
-                    # Detect coordinate names in dataset
-                    lat_coord_name = 'latitude' if 'latitude' in ds.coords else 'lat'
-                    lon_coord_name = 'longitude' if 'longitude' in ds.coords else 'lon'
-                    
-                    # Detect if dataset uses 0-360 longitude format
-                    lon_vals = ds.coords[lon_coord_name].values
-                    uses_360_format = lon_vals.min() >= 0 and lon_vals.max() > 180
-                    
-                    for station_name, station_data in stations.items():
-                        try:
-                            # Extract u and v components
-                            if 'ugrd10m' in ds:
-                                u_var = 'ugrd10m'
-                                v_var = 'vgrd10m' if 'vgrd10m' in ds else None
-                            elif 'u10' in ds:
-                                u_var = 'u10'
-                                v_var = 'v10' if 'v10' in ds else None
+                        
+                        if not selected_stations:
+                            logger.warning("No stations selected after decluttering")
+                        else:
+                            logger.info(f"Selected {len(selected_stations)} stations after declutter")
+                            
+                            # 4. Sample values using GridLocator
+                            locator = GridLocatorFactory.from_dataset(ds)
+                            
+                            # Determine which dataset variable to use for sampling
+                            if variable in ["temperature_2m", "temp"]:
+                                extract_var = 'tmp2m'
+                            elif variable in ["temp_850_wind_mslp", "850mb"]:
+                                extract_var = 'tmp_850'
+                            elif variable in ["precipitation", "precip"]:
+                                extract_var = 'tp_total' if 'tp_total' in ds else ('tp' if 'tp' in ds else 'prate')
+                            elif variable == "snowfall":
+                                extract_var = 'tp_snow_total'
+                            elif variable in ["wind_speed_10m", "wind_speed"]:
+                                # Wind speed handled separately below
+                                extract_var = None
                             else:
-                                u_var = None
-                                v_var = None
+                                extract_var = None
                             
-                            if u_var is None or v_var is None:
-                                logger.warning(f"Could not find wind components for station {station_name}")
-                                continue
-                            
-                            station_lat = station_data['lat']
-                            station_lon = station_data['lon']
-                            
-                            # Convert longitude to match dataset format if needed
-                            if uses_360_format and station_lon < 0:
-                                station_lon = station_lon % 360
-                            
-                            # Build selector dictionary dynamically
-                            selector = {
-                                lat_coord_name: station_lat,
-                                lon_coord_name: station_lon
-                            }
-                            
-                            u = ds[u_var].sel(**selector, method='nearest').values
-                            v = ds[v_var].sel(**selector, method='nearest').values
-                            
-                            # Handle numpy arrays
-                            if hasattr(u, 'item'):
-                                u = u.item()
-                            if hasattr(v, 'item'):
-                                v = v.item()
-                            
-                            # Calculate wind speed magnitude
-                            wind_speed = np.sqrt(u**2 + v**2)
-                            # Convert m/s to mph
-                            wind_speed_mph = wind_speed * 2.23694
-                            station_values[station_name] = float(wind_speed_mph)
-                            
-                        except Exception as e:
-                            logger.warning(f"Could not extract wind speed for station {station_name}: {e}")
-                            continue
-                
-                if station_values:
-                    self.plot_station_overlays(
-                        ax, station_values, variable,
-                        region=region_to_use,
-                        transform=ccrs.PlateCarree()
-                    )
-                    logger.info(f"Added station overlays: {len(station_values)} stations")
+                            if extract_var and extract_var in ds:
+                                # Sample values at station locations
+                                station_values = locator.sample(ds, extract_var, selected_stations)
+                                
+                                # Convert units for display
+                                if variable in ["temperature_2m", "temp"]:
+                                    # Convert K to F
+                                    station_values = {k: (v - 273.15) * 9/5 + 32 if v > 100 else v
+                                                    for k, v in station_values.items()}
+                                elif variable in ["temp_850_wind_mslp", "850mb"]:
+                                    # Convert K to C
+                                    station_values = {k: (v - 273.15) if v > 100 else v
+                                                    for k, v in station_values.items()}
+                                elif variable in ["precipitation", "precip"]:
+                                    # Convert mm to inches
+                                    if extract_var in ['tp_total', 'tp']:
+                                        station_values = {k: v / 25.4 for k, v in station_values.items()}
+                                    else:
+                                        # prate is in kg/m²/s
+                                        station_values = {k: v * 3600 * 0.0393701 for k, v in station_values.items()}
+                                # snowfall already in inches
+                                
+                                # 5. Render station overlays
+                                self._render_station_overlays(
+                                    ax, selected_stations, station_values,
+                                    transform=ccrs.PlateCarree()
+                                )
+                                logger.info(f"Rendered {len(station_values)} station overlays")
+                            elif variable in ["wind_speed_10m", "wind_speed"]:
+                                # Wind speed requires special handling (u/v components)
+                                station_values = self._sample_wind_speed(ds, selected_stations)
+                                if station_values:
+                                    self._render_station_overlays(
+                                        ax, selected_stations, station_values,
+                                        transform=ccrs.PlateCarree()
+                                    )
+                                    logger.info(f"Rendered {len(station_values)} wind speed overlays")
+                            else:
+                                logger.warning(f"Variable {extract_var} not found in dataset for station overlays")
                     
             except Exception as e:
                 # Don't fail the whole map generation if overlays fail
-                logger.warning(f"Could not add station overlays: {e}")
+                logger.warning(f"Could not add station overlays: {e}", exc_info=True)
         
         # Save image
         if run_time:
