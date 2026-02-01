@@ -763,12 +763,16 @@ class MapGenerator:
                 # Apply threshold after smoothing
                 has_precip = (rate_smooth.values > min_rate_threshold).astype(bool)
                 
-                # Create masks dict from upsampled winner field
+                # Convert winner field to safe integer array (handle any NaN/float issues)
+                winner_vals = np.asarray(winner_field_hi.values, dtype=float)
+                winner_vals = np.nan_to_num(winner_vals, nan=0.0).astype(int)
+                
+                # Create masks dict from upsampled winner field with explicit boolean conversion
                 masks = {
-                    'rain': xr.DataArray((winner_field_hi.values == 0) & has_precip, coords=rate_smooth.coords, dims=rate_smooth.dims),
-                    'snow': xr.DataArray((winner_field_hi.values == 1) & has_precip, coords=rate_smooth.coords, dims=rate_smooth.dims),
-                    'sleet': xr.DataArray((winner_field_hi.values == 2) & has_precip, coords=rate_smooth.coords, dims=rate_smooth.dims),
-                    'frzr': xr.DataArray((winner_field_hi.values == 3) & has_precip, coords=rate_smooth.coords, dims=rate_smooth.dims)
+                    'rain': xr.DataArray(((winner_vals == 0) & has_precip).astype(bool), coords=rate_smooth.coords, dims=rate_smooth.dims),
+                    'snow': xr.DataArray(((winner_vals == 1) & has_precip).astype(bool), coords=rate_smooth.coords, dims=rate_smooth.dims),
+                    'sleet': xr.DataArray(((winner_vals == 2) & has_precip).astype(bool), coords=rate_smooth.coords, dims=rate_smooth.dims),
+                    'frzr': xr.DataArray(((winner_vals == 3) & has_precip).astype(bool), coords=rate_smooth.coords, dims=rate_smooth.dims)
                 }
             
             # C. Plot precip types (simplified - no complex overlap logic)
