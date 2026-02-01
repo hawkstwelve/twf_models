@@ -512,6 +512,15 @@ class ForecastScheduler:
                     
                     # If Herbie found a grib file, it's available
                     available = H.grib is not None
+                    
+                    # For HRRR, enforce run-time-specific forecast hour limits
+                    # Non-major runs (not 00z/06z/12z/18z) only go to f18
+                    if model_id == "HRRR" and not available:
+                        run_hour = run_time.hour
+                        if run_hour not in {0, 6, 12, 18} and forecast_hour > 18:
+                            logger.debug(f"HRRR {run_hour:02d}z f{forecast_hour:03d} not available (non-major run limited to f18)")
+                            return False
+                    
                     if available:
                         logger.debug(f"✓ {model_id} f{forecast_hour:03d} available via Herbie")
                     return available
@@ -521,7 +530,14 @@ class ForecastScheduler:
                     return True
                 except Exception as e:
                     logger.debug(f"Herbie availability check failed for {model_id} f{forecast_hour:03d}: {e}")
-                    # If Herbie fails, let the fetcher handle it (may succeed or fail gracefully)
+                    # For HRRR, if availability check fails, respect the run-time limits
+                    # Non-major HRRR runs (not 00z/06z/12z/18z) only go to f18
+                    if model_id == "HRRR":
+                        run_hour = run_time.hour
+                        if run_hour not in {0, 6, 12, 18} and forecast_hour > 18:
+                            logger.debug(f"HRRR {run_hour:02d}z f{forecast_hour:03d} not available (non-major run limited to f18)")
+                            return False
+                    # For other failures, assume available and let fetcher handle it
                     return True
             
             # NOMADS direct check (for AIGFS and legacy models)
@@ -560,14 +576,19 @@ class ForecastScheduler:
         Determine the effective max forecast hour for a model/run.
 
         HRRR runs out to f48 only at 00z/06z/12z/18z. Other cycles run to f18.
+        
+        Returns:
+            Maximum forecast hour for this specific model run
         """
-        # Use model-specific forecast hours if available
+        # Get the configured forecast hours for this model
         if model_id == "HRRR":
             configured_hours = settings.hrrr_forecast_hours_list
         else:
             configured_hours = [int(h) for h in settings.forecast_hours.split(',')]
         
         max_configured = max(configured_hours) if configured_hours else 0
+        
+        # Start with the model's default max forecast hour
         max_model = model_config.max_forecast_hour
 
         # HRRR special case: non-major runs only go to f18
@@ -576,8 +597,11 @@ class ForecastScheduler:
             if run_hour not in {0, 6, 12, 18}:
                 # For non-major runs, limit to f18 regardless of config
                 max_model = 18
-                logger.info(f"HRRR {run_hour:02d}z run: Limited to f18 (non-major run cycle)")
+                logger.info(f"🔒 HRRR {run_hour:02d}z run: Limited to f18 (non-major run cycle)")
+            else:
+                logger.info(f"🔓 HRRR {run_hour:02d}z run: Extended to f48 (major run cycle)")
 
+        # Return the minimum of configured max and model-specific max
         return min(max_configured, max_model)
     def generate_all_models(self, use_progressive: bool = True, parallel: bool = True):
         """

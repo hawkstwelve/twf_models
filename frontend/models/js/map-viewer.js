@@ -68,20 +68,26 @@ class MapViewer {
         // 5. Setup event listeners
         this.setupEventListeners();
         
-        // 6. Load initial map
+        // 6. Initialize mobile UI
+        this.initializeMobileUI();
+        
+        // 7. Sync mobile control offsets
+        this.syncMobileOffsets();
+        
+        // 8. Load initial map
         await this.loadMap();
         
-        // 7. Preload next images
+        // 9. Preload next images
         this.preloadImages();
         
-        // 8. Start auto-refresh
+        // 10. Start auto-refresh
         setInterval(() => {
             if (!this.isAnimating) {
                 this.loadMap();
             }
         }, CONFIG.REFRESH_INTERVAL);
         
-        // 9. Refresh available options every 5 minutes
+        // 11. Refresh available options every 5 minutes
         setInterval(async () => {
             await this.fetchRuns();
             await this.fetchAvailableOptions();
@@ -89,6 +95,9 @@ class MapViewer {
             this.populateVariableDropdown();
             this.populateForecastDropdown();
         }, 300000); // 5 minutes
+        
+        // 12. Sync mobile offsets on window resize
+        window.addEventListener('resize', () => this.syncMobileOffsets());
         
         console.log('Map Viewer initialized');
     }
@@ -452,6 +461,9 @@ class MapViewer {
         }
         
         this.updateSliderLabel();
+        
+        // Update mobile slider too
+        this.updateMobileTimeSlider();
     }
 
     /**
@@ -555,6 +567,260 @@ class MapViewer {
                 }
             });
         }
+
+        // Mobile-specific controls
+        this.setupMobileControls();
+    }
+
+    /**
+     * Setup mobile-specific controls
+     */
+    setupMobileControls() {
+        // Mobile pill buttons
+        const pillButtons = document.querySelectorAll('.pill-btn');
+        pillButtons.forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const control = e.currentTarget.dataset.control;
+                this.openMobileModal(control);
+            });
+        });
+
+        // Modal close button
+        const modalCloseBtn = document.getElementById('modal-close-btn');
+        const modalOverlay = document.getElementById('modal-overlay');
+        
+        if (modalCloseBtn) {
+            modalCloseBtn.addEventListener('click', () => this.closeMobileModal());
+        }
+        
+        if (modalOverlay) {
+            modalOverlay.addEventListener('click', (e) => {
+                if (e.target === modalOverlay) {
+                    this.closeMobileModal();
+                }
+            });
+        }
+
+        // Mobile time slider
+        const mobileSlider = document.getElementById('mobile-time-slider');
+        if (mobileSlider) {
+            mobileSlider.addEventListener('input', (e) => {
+                const index = parseInt(e.target.value);
+                const activeHours = this.getActiveForecastHours();
+                const hour = activeHours[index];
+                if (hour === undefined) return;
+                this.selectForecastHour(hour, false);
+                this.updateMobileSliderLabel();
+            });
+        }
+
+        // Mobile play/pause buttons
+        const mobilePlayBtn = document.getElementById('mobile-play-btn');
+        const mobilePauseBtn = document.getElementById('mobile-pause-btn');
+        
+        if (mobilePlayBtn) {
+            mobilePlayBtn.addEventListener('click', () => this.startAnimation());
+        }
+        
+        if (mobilePauseBtn) {
+            mobilePauseBtn.addEventListener('click', () => this.stopAnimation());
+        }
+
+        // Map info overlay toggle
+        const infoToggleBtn = document.getElementById('info-toggle-btn');
+        const infoContent = document.getElementById('info-content');
+        
+        if (infoToggleBtn && infoContent) {
+            infoToggleBtn.addEventListener('click', () => {
+                infoContent.classList.toggle('expanded');
+            });
+        }
+    }
+
+    /**
+     * Open mobile modal for control selection
+     */
+    openMobileModal(controlType) {
+        const modal = document.getElementById('modal-overlay');
+        const modalTitle = document.getElementById('modal-title');
+        const modalContent = document.getElementById('modal-content');
+        
+        if (!modal || !modalTitle || !modalContent) return;
+
+        // Clear content
+        modalContent.innerHTML = '';
+
+        // Set title and populate options based on control type
+        switch (controlType) {
+            case 'model':
+                modalTitle.textContent = 'Select Model';
+                this.availableModels.forEach(model => {
+                    const option = document.createElement('button');
+                    option.className = 'modal-option';
+                    option.textContent = model.name;
+                    if (model.id === this.currentModel) {
+                        option.classList.add('selected');
+                    }
+                    option.addEventListener('click', () => {
+                        this.selectModel(model.id);
+                        this.updateMobilePillValue('model', model.name);
+                        this.closeMobileModal();
+                    });
+                    modalContent.appendChild(option);
+                });
+                break;
+
+            case 'run':
+                modalTitle.textContent = 'Select Run Time';
+                this.availableRuns.forEach(run => {
+                    const option = document.createElement('button');
+                    option.className = 'modal-option';
+                    const runLabel = this.formatRunTime(run.run_time);
+                    option.textContent = runLabel + (run.is_latest ? ' (Latest)' : '');
+                    if (run.run_time === this.currentRun) {
+                        option.classList.add('selected');
+                    }
+                    option.addEventListener('click', () => {
+                        this.selectRun(run.run_time);
+                        this.updateMobilePillValue('run', runLabel);
+                        this.closeMobileModal();
+                    });
+                    modalContent.appendChild(option);
+                });
+                break;
+
+            case 'variable':
+                modalTitle.textContent = 'Select Variable';
+                const variables = Array.from(this.availableVariables);
+                variables.forEach(variable => {
+                    const option = document.createElement('button');
+                    option.className = 'modal-option';
+                    const varConfig = CONFIG.VARIABLES[variable];
+                    const displayName = varConfig?.label || this.formatVariableName(variable);
+                    option.textContent = displayName;
+                    if (variable === this.currentVariable) {
+                        option.classList.add('selected');
+                    }
+                    option.addEventListener('click', () => {
+                        this.selectVariable(variable);
+                        this.updateMobilePillValue('variable', displayName);
+                        this.closeMobileModal();
+                    });
+                    modalContent.appendChild(option);
+                });
+                break;
+        }
+
+        // Show modal
+        modal.classList.add('active');
+    }
+
+    /**
+     * Close mobile modal
+     */
+    closeMobileModal() {
+        const modal = document.getElementById('modal-overlay');
+        if (modal) {
+            modal.classList.remove('active');
+        }
+    }
+
+    /**
+     * Update mobile pill button value
+     */
+    updateMobilePillValue(controlType, value) {
+        const pillValue = document.getElementById(`pill-${controlType}-value`);
+        if (pillValue) {
+            // Truncate long values
+            const maxLength = 15;
+            const displayValue = value && value.length > maxLength ? value.substring(0, maxLength) + '...' : value;
+            pillValue.textContent = displayValue || 'N/A';
+        }
+    }
+
+    /**
+     * Update mobile time slider
+     */
+    updateMobileTimeSlider() {
+        const slider = document.getElementById('mobile-time-slider');
+        const maxLabel = document.getElementById('mobile-slider-max');
+        
+        const activeHours = this.getActiveForecastHours();
+        if (!slider || activeHours.length === 0) return;
+        
+        slider.min = 0;
+        slider.max = activeHours.length - 1;
+        slider.value = activeHours.indexOf(this.currentForecastHour);
+        
+        // Update max label
+        const maxHour = activeHours[activeHours.length - 1];
+        if (maxLabel) {
+            maxLabel.textContent = `+${maxHour}h`;
+        }
+        
+        this.updateMobileSliderLabel();
+    }
+
+    /**
+     * Update mobile slider current label
+     */
+    updateMobileSliderLabel() {
+        const label = document.getElementById('mobile-slider-current');
+        if (!label) return;
+        
+        const hour = this.currentForecastHour;
+        label.textContent = hour === 0 ? 'Now' : `+${hour}h`;
+    }
+
+    /**
+     * Format run time for display
+     */
+    formatRunTime(runTime) {
+        // Extract hour from run_time (e.g., "2026-01-29T12:00:00Z" -> "12Z")
+        const match = runTime.match(/T(\d{2}):/);
+        return match ? `${match[1]}Z` : runTime;
+    }
+
+    /**
+     * Initialize mobile UI with current values
+     */
+    initializeMobileUI() {
+        // Initialize mobile pill values
+        const modelConfig = this.getCurrentModelConfig();
+        if (modelConfig) {
+            this.updateMobilePillValue('model', modelConfig.name);
+        }
+        
+        // Initialize run value
+        if (this.currentRun) {
+            const runLabel = this.formatRunTime(this.currentRun);
+            this.updateMobilePillValue('run', runLabel);
+        }
+        
+        // Initialize variable value - use CONFIG.VARIABLES for display name
+        const varConfig = CONFIG.VARIABLES[this.currentVariable];
+        if (varConfig && varConfig.label) {
+            this.updateMobilePillValue('variable', varConfig.label);
+        } else {
+            // Fallback to formatted variable name
+            const displayName = this.formatVariableName(this.currentVariable);
+            this.updateMobilePillValue('variable', displayName);
+        }
+        
+        // Initialize mobile slider
+        this.updateMobileTimeSlider();
+    }
+
+    /**
+     * Sync mobile control offsets dynamically based on bottom panel height
+     */
+    syncMobileOffsets() {
+        const panel = document.getElementById('bottom-control-panel');
+        const pill = document.getElementById('mobile-controls-bar');
+        if (!panel || !pill) return;
+        
+        // Set pill bar bottom to bottom panel height + safe area
+        pill.style.bottom = `calc(${panel.offsetHeight}px + env(safe-area-inset-bottom))`;
     }
 
     /**
@@ -596,6 +862,18 @@ class MapViewer {
             // Update dropdowns (variables may differ between models)
             this.populateVariableDropdown();
             this.populateForecastDropdown();
+            
+            // Update mobile pills with new model data
+            const modelConfig = this.getCurrentModelConfig();
+            if (modelConfig) {
+                this.updateMobilePillValue('model', modelConfig.name);
+            }
+            
+            // Update run pill with the current run time
+            if (this.currentRun) {
+                const runLabel = this.formatRunTime(this.currentRun);
+                this.updateMobilePillValue('run', runLabel);
+            }
             
             // Load map for new model
             await this.loadMap();
@@ -733,11 +1011,17 @@ class MapViewer {
         
         this.isAnimating = true;
         
-        // Update button visibility
+        // Update desktop button visibility
         const playBtn = document.getElementById('play-btn');
         const pauseBtn = document.getElementById('pause-btn');
         if (playBtn) playBtn.style.display = 'none';
         if (pauseBtn) pauseBtn.style.display = 'flex';
+        
+        // Update mobile button visibility
+        const mobilePlayBtn = document.getElementById('mobile-play-btn');
+        const mobilePauseBtn = document.getElementById('mobile-pause-btn');
+        if (mobilePlayBtn) mobilePlayBtn.style.display = 'none';
+        if (mobilePauseBtn) mobilePauseBtn.style.display = 'flex';
         
         // Start animation loop
         const intervalMs = 1000 / this.animationSpeed;
@@ -760,11 +1044,17 @@ class MapViewer {
             this.animationInterval = null;
         }
         
-        // Update button visibility
+        // Update desktop button visibility
         const playBtn = document.getElementById('play-btn');
         const pauseBtn = document.getElementById('pause-btn');
         if (playBtn) playBtn.style.display = 'flex';
         if (pauseBtn) pauseBtn.style.display = 'none';
+        
+        // Update mobile button visibility
+        const mobilePlayBtn = document.getElementById('mobile-play-btn');
+        const mobilePauseBtn = document.getElementById('mobile-pause-btn');
+        if (mobilePlayBtn) mobilePlayBtn.style.display = 'flex';
+        if (mobilePauseBtn) mobilePauseBtn.style.display = 'none';
     }
 
     /**
@@ -866,6 +1156,12 @@ class MapViewer {
             // Update map image
             const mapImage = document.getElementById('map-image');
             if (mapImage) {
+                // Update aspect ratio dynamically when image loads
+                mapImage.addEventListener('load', () => {
+                    const ar = mapImage.naturalWidth / mapImage.naturalHeight;
+                    document.documentElement.style.setProperty('--map-aspect', `${ar}`);
+                }, { once: true });
+                
                 mapImage.src = imageUrl;
                 mapImage.alt = `${this.currentModel} ${this.currentVariable} forecast at +${this.currentForecastHour}h`;
             }
@@ -886,28 +1182,80 @@ class MapViewer {
      * Update footer metadata
      */
     updateMetadata() {
-        const variableSpan = document.getElementById('metadata-variable');
-        const forecastTimeSpan = document.getElementById('metadata-forecast-time');
-        const validTimeSpan = document.getElementById('metadata-valid-time');
+        // Desktop footer metadata
+        const desktopModelSpan = document.getElementById('footer-metadata-model');
+        const desktopRunSpan = document.getElementById('footer-metadata-run');
+        const variableSpan = document.getElementById('footer-metadata-variable');
+        const validTimeSpan = document.getElementById('footer-metadata-valid-time');
         
-        if (variableSpan) {
-            const variableLabel = CONFIG.VARIABLES[this.currentVariable]?.label || this.formatVariableName(this.currentVariable);
-            variableSpan.textContent = variableLabel;
+        // Mobile overlay metadata (old - may still be used)
+        const mobileVariableSpan = document.getElementById('metadata-variable');
+        const mobileForecastTimeSpan = document.getElementById('metadata-forecast-time');
+        const mobileValidTimeSpan = document.getElementById('metadata-valid-time');
+        
+        // Mobile info bar (new)
+        const mobileInfoModel = document.getElementById('mobile-info-model');
+        const mobileInfoRun = document.getElementById('mobile-info-run');
+        const mobileInfoVariable = document.getElementById('mobile-info-variable');
+        const mobileInfoValidTime = document.getElementById('mobile-info-valid-time');
+        
+        const variableLabel = CONFIG.VARIABLES[this.currentVariable]?.label || this.formatVariableName(this.currentVariable);
+        const forecastLabel = this.currentForecastHour === 0 ? 'Now (Analysis)' : `+${this.currentForecastHour}h Forecast`;
+        
+        // Get model config
+        const modelConfig = this.getCurrentModelConfig();
+        
+        // Update desktop footer with model name
+        if (desktopModelSpan && modelConfig) {
+            desktopModelSpan.textContent = modelConfig.name;
         }
         
-        if (forecastTimeSpan) {
-            const forecastLabel = this.currentForecastHour === 0 ? 'Now (Analysis)' : `+${this.currentForecastHour}h Forecast`;
-            forecastTimeSpan.textContent = forecastLabel;
+        // Update desktop footer with run time
+        if (desktopRunSpan && this.currentRun) {
+            const date = new Date(this.currentRun);
+            const day = String(date.getUTCDate()).padStart(2, '0');
+            const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+            const hour = String(date.getUTCHours()).padStart(2, '0');
+            desktopRunSpan.textContent = `Initialized: ${hour}Z ${month}/${day}`;
         }
         
-        if (validTimeSpan && this.currentMap) {
+        // Update desktop footer with variable
+        if (variableSpan) variableSpan.textContent = variableLabel;
+        
+        // Update old mobile overlay (if still present)
+        if (mobileVariableSpan) mobileVariableSpan.textContent = variableLabel;
+        if (mobileForecastTimeSpan) mobileForecastTimeSpan.textContent = forecastLabel;
+        
+        // Update new mobile info bar
+        if (mobileInfoModel && modelConfig) {
+            mobileInfoModel.textContent = modelConfig.name;
+        }
+        if (mobileInfoRun && this.currentRun) {
+            // Format as "Initialized: HHZ MM/DD"
+            const date = new Date(this.currentRun);
+            const day = String(date.getUTCDate()).padStart(2, '0');
+            const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+            const hour = String(date.getUTCHours()).padStart(2, '0');
+            mobileInfoRun.textContent = `Initialized: ${hour}Z ${month}/${day}`;
+        }
+        if (mobileInfoVariable) {
+            mobileInfoVariable.textContent = variableLabel;
+        }
+        
+        if (this.currentMap) {
             try {
                 const runTime = this.parseRunTime(this.currentMap.run_time);
                 const validTime = new Date(runTime.getTime() + this.currentForecastHour * 3600000);
                 const formattedTime = this.formatDateTime(validTime);
-                validTimeSpan.textContent = `Valid: ${formattedTime}`;
+                const validText = `Valid: ${formattedTime}`;
+                
+                if (validTimeSpan) validTimeSpan.textContent = validText;
+                if (mobileValidTimeSpan) mobileValidTimeSpan.textContent = validText;
+                if (mobileInfoValidTime) mobileInfoValidTime.textContent = validText;
             } catch (error) {
-                validTimeSpan.textContent = 'Valid: --';
+                if (validTimeSpan) validTimeSpan.textContent = 'Valid: --';
+                if (mobileValidTimeSpan) mobileValidTimeSpan.textContent = 'Valid: --';
+                if (mobileInfoValidTime) mobileInfoValidTime.textContent = 'Valid: --';
             }
         }
     }

@@ -177,8 +177,10 @@ class HerbieDataFetcher(BaseDataFetcher):
             run_time_naive = run_time.replace(tzinfo=None) if run_time.tzinfo else run_time
             
             # Get product from model config (e.g., "pgrb2.0p25" for GFS, "sfc" for HRRR)
-            product = self.model_config.herbie_product if hasattr(self.model_config, 'herbie_product') else None
+            product = getattr(self.model_config, 'herbie_product', None)
+            logger.debug(f"  Model config herbie_product: {product}")
             
+            # Build Herbie initialization parameters
             herbie_params = {
                 'date': run_time_naive,
                 'model': herbie_model,
@@ -189,11 +191,14 @@ class HerbieDataFetcher(BaseDataFetcher):
                 'verbose': False
             }
             
-            # Add product if specified in model config
+            # Add product if specified in model config (must be before Herbie creation)
             if product:
                 herbie_params['product'] = product
-                logger.info(f"  Using product: {product}")
+                logger.info(f"  Herbie product parameter: {product}")
+            else:
+                logger.warning(f"  No herbie_product specified for {self.model_id}, using Herbie default")
             
+            logger.debug(f"  Herbie params: {herbie_params}")
             H = self.Herbie(**herbie_params)
             
             # Build search string for variable subsetting

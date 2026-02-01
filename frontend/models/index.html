@@ -14,16 +14,16 @@
 </head>
 <body>
     <!-- Header -->
-    <header class="app-header">
+    <header class="app-header" id="app-header">
         <div class="header-content">
             <h1 class="app-title">The Weather Forums</h1>
-            <p class="app-subtitle">Pacific Northwest Weather Models</p>
+            <p class="app-subtitle">Forecasting Models</p>
         </div>
     </header>
 
     <!-- Main Content -->
     <main class="app-main">
-        <!-- Sidebar Controls -->
+        <!-- Sidebar Controls (hidden on mobile) -->
         <aside class="sidebar">
             <div class="control-section">
                 <label class="control-label" for="model-select">Model</label>
@@ -88,7 +88,7 @@
         </aside>
 
         <!-- Map Display -->
-        <div class="map-section">
+        <div class="map-section" id="map-section">
             <!-- Loading Indicator -->
             <div id="loading-indicator" class="loading-overlay">
                 <div class="spinner"></div>
@@ -98,23 +98,106 @@
             <!-- Error Message -->
             <div id="error-message" class="error-message"></div>
 
+            <!-- Map Info Overlay (replaces footer on mobile) -->
+            <div class="map-info-overlay" id="map-info-overlay">
+                <button class="info-toggle-btn" id="info-toggle-btn">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+                        <path d="M10 0C4.48 0 0 4.48 0 10s4.48 10 10 10 10-4.48 10-10S15.52 0 10 0zm1 15H9v-2h2v2zm0-4H9V5h2v6z"/>
+                    </svg>
+                </button>
+                <div class="info-content" id="info-content">
+                    <div id="metadata-variable">Temperature</div>
+                    <div id="metadata-forecast-time">Now (Analysis)</div>
+                    <div id="metadata-valid-time">Valid: --</div>
+                </div>
+            </div>
+
+            <!-- Mobile Compact Controls Bar (shown on mobile) -->
+            <div class="mobile-controls-bar" id="mobile-controls-bar">
+                <button class="pill-btn" id="pill-model" data-control="model">
+                    <span class="pill-label">Model</span>
+                    <span class="pill-value" id="pill-model-value">GFS</span>
+                </button>
+                <button class="pill-btn" id="pill-run" data-control="run">
+                    <span class="pill-label">Run</span>
+                    <span class="pill-value" id="pill-run-value">12Z</span>
+                </button>
+                <button class="pill-btn" id="pill-variable" data-control="variable">
+                    <span class="pill-label">Variable</span>
+                    <span class="pill-value" id="pill-variable-value">Temp</span>
+                </button>
+            </div>
+
+            <!-- Bottom Control Panel (mobile) -->
+            <div class="bottom-control-panel" id="bottom-control-panel">
+                <div class="forecast-slider-wrapper">
+                    <div class="slider-labels-inline">
+                        <span id="mobile-slider-current">Now</span>
+                        <span id="mobile-slider-max">+72h</span>
+                    </div>
+                    <input type="range" id="mobile-time-slider" class="mobile-time-slider" min="0" max="0" value="0" step="1">
+                </div>
+                <div class="playback-controls">
+                    <button id="mobile-play-btn" class="mobile-play-btn" title="Play Animation">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M8 5v14l11-7z"/>
+                        </svg>
+                    </button>
+                    <button id="mobile-pause-btn" class="mobile-pause-btn" title="Pause Animation" style="display: none;">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M6 4h4v16H6zm8 0h4v16h-4z"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+
             <!-- Map Container -->
-            <div class="map-container">
-                <img id="map-image" class="map-image" src="" alt="Weather Map">
+            <div class="map-container" id="map-container">
+                <div class="map-frame" id="map-frame">
+                    <img id="map-image" class="map-image" src="" alt="Weather Map">
+                </div>
+            </div>
+
+            <!-- Mobile Info Bar (shown on mobile) -->
+            <div class="mobile-info-bar" id="mobile-info-bar">
+                <span id="mobile-info-model">GFS</span>
+                <span class="info-separator">|</span>
+                <span id="mobile-info-run">12Z</span>
+                <span class="info-separator">|</span>
+                <span id="mobile-info-variable">Temperature</span>
+                <span class="info-separator">|</span>
+                <span id="mobile-info-valid-time">Valid: --</span>
             </div>
         </div>
     </main>
 
-    <!-- Footer -->
+    <!-- Modal Bottom Sheet for Control Changes (mobile) -->
+    <div class="modal-overlay" id="modal-overlay">
+        <div class="modal-bottom-sheet" id="modal-bottom-sheet">
+            <div class="modal-header">
+                <h3 class="modal-title" id="modal-title">Select Model</h3>
+                <button class="modal-close-btn" id="modal-close-btn">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-content" id="modal-content">
+                <!-- Dynamic content populated by JavaScript -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Footer (hidden on mobile) -->
     <footer class="app-footer">
         <div class="footer-metadata">
-            <span id="metadata-variable">Temperature</span>
-            <span class="separator">•</span>
-            <span id="metadata-forecast-time">Now (Analysis)</span>
-            <span class="separator">•</span>
-            <span id="metadata-valid-time">Valid: --</span>
-            <span class="separator">•</span>
-            <span id="metadata-region">Pacific Northwest</span>
+            <span id="footer-metadata-model">GFS</span>
+            <span class="separator">|</span>
+            <span id="footer-metadata-run">12Z</span>
+            <span class="separator">|</span>
+            <span id="footer-metadata-variable">Temperature</span>
+            <span class="separator">|</span>
+            <span id="footer-metadata-valid-time">Valid: --</span>
         </div>
     </footer>
 

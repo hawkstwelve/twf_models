@@ -45,6 +45,7 @@ body {
     border-bottom: 2px solid var(--border-color);
     padding: 12px 20px;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    z-index: 500;
 }
 
 .header-content {
@@ -64,6 +65,307 @@ body {
     font-size: 14px;
     color: var(--text-medium);
     font-weight: 400;
+}
+
+/* Mobile Controls Bar (hidden on desktop) */
+.mobile-controls-bar {
+    display: none;
+    background: var(--bg-sidebar);
+    border-top: 1px solid var(--border-color);
+    padding: 12px;
+    gap: 8px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    z-index: 400;
+}
+
+.pill-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 6px 14px;
+    background: var(--bg-light);
+    border: 1px solid var(--border-color);
+    border-radius: 20px;
+    color: var(--text-light);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    min-width: 90px;
+    white-space: nowrap;
+}
+
+.pill-btn:active {
+    background: var(--accent-blue);
+    transform: scale(0.98);
+}
+
+.pill-label {
+    font-size: 10px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+}
+
+.pill-value {
+    font-size: 14px;
+    color: var(--text-light);
+    font-weight: 600;
+    margin-top: 2px;
+}
+
+/* Modal Bottom Sheet */
+.modal-overlay {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.6);
+    z-index: 1000;
+    backdrop-filter: blur(2px);
+}
+
+.modal-overlay.active {
+    display: flex;
+    align-items: flex-end;
+    animation: fadeIn 0.3s ease;
+}
+
+.modal-bottom-sheet {
+    width: 100%;
+    max-height: 80vh;
+    background: var(--bg-sidebar);
+    border-radius: 20px 20px 0 0;
+    box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.5);
+    display: flex;
+    flex-direction: column;
+    animation: slideUp 0.3s ease;
+}
+
+.modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border-color);
+    position: relative;
+}
+
+.modal-title {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text-light);
+    margin: 0;
+    text-align: center;
+}
+
+.modal-close-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-medium);
+    cursor: pointer;
+    padding: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+    position: absolute;
+    right: 20px;
+}
+
+.modal-close-btn:active {
+    transform: scale(0.9);
+}
+
+.modal-content {
+    padding: 0;
+    overflow-y: auto;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+}
+
+.modal-option {
+    padding: 16px 20px;
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid var(--border-color);
+    cursor: pointer;
+    transition: background 0.2s ease;
+    color: var(--text-light);
+    font-size: 16px;
+    font-weight: 400;
+    text-align: left;
+    width: 100%;
+}
+
+.modal-option:hover {
+    background: var(--bg-light);
+}
+
+.modal-option:active {
+    transform: none;
+}
+
+.modal-option.selected {
+    background: var(--bg-light);
+    color: var(--accent-blue-light);
+    font-weight: 500;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@keyframes slideUp {
+    from { transform: translateY(100%); }
+    to { transform: translateY(0); }
+}
+
+/* Bottom Control Panel (mobile) */
+.bottom-control-panel {
+    display: none;
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: rgba(26, 35, 50, 0.9);
+    backdrop-filter: blur(10px);
+    padding: 12px 16px;
+    z-index: 300;
+}
+
+.forecast-slider-wrapper {
+    margin-bottom: 8px;
+}
+
+.slider-labels-inline {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 8px;
+    font-size: 13px;
+    color: var(--text-light);
+    font-weight: 500;
+}
+
+.mobile-time-slider {
+    width: 100%;
+    height: 8px;
+    background: var(--bg-light);
+    border-radius: 4px;
+    outline: none;
+    -webkit-appearance: none;
+    appearance: none;
+}
+
+.mobile-time-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 24px;
+    height: 24px;
+    background: var(--accent-blue-light);
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+
+.mobile-time-slider::-moz-range-thumb {
+    width: 24px;
+    height: 24px;
+    background: var(--accent-blue-light);
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+
+.playback-controls {
+    display: flex;
+    justify-content: center;
+    gap: 12px;
+}
+
+.mobile-play-btn,
+.mobile-pause-btn {
+    width: 56px;
+    height: 56px;
+    background: var(--accent-blue);
+    border: none;
+    border-radius: 50%;
+    color: white;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 4px 12px rgba(74, 144, 201, 0.4);
+    transition: all 0.2s ease;
+}
+
+.mobile-play-btn:active,
+.mobile-pause-btn:active {
+    transform: scale(0.95);
+    box-shadow: 0 2px 8px rgba(74, 144, 201, 0.3);
+}
+
+/* Map Info Bottom Bar */
+.map-info-overlay {
+    display: none;
+    position: absolute;
+    top: 16px;
+    left: 16px;
+    z-index: 200;
+}
+
+.info-toggle-btn {
+    width: 40px;
+    height: 40px;
+    background: rgba(26, 35, 50, 0.85);
+    backdrop-filter: blur(10px);
+    border: 1px solid var(--border-color);
+    border-radius: 50%;
+    color: var(--text-light);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.info-toggle-btn:active {
+    transform: scale(0.95);
+}
+
+.info-content {
+    display: none;
+    margin-top: 8px;
+    padding: 12px 16px;
+    background: rgba(26, 35, 50, 0.9);
+    backdrop-filter: blur(10px);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    color: var(--text-light);
+    font-size: 13px;
+    line-height: 1.6;
+    max-width: 250px;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+}
+
+.info-content.expanded {
+    display: block;
+    animation: fadeIn 0.2s ease;
+}
+
+.info-content div {
+    margin-bottom: 4px;
+}
+
+.info-content div:last-child {
+    margin-bottom: 0;
 }
 
 /* Main Layout */
@@ -101,7 +403,7 @@ body {
 .sidebar-divider {
     height: 1px;
     background: var(--border-color);
-    margin: 8px 0;
+    margin: -8px 0;
 }
 
 .control-label {
@@ -339,22 +641,73 @@ body {
 }
 
 .map-container {
-    flex: 1;
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 20px;
-    overflow: auto;
+    padding: 0;
+    overflow: hidden;
 }
 
 .map-image {
-    max-width: 100%;
-    max-height: 100%;
-    width: auto;
-    height: auto;
-    border-radius: 8px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    object-position: center;
     display: block;
+}
+
+/* Desktop-only: Ensure map styles aren't overridden by mobile */
+@media (min-width: 769px) {
+    .map-container {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        overflow: hidden;
+    }
+
+    .map-frame {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .map-image {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        object-position: center;
+        display: block;
+    }
+
+    .sidebar {
+        display: flex;
+        flex-direction: column;
+        gap: 24px;
+    }
+
+    .sidebar-divider {
+        height: 1px;
+        background: var(--border-color);
+        margin: 8px 0;
+    }
+
+    /* Hide mobile-only elements on desktop */
+    .mobile-info-bar {
+        display: none;
+    }
 }
 
 /* Loading Overlay */
@@ -370,10 +723,12 @@ body {
     align-items: center;
     justify-content: center;
     z-index: 100;
+    pointer-events: none;
 }
 
 .loading-overlay.active {
     display: flex;
+    pointer-events: auto;
 }
 
 .spinner {
@@ -422,10 +777,10 @@ body {
 .app-footer {
     background: var(--bg-sidebar);
     border-top: 1px solid var(--border-color);
-    padding: 12px 20px;
+    padding: 10px 20px 16px 20px;
     display: flex;
-    flex-direction: column;
-    gap: 6px;
+    align-items: center;
+    justify-content: flex-start;
     max-width: 1800px;
     width: 100%;
     margin: 0 auto;
@@ -439,6 +794,7 @@ body {
     color: var(--text-light);
     font-weight: 500;
     align-items: center;
+    line-height: 1.2;
 }
 
 .footer-info {
@@ -469,67 +825,126 @@ body {
 
 /* Responsive Design - Mobile */
 @media (max-width: 768px) {
-    .app-main {
-        flex-direction: column;
+    :root {
+        --header-height: 70px;
+        --map-aspect: 16/10;          /* default aspect ratio, updated dynamically */
+        --bottom-panel-h: 118px;      /* tune once (slider+play area) */
+        --pill-bar-h: 64px;           /* tune once (pill bar) */
+        --pill-bar-gap: 10px;         /* gap between pill bar and bottom panel */
     }
 
-    .sidebar {
-        width: 100%;
-        border-right: none;
-        border-bottom: 1px solid var(--border-color);
-        padding: 16px;
-        max-height: 240px;
-        overflow-y: auto;
-        flex-shrink: 0;
-    }
-
-    .control-section {
-        gap: 6px;
-    }
-
-    .animation-controls {
-        padding-top: 8px;
+    /* Lock page height (no "mystery scroll" artifacts) */
+    body {
+        height: 100dvh;
+        overflow: hidden;
     }
 
     .app-header {
-        padding: 10px 16px;
+        padding: 35px 16px;
+        position: sticky;
+        top: 0;
+        height: var(--header-height);
+        z-index: 600;
     }
 
     .app-title {
-        font-size: 20px;
+        font-size: 18px;
     }
 
-    .app-subtitle {
-        font-size: 13px;
+    .app-main {
+        max-width: none;
+        width: 100%;
+        margin: 0;
+        height: calc(100dvh - var(--header-height));
     }
 
+    .map-section {
+        position: relative;
+        height: 100%;
+        overflow: hidden;
+    }
+
+    /* KEY CHANGE: map is in normal flow, height is driven by image */
     .map-container {
-        padding: 12px;
+        position: relative;   /* was absolute */
+        top: auto;
+        left: auto;
+        right: auto;
+        bottom: auto;         /* REMOVE bottom:180px */
+        height: auto;         /* was forced by absolute box */
+        display: block;
+        overflow: hidden;
+        padding: 0;
     }
 
-    .app-footer {
-        padding: 10px 16px;
+    .map-frame {
+        width: 100%;
+        height: auto;
+        display: block;
     }
 
-    .footer-metadata,
-    .footer-info {
-        font-size: 11px;
+    .map-image {
+        width: 100%;
+        height: auto;         /* KEY */
+        object-fit: unset;    /* not needed when height:auto */
+        display: block;
+    }
+
+    /* Controls are overlays (fixed), NOT space-reserved by map container */
+    .bottom-control-panel {
+        display: block;
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 600;
+        padding: 12px 16px;
+        padding-bottom: calc(12px + env(safe-area-inset-bottom));
+    }
+
+    /* Mobile info bar shows directly below map */
+    .mobile-info-bar {
+        display: flex;
+        align-items: center;
+        justify-content: center;
         gap: 8px;
+        position: relative;
+        padding: 8px 16px;
+        background: rgba(26, 35, 50, 0.9);
+        backdrop-filter: blur(10px);
+        border-top: 1px solid var(--border-color);
+        font-size: 12px;
+        color: var(--text-light);
+        z-index: 100;
     }
 
-    .footer-metadata {
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 4px;
+    .info-separator {
+        color: var(--text-dim);
     }
 
-    .footer-info {
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 4px;
+    /* Put pill bar directly above bottom panel */
+    .mobile-controls-bar {
+        display: flex;
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: calc(120px + env(safe-area-inset-bottom)); /* set dynamically via JS */
+        z-index: 650;
+        margin: 0;
     }
 
-    .separator {
+    /* Hide map info overlay button on mobile */
+    .map-info-overlay {
+        display: none;
+    }
+
+    /* Hide desktop sidebar on mobile */
+    .sidebar {
+        display: none;
+    }
+
+    /* Hide desktop footer on mobile */
+    .app-footer {
         display: none;
     }
 }
