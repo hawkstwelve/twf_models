@@ -3,22 +3,32 @@
 ## Overview
 Implemented a new "Total Snowfall (10:1 Ratio)" map that shows accumulated snowfall from forecast hour 0 to the selected hour, similar to the Total Precipitation map.
 
+## Supported Models
+**Currently: GFS only**
+
+AIGFS snowfall has been **disabled** pending availability of more helpful variables in NOAA GRIB files (CSNOW or improved temperature fields).
+
 ## Problem Solved
-Neither GFS nor AIGFS provide direct accumulated snowfall variables. The implementation uses **two different approaches** based on model capabilities:
+GFS provides categorical snow mask (CSNOW) which enables direct snowfall calculation. The implementation uses this native field for accurate snow accumulation.
 
 ### GFS Approach (has_precip_type_masks=True)
 - Uses native **CSNOW** field (categorical snow mask)
 - Direct classification from model output
 - Straightforward and accurate
 
-### AIGFS Approach (has_precip_type_masks=False)
+### AIGFS Approach (DISABLED - has_precip_type_masks=False)
+**Note: AIGFS snowfall generation is currently disabled and will be re-enabled once NOAA provides better variables.**
+
+The temperature-based approach attempted for AIGFS was not sufficiently accurate:
 - AIGFS GRIB2 files **do not include CSNOW**
-- Derives snow fraction from **T850** (850mb temperature) and **T2m** (2m temperature)
-- Temperature-based classification:
+- Attempted to derive snow fraction from **T850** (850mb temperature) and **T2m** (2m temperature)
+- Temperature-based classification proved inadequate:
   - T850 ≤ -2°C → 100% snow
   - T850 ≥ +1°C → 0% snow
   - Linear interpolation between
   - Optional surface penalty when T2m > 3°C
+  
+Code remains in place but AIGFS has `"snowfall"` in its `excluded_variables` list, preventing generation.
 
 ## Implementation Details
 
@@ -48,22 +58,14 @@ Neither GFS nor AIGFS provide direct accumulated snowfall variables. The impleme
 3. Computes snow liquid equivalent: `snow_liquid = tp * csnow_fraction`
 4. Sums across all buckets from 0 to forecast_hour
 
-#### AIGFS Path (has_precip_type_masks=False):
-1. Fetches `tp` (surface), `tmp_850` (pressure level), and optionally `tmp2m` (surface)
-2. Converts temperatures to Celsius (handles Kelvin/Celsius automatically)
-3. Computes snow fraction from thermal profile:
-   ```python
-   if T850 <= -2°C: snow_frac = 1.0
-   if T850 >= +1°C: snow_frac = 0.0
-   else: linear interpolation
-   
-   # Optional surface penalty
-   if T2m >= +3°C: multiply by 0
-   if 0°C < T2m < +3°C: taper down
-   ```
-4. Aligns grids if pressure/surface levels differ (interpolation)
-5. Computes snow liquid equivalent: `snow_liquid = tp * snow_fraction`
-6. Sums across all buckets
+#### AIGFS Path (DISABLED - has_precip_type_masks=False):
+**Note: This code has been removed from base_data_fetcher.py.**
+
+The temperature-based approach has been completely removed from the codebase:
+- The `_snow_fraction_from_thermal()` helper function has been deleted
+- The entire AIGFS temperature-based computation branch has been removed
+- Code cleanup completed to reduce maintenance burden
+- Can be restored from git history if needed in the future
 
 #### Shared Logic:
 - Explicit unit standardization: `tp_mm = tp * 1000.0`
@@ -98,27 +100,17 @@ Neither GFS nor AIGFS provide direct accumulated snowfall variables. The impleme
 
 ### 1. Model-Aware Branching
 - Branches on `model_config.has_precip_type_masks`
-- GFS uses native CSNOW (more accurate)
-- AIGFS derives from temperature (necessary workaround)
+- GFS uses native CSNOW (accurate and reliable)
+- AIGFS snowfall **disabled** - insufficient variables available
 - Clean separation prevents cross-contamination
 
-### 2. Temperature-Based Classification (AIGFS)
-**Why T850?**
-- Most stable single-level discriminator for snow vs rain
-- Better than surface temp which is too variable
-- Standard meteorological practice
+### 2. Temperature-Based Classification (AIGFS - DISABLED)
+**Note: This approach is available in code but not used due to insufficient accuracy.**
 
-**Temperature Thresholds:**
-```python
-T850 ≤ -2°C: 100% snow (well below freezing)
-T850 ≥ +1°C: 0% snow (above freezing)
-Between: linear ramp (handles transitions)
-```
-
-**Surface Penalty (Optional):**
-- Suppresses snow when T2m is clearly warm (>3°C)
-- Prevents unrealistic snow in warm surface conditions
-- Applied as multiplicative factor
+The temperature-based approach was deemed inadequate without proper variables:
+- T850 alone is insufficient for accurate snow/rain discrimination
+- AIGFS lacks CSNOW and other helpful categorical variables
+- Will be re-enabled when NOAA provides better GRIB variables
 
 ### 3. CSNOW Normalization (GFS)
 ```python
@@ -178,16 +170,16 @@ if snow_frac.shape != p_mm.shape:
 - ✅ Handles mixed-phase precipitation correctly
 - ✅ No assumptions needed
 
-### For AIGFS:
-- ✅ AIGFS GRIB2 files **do not contain CSNOW** (verified via IDX file)
-- ✅ T850 is meteorologically sound for snow/rain discrimination
-- ✅ Piecewise-linear ramp avoids hard thresholds and artifacts
-- ✅ Surface penalty prevents unrealistic warm-snow events
-- ✅ Handles grid mismatches via interpolation
-- ✅ Extensible: can add wet-bulb or thickness logic later
+### For AIGFS (DISABLED):
+- ❌ AIGFS GRIB2 files **do not contain CSNOW** (verified via IDX file)
+- ❌ T850-based classification insufficient without additional variables
+- ⏸️ **Generation disabled** - awaiting better NOAA GRIB variables
+- 🗑️ **Code removed** - AIGFS snowfall computation logic deleted from base_data_fetcher.py
+- ✅ Clean exclusion via `excluded_variables` list in model registry
+- 📜 **Recoverable** - Can be restored from git history if better variables become available
 
 ### Universal:
-- ✅ Config-driven: respects `has_precip_type_masks` flag
+- ✅ Config-driven: respects `has_precip_type_masks` flag and `excluded_variables`
 - ✅ Unit-safe: explicit conversions prevent errors
 - ✅ Model-agnostic output: MapGenerator treats both the same
 - ✅ Bucket-by-bucket: prevents temporal cross-contamination
@@ -199,20 +191,24 @@ Created test script: `scripts/tests/test_snowfall_map.py`
 
 **Usage:**
 ```bash
+# GFS only (AIGFS snowfall is disabled)
 python scripts/tests/test_snowfall_map.py --model gfs --forecast-hour 12
 ```
 
 **Tests:**
-1. Fetches data for specified model and forecast hour
+1. Fetches data for GFS model and specified forecast hour
 2. Computes tp_snow_total
 3. Generates snowfall map
 4. Validates output file creation
 
+**Note:** Testing with `--model aigfs` will fail as snowfall is in the excluded_variables list.
+
 ## API Integration
 
-To use the new snowfall map, specify variable `'snowfall'` when calling the data fetcher:
+To use the snowfall map with GFS, specify variable `'snowfall'` when calling the data fetcher:
 
 ```python
+# GFS only - AIGFS has snowfall disabled
 ds = fetcher.build_dataset_for_maps(
     run_time=run_time,
     forecast_hour=forecast_hour,
@@ -223,28 +219,50 @@ ds = fetcher.build_dataset_for_maps(
 map_path = map_gen.generate_map(
     ds=ds,
     variable='snowfall',
-    model='GFS',
+    model='GFS',  # GFS only
     run_time=run_time,
     forecast_hour=forecast_hour,
     region='pnw'
 )
 ```
 
+**Note:** Attempting to generate AIGFS snowfall maps will be filtered out by `VariableRegistry.filter_by_model_capabilities()` which checks the model's `excluded_variables` list.
+
 ## Files Modified
 
-1. `backend/app/models/variable_requirements.py` - Added snowfall variable definition
-2. `backend/app/services/base_data_fetcher.py` - Added snowfall computation logic
-3. `backend/app/services/map_generator.py` - Added snowfall visualization
-4. `scripts/tests/test_snowfall_map.py` - New test script (created)
+1. `backend/app/models/model_registry.py` - Added "snowfall" to AIGFS excluded_variables
+2. `backend/app/models/variable_requirements.py` - Added snowfall variable definition
+3. `backend/app/services/base_data_fetcher.py` - GFS/HRRR snowfall computation (AIGFS code removed)
+4. `backend/app/services/map_generator.py` - Added snowfall visualization
+5. `scripts/tests/test_snowfall_map.py` - Test script (GFS only)
+6. `scripts/tests/test_all_maps_comprehensive.py` - Removed snowfall from AIGFS test config
+7. `docs/SNOWFALL_IMPLEMENTATION.md` - Updated documentation (this file)
 
-## Next Steps
+## Status & Next Steps
 
-1. **Test the implementation** with actual GFS/AIGFS data
-2. **Validate CSNOW scale** - Verify if it's 0/1 or 0-100 in your GRIB files
-3. **Tune colormap** - Adjust color breaks based on typical PNW snowfall amounts
-4. **Add to scheduler** - Include 'snowfall' in automated map generation
-5. **Frontend integration** - Add snowfall option to dropdown menu
-6. **Documentation** - Update API docs with snowfall variable
+### Current Status:
+- ✅ GFS snowfall maps: **ENABLED and working**
+- ✅ HRRR snowfall maps: **ENABLED and working**
+- ❌ AIGFS snowfall maps: **DISABLED** pending better NOAA variables
+- 🗑️ AIGFS snowfall computation code: **REMOVED** (can be restored from git history)
+
+### Future Re-enablement for AIGFS:
+When NOAA provides helpful variables in AIGFS GRIB files:
+1. Restore AIGFS snowfall code from git history (or re-implement)
+2. Remove "snowfall" from AIGFS `excluded_variables` in model_registry.py
+3. Test with new variables
+4. Update documentation
+5. Add back to test configurations
+
+### Completed Steps:
+1. ✅ Implemented GFS snowfall (native CSNOW)
+2. ✅ Implemented HRRR snowfall (native CSNOW)
+3. ✅ Disabled AIGFS snowfall generation
+4. ✅ Removed AIGFS temperature-based computation logic
+5. ✅ Updated model registry with exclusions
+6. ✅ Updated test configurations
+7. ✅ Updated documentation
+8. ✅ Code cleanup completed
 
 ## Notes
 
@@ -252,3 +270,4 @@ map_path = map_gen.generate_map(
 - Actual snow ratios vary from 5:1 (wet) to 30:1 (powder) based on temperature
 - For more accurate results, could implement temperature-dependent ratios
 - CSNOW is categorical - areas with mixed precip may show transitional values
+- AIGFS temperature-based approach available in code but not executed due to exclusion

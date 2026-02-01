@@ -63,7 +63,6 @@ TEST_CONFIG = {
         'variables': [
             'temperature_2m',
             'precipitation',
-            'snowfall',
             'wind_speed_10m',
             'temp_850_wind_mslp',
             'mslp_precip'

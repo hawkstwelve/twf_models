@@ -197,7 +197,7 @@ ModelRegistry.register(ModelConfig(
     has_upper_air=True,
     tp_is_accumulated_from_init=False,  # Assume same as GFS (verify!)
     products_supported={"sfc", "pres"},
-    excluded_variables=["radar", "radar_reflectivity"],
+    excluded_variables=["radar", "radar_reflectivity", "snowfall"],  # No CSNOW/adequate temp fields for snowfall
     use_filter=False,  # AIGFS filter script doesn't exist on NOMADS - download full files
     color="#4169E1",
     enabled=True
