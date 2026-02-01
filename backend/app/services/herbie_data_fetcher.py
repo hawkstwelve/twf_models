@@ -4,9 +4,15 @@ from pathlib import Path
 from typing import Optional, Set
 import xarray as xr
 import logging
+import warnings
 
 from app.services.base_data_fetcher import BaseDataFetcher
 from app.config import settings
+
+# Suppress FutureWarnings from cfgrib about xarray compat parameter
+# Use new defaults to avoid warnings in future versions
+xr.set_options(use_new_combine_kwarg_defaults=True)
+warnings.filterwarnings('ignore', message='.*compat.*', category=FutureWarning, module='cfgrib')
 
 logger = logging.getLogger(__name__)
 
@@ -230,7 +236,7 @@ class HerbieDataFetcher(BaseDataFetcher):
             # Apply regional subsetting if requested
             if subset_region:
                 ds = self._subset_dataset(ds)
-                logger.info(f"  ✓ Subset to region: {dict(ds.dims)}")
+                logger.info(f"  ✓ Subset to region: {dict(ds.sizes)}")
             
             # Rename variables to our standard names
             ds = self._standardize_variable_names(ds)
