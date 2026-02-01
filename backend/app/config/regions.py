@@ -8,6 +8,11 @@ PNW_COVERAGE_BBOX = (-125.0, 42.0, -110.0, 49.0)
 
 # Region definitions for map viewports
 REGIONS = {
+    'pnw': {
+        'bbox': (-125.0, 42.0, -110.0, 49.0),  # (west, south, east, north)
+        'name': 'Pacific Northwest',
+        'description': 'Full PNW coverage: WA, OR, ID, western MT'
+    },
     'pnw_large': {
         'bbox': (-125.0, 42.0, -110.0, 49.0),  # (west, south, east, north)
         'name': 'Pacific Northwest',
