@@ -497,14 +497,6 @@ class MapGenerator:
         """
         import numpy as np
         
-        # Detect coordinate names in dataset
-        lat_coord_name = 'latitude' if 'latitude' in ds.coords else 'lat'
-        lon_coord_name = 'longitude' if 'longitude' in ds.coords else 'lon'
-        
-        # Detect if dataset uses 0-360 longitude format
-        lon_vals = ds.coords[lon_coord_name].values
-        uses_360_format = lon_vals.min() >= 0 and lon_vals.max() > 180
-        
         # Identify wind component variables
         if 'ugrd10m' in ds:
             u_var = 'ugrd10m'
@@ -520,43 +512,24 @@ class MapGenerator:
             logger.warning(f"V-component {v_var} not found in dataset")
             return {}
         
+        try:
+            locator = GridLocatorFactory.from_dataset(ds)
+        except Exception as e:
+            logger.warning(f"Could not determine grid locator for wind sampling: {e}")
+            return {}
+
+        u_values = locator.sample(ds, u_var, stations)
+        v_values = locator.sample(ds, v_var, stations)
+
         station_values = {}
-        
-        for station in stations:
-            try:
-                station_lat = station.lat
-                station_lon = station.lon
-                
-                # Convert longitude to match dataset format if needed
-                if uses_360_format and station_lon < 0:
-                    station_lon = station_lon % 360
-                
-                # Build selector dictionary
-                selector = {
-                    lat_coord_name: station_lat,
-                    lon_coord_name: station_lon
-                }
-                
-                # Extract u and v components
-                u = ds[u_var].sel(**selector, method='nearest').values
-                v = ds[v_var].sel(**selector, method='nearest').values
-                
-                # Handle numpy arrays
-                if hasattr(u, 'item'):
-                    u = u.item()
-                if hasattr(v, 'item'):
-                    v = v.item()
-                
-                # Calculate wind speed magnitude
-                wind_speed = np.sqrt(u**2 + v**2)
-                # Convert m/s to mph
-                wind_speed_mph = wind_speed * 2.23694
-                station_values[station.id] = float(wind_speed_mph)
-                
-            except Exception as e:
-                logger.warning(f"Could not extract wind speed for station {station.id}: {e}")
+        for station_id, u in u_values.items():
+            if station_id not in v_values:
                 continue
-        
+            v = v_values[station_id]
+            wind_speed = np.sqrt(u**2 + v**2)
+            wind_speed_mph = wind_speed * 2.23694
+            station_values[station_id] = float(wind_speed_mph)
+
         return station_values
     
     def generate_map(

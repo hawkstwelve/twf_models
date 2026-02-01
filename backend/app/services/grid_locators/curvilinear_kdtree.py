@@ -16,6 +16,7 @@ class CurvilinearKDTreeLocator(GridLocator):
     def __init__(self):
         self._kdtree_cache: Optional[cKDTree] = None
         self._grid_shape_cache: Optional[tuple] = None
+        self._uses_360_lon: Optional[bool] = None
     
     @classmethod
     def can_handle(cls, ds: xr.Dataset) -> bool:
@@ -26,15 +27,9 @@ class CurvilinearKDTreeLocator(GridLocator):
         if lat_coord not in ds.coords or lon_coord not in ds.coords:
             return False
         
-        # Must have 2D lat/lon
-        has_2d = (ds.coords[lat_coord].ndim == 2 and 
-                  ds.coords[lon_coord].ndim == 2)
-        
-        # Must NOT have 1D x/y (that would be projected)
-        has_xy = ('x' in ds.coords and 'y' in ds.coords and
-                  ds.coords['x'].ndim == 1 and ds.coords['y'].ndim == 1)
-        
-        return has_2d and not has_xy
+        # Must have 2D lat/lon (curvilinear coordinates)
+        return (ds.coords[lat_coord].ndim == 2 and
+            ds.coords[lon_coord].ndim == 2)
     
     def _build_kdtree(self, ds: xr.Dataset) -> cKDTree:
         """Build KDTree from flattened lat/lon coordinates."""
@@ -46,6 +41,7 @@ class CurvilinearKDTreeLocator(GridLocator):
         
         lats = ds.coords[lat_coord].values
         lons = ds.coords[lon_coord].values
+        self._uses_360_lon = (np.nanmin(lons) >= 0) and (np.nanmax(lons) > 180)
         
         # Store grid shape for index reconstruction
         self._grid_shape_cache = lats.shape
@@ -68,6 +64,7 @@ class CurvilinearKDTreeLocator(GridLocator):
             raise ValueError(f"Variable {variable} not in dataset")
         
         kdtree = self._build_kdtree(ds)
+        uses_360_lon = self._uses_360_lon
         
         # Get dimension names from 2D lat coord
         lat_coord = 'latitude' if 'latitude' in ds.coords else 'lat'
@@ -77,7 +74,13 @@ class CurvilinearKDTreeLocator(GridLocator):
         for station in stations:
             try:
                 # Find nearest grid point
-                station_coords = np.array([[station.lat, station.lon]])
+                station_lon = station.lon
+                if uses_360_lon and station_lon < 0:
+                    station_lon = station_lon % 360
+                elif uses_360_lon is False and station_lon > 180:
+                    station_lon = station_lon - 360
+
+                station_coords = np.array([[station.lat, station_lon]])
                 _, idx = kdtree.query(station_coords, k=1)
                 
                 # Convert flat index to 2D indices

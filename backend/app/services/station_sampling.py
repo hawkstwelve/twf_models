@@ -34,13 +34,13 @@ class GridLocatorFactory:
             logger.debug("Using LatLon1DLocator (regular grid)")
             return LatLon1DLocator()
         
+        elif CurvilinearKDTreeLocator.can_handle(ds):
+            logger.debug("Using CurvilinearKDTreeLocator (curvilinear)")
+            return CurvilinearKDTreeLocator()
+        
         elif ProjectedXYLocator.can_handle(ds):
             logger.debug("Using ProjectedXYLocator (projected rectilinear)")
             return ProjectedXYLocator()
-        
-        elif CurvilinearKDTreeLocator.can_handle(ds):
-            logger.debug("Using CurvilinearKDTreeLocator (curvilinear fallback)")
-            return CurvilinearKDTreeLocator()
         
         else:
             raise ValueError(
