@@ -228,7 +228,8 @@ class HerbieDataFetcher(BaseDataFetcher):
                 else:
                     import xarray as xr
                     # Use compat='override' to handle conflicting coordinates (e.g., different heightAboveGround values)
-                    ds = xr.merge(ds, compat='override')
+                    # Use join='outer' to merge datasets with different coordinate values (e.g., different isobaricInhPa levels)
+                    ds = xr.merge(ds, compat='override', join='outer')
             
             logger.info(f"  ✓ Downloaded {len(ds.data_vars)} variables")
             logger.info(f"    Size: ~{ds.nbytes / (1024**2):.1f} MB in memory")
