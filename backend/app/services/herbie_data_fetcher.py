@@ -227,6 +227,9 @@ class HerbieDataFetcher(BaseDataFetcher):
                     ds = ds[0]
                 else:
                     import xarray as xr
+                    # Load each dataset into memory before merging to avoid file access issues
+                    # This prevents lazy-loading problems when files might be cleaned up
+                    ds = [d.load() for d in ds]
                     # Use compat='override' to handle conflicting coordinates (e.g., different heightAboveGround values)
                     # Use join='outer' to merge datasets with different coordinate values (e.g., different isobaricInhPa levels)
                     ds = xr.merge(ds, compat='override', join='outer')
@@ -289,6 +292,7 @@ class HerbieDataFetcher(BaseDataFetcher):
             'ugrd850': 'ugrd_850',
             'vgrd850': 'vgrd_850',
             'apcp': 'tp',
+            'APCP_surface': 'tp',
             'gh500': 'gh_500',
         }
         
