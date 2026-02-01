@@ -298,7 +298,7 @@ class ForecastScheduler:
             
             # Summary
             successful = [r for r in results if r is not None]
-            logger.info(f"\n✅ {model_id}: {len(successful)}/{len(forecast_hours)} forecast hours complete")
+            logger.warning(f"\n✅ {model_id}: {len(successful)}/{len(forecast_hours)} forecast hours complete")
             
             return len(successful) == len(forecast_hours)
         
@@ -495,11 +495,11 @@ class ForecastScheduler:
             
             # Only show summary if we exited via timeout or failure (not normal completion)
             if pending_hours or failed_attempts:
-                logger.info(f"\n{'='*80}")
-                logger.info(f"📊 {model_id} PROGRESSIVE GENERATION SUMMARY")
-                logger.info(f"{'='*80}")
-                logger.info(f"✅ Completed: {len(completed_hours)}/{len(forecast_hours)} hours")
-                logger.info(f"⏱️  Duration: {final_elapsed_minutes:.1f} minutes ({poll_cycle} poll cycles)")
+                logger.warning(f"\n{'='*80}")
+                logger.warning(f"📊 {model_id} PROGRESSIVE GENERATION SUMMARY")
+                logger.warning(f"{'='*80}")
+                logger.warning(f"✅ Completed: {len(completed_hours)}/{len(forecast_hours)} hours")
+                logger.warning(f"⏱️  Duration: {final_elapsed_minutes:.1f} minutes ({poll_cycle} poll cycles)")
                 
                 if pending_hours:
                     logger.warning(f"⚠️  Still pending: {sorted(pending_hours)}")
@@ -510,7 +510,7 @@ class ForecastScheduler:
                         if fh not in completed_hours:
                             logger.warning(f"   f{fh:03d}: {count} failures")
                 
-                logger.info(f"{'='*80}\n")
+                logger.warning(f"{'='*80}\n")
             
             return len(completed_hours) == len(forecast_hours)
         
@@ -784,13 +784,13 @@ class ForecastScheduler:
                 logger.info(f"\n{'-'*80}\n")
         
         # Summary
-        logger.info(f"\n{'='*80}")
-        logger.info(f"📊 GENERATION SUMMARY")
-        logger.info(f"{'='*80}")
+        logger.warning(f"\n{'='*80}")
+        logger.warning(f"📊 GENERATION SUMMARY")
+        logger.warning(f"{'='*80}")
         for model_id, success in results.items():
             status = "✅ SUCCESS" if success else "❌ FAILED"
-            logger.info(f"  {model_id}: {status}")
-        logger.info(f"{'='*80}\n")
+            logger.warning(f"  {model_id}: {status}")
+        logger.warning(f"{'='*80}\n")
         
         # Cleanup old runs after completion
         self.cleanup_old_runs()
