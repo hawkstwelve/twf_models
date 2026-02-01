@@ -372,6 +372,41 @@ class ForecastScheduler:
             pending_hours = set(forecast_hours)
             failed_attempts = {}  # Track failures per hour
             
+            # Pre-scan for existing maps to avoid regenerating already-complete hours
+            logger.info("🔍 Scanning for existing maps...")
+            run_str = run_time.strftime("%Y%m%d_%H")
+            images_path = Path(settings.storage_path)
+            
+            if images_path.exists():
+                for fh in list(pending_hours):
+                    # Skip f000 which has limited variables
+                    if fh == 0:
+                        skip_vars = ['wind_speed', 'precip', 'mslp_precip', 'radar', 'radar_reflectivity']
+                        expected_vars = [v for v in variables if v not in skip_vars]
+                    else:
+                        expected_vars = variables
+                    
+                    # Count how many maps exist for this hour
+                    existing_count = 0
+                    for var in expected_vars:
+                        expected_filename = f"{model_id.lower()}_{run_str}_{var}_{fh}.png"
+                        if (images_path / expected_filename).exists():
+                            existing_count += 1
+                    
+                    # Consider complete if at least 80% of expected maps exist
+                    # This handles cases where one problematic variable fails but others succeed
+                    completion_threshold = max(1, int(len(expected_vars) * 0.8))
+                    if existing_count >= completion_threshold:
+                        completed_hours.add(fh)
+                        pending_hours.discard(fh)
+                        logger.info(f"  ✓ f{fh:03d}: {existing_count}/{len(expected_vars)} maps exist (already complete)")
+                    elif existing_count > 0:
+                        logger.info(f"  ⊙ f{fh:03d}: {existing_count}/{len(expected_vars)} maps exist (incomplete, will retry)")
+            
+            if completed_hours:
+                logger.info(f"✅ Pre-scan found {len(completed_hours)} already-complete hours")
+            logger.info("")
+            
             start_time = time.time()
             max_duration_seconds = max_duration_minutes * 60
             poll_cycle = 0
@@ -414,11 +449,31 @@ class ForecastScheduler:
                             logger.info(f"   ✓ f{fh:03d} generation complete")
                         else:
                             failed_attempts[fh] = failed_attempts.get(fh, 0) + 1
-                            if failed_attempts[fh] >= 3:
-                                logger.error(f"   ✗ f{fh:03d} failed {failed_attempts[fh]} times, giving up")
+                            
+                            # Before giving up, check if maps exist on disk (may have partial success)
+                            if fh == 0:
+                                skip_vars = ['wind_speed', 'precip', 'mslp_precip', 'radar', 'radar_reflectivity']
+                                expected_vars = [v for v in variables if v not in skip_vars]
+                            else:
+                                expected_vars = variables
+                            
+                            existing_count = 0
+                            for var in expected_vars:
+                                expected_filename = f"{model_id.lower()}_{run_str}_{var}_{fh}.png"
+                                if (images_path / expected_filename).exists():
+                                    existing_count += 1
+                            
+                            # If at least 80% of maps exist, consider it complete despite the failure
+                            completion_threshold = max(1, int(len(expected_vars) * 0.8))
+                            if existing_count >= completion_threshold:
+                                logger.warning(f"   ⊙ f{fh:03d} partially complete ({existing_count}/{len(expected_vars)} maps exist), marking as done")
+                                completed_hours.add(fh)
+                                pending_hours.discard(fh)
+                            elif failed_attempts[fh] >= 3:
+                                logger.error(f"   ✗ f{fh:03d} failed {failed_attempts[fh]} times ({existing_count}/{len(expected_vars)} maps), giving up")
                                 pending_hours.discard(fh)
                             else:
-                                logger.warning(f"   ⚠️  f{fh:03d} generation failed (attempt {failed_attempts[fh]}/3)")
+                                logger.warning(f"   ⚠️  f{fh:03d} generation failed (attempt {failed_attempts[fh]}/3, {existing_count}/{len(expected_vars)} maps exist)")
                     
                     # Check if we're done immediately after generating
                     if not pending_hours:

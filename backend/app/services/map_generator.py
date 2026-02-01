@@ -761,7 +761,7 @@ class MapGenerator:
                 rate_smooth.values = gaussian_filter(rate_smooth.values, sigma=0.7)
                 
                 # Apply threshold after smoothing
-                has_precip = rate_smooth.values > min_rate_threshold
+                has_precip = (rate_smooth.values > min_rate_threshold).astype(bool)
                 
                 # Create masks dict from upsampled winner field
                 masks = {

@@ -151,7 +151,7 @@ ModelRegistry.register(ModelConfig(
     analysis_pattern="gfs.t{run_hour}z.pgrb2.0p25.anl",
     resolution="0.25",
     max_forecast_hour=384,
-    forecast_increment=6,
+    forecast_increment=3,  # GFS produces 3-hourly forecasts (f000,f003,f006,...) up to f240
     availability_delay_hours=3.5,
     has_refc=True,
     has_precip_type_masks=True,
