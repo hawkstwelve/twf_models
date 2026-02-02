@@ -86,12 +86,13 @@ def allocate_workers_per_model(total_workers: int, enabled_models: dict) -> dict
         return {list(enabled_models.keys())[0]: total_workers}
     
     # Multi-model allocation strategy:
-    # - GFS: Highest priority (global model, most forecast hours)
+    # - GFS: High priority (global model, 64 forecast hours with 3-6h increments)
     # - AIGFS: Medium priority (global model, similar to GFS)
-    # - HRRR: Lower priority (regional, fewer variables, many hours but fast)
+    # - HRRR: High priority (regional but 49 hourly forecast hours = high volume)
     # 
-    # Strategy: Allocate proportionally based on expected workload
-    # GFS: 40%, AIGFS: 35%, HRRR: 25% of workers
+    # Strategy: Allocate proportionally based on forecast hour density
+    # GFS: 35%, AIGFS: 30%, HRRR: 35% of workers
+    # On 8-worker system: GFS=3, AIGFS=2, HRRR=3 (vs old 3/3/2)
     
     allocation = {}
     model_ids = list(enabled_models.keys())
@@ -102,14 +103,14 @@ def allocate_workers_per_model(total_workers: int, enabled_models: dict) -> dict
         allocation[model_ids[1]] = max(2, total_workers - allocation[model_ids[0]])
     elif len(enabled_models) == 3:
         # Three models: GFS/AIGFS/HRRR typical case
-        # Allocate based on model priority
+        # Allocate based on model priority and forecast hour density
         for model_id in model_ids:
             if model_id == "GFS":
-                allocation[model_id] = max(2, int(total_workers * 0.40))
+                allocation[model_id] = max(2, round(total_workers * 0.35))
             elif model_id == "AIGFS":
-                allocation[model_id] = max(2, int(total_workers * 0.35))
+                allocation[model_id] = max(2, round(total_workers * 0.30))
             elif model_id == "HRRR":
-                allocation[model_id] = max(2, int(total_workers * 0.25))
+                allocation[model_id] = max(2, round(total_workers * 0.35))
             else:
                 # Unknown model: equal share
                 allocation[model_id] = max(2, total_workers // len(enabled_models))
