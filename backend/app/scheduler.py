@@ -28,10 +28,40 @@ from app.services.model_factory import ModelFactory
 from app.models.model_registry import ModelRegistry
 from app.models.variable_requirements import VariableRegistry
 
-logger = logging.getLogger(__name__)
-# Set log level from config (INFO, WARNING, ERROR, etc.)
+# Configure logging with proper stdout/stderr routing for systemd
+# INFO/DEBUG → stdout → scheduler.log
+# WARNING/ERROR/CRITICAL → stderr → scheduler-error.log
 log_level = getattr(logging, settings.log_level.upper(), logging.INFO)
-logging.basicConfig(level=log_level)
+
+# Root logger configuration
+root_logger = logging.getLogger()
+root_logger.setLevel(log_level)
+
+# Clear any existing handlers
+root_logger.handlers.clear()
+
+# Handler for INFO and DEBUG → stdout
+class InfoFilter(logging.Filter):
+    def filter(self, record):
+        return record.levelno <= logging.INFO
+
+stdout_handler = logging.StreamHandler(sys.stdout)
+stdout_handler.setLevel(logging.DEBUG)
+stdout_handler.addFilter(InfoFilter())
+stdout_handler.setFormatter(logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+))
+root_logger.addHandler(stdout_handler)
+
+# Handler for WARNING, ERROR, CRITICAL → stderr
+stderr_handler = logging.StreamHandler(sys.stderr)
+stderr_handler.setLevel(logging.WARNING)
+stderr_handler.setFormatter(logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+))
+root_logger.addHandler(stderr_handler)
+
+logger = logging.getLogger(__name__)
 
 # Global concurrency control - prevent resource thrashing
 # Dynamic worker count based on available memory
