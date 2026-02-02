@@ -198,15 +198,6 @@ class BaseDataFetcher(ABC):
                 if drop_coords:
                     da = da.drop_vars(drop_coords)
                 return da.squeeze()
-
-            def _to_mm(da: xr.DataArray) -> xr.DataArray:
-                units = (da.attrs.get('units') or '').lower()
-                if units in ('m', 'meter', 'meters'):
-                    return da * 1000.0
-                if units in ('mm', 'millimeter', 'millimeters'):
-                    return da
-                # Heuristic: if max < 5, likely meters
-                return (da * 1000.0) if float(da.max()) < 5.0 else da
             
             # Loop through all forecast hours from increment to forecast_hour
             # (skip f000 which has zero precip)
@@ -218,9 +209,15 @@ class BaseDataFetcher(ABC):
                     ds = self.fetch_raw_data(run_time, fh, {"apcp"}, subset_region)
 
                     if 'apcp' in ds:
-                        p = _to_mm(_drop_timeish(ds['apcp']))
+                        p = self._precip_to_mm(
+                            _drop_timeish(ds['apcp']),
+                            context=f"{self.model_id} apcp f{fh:03d}"
+                        )
                     elif 'tp' in ds:
-                        p = _to_mm(_drop_timeish(ds['tp']))
+                        p = self._precip_to_mm(
+                            _drop_timeish(ds['tp']),
+                            context=f"{self.model_id} tp f{fh:03d}"
+                        )
                     else:
                         logger.warning(f"      No apcp/tp in f{fh:03d}, skipping")
                         continue
@@ -309,15 +306,9 @@ class BaseDataFetcher(ABC):
             
             p = _drop_timeish(p)
             
-            # Unit handling
-            units = (p.attrs.get('units') or '').lower()
-            if units in ('m', 'meter', 'meters'):
-                p_mm = p * 1000.0
-            elif units in ('mm', 'millimeter', 'millimeters'):
-                p_mm = p
-            else:
-                # Heuristic: GRIB precip often in meters; if max < 5 => probably meters
-                p_mm = (p * 1000.0) if float(p.max()) < 5.0 else p
+            # Convert to mm with strict unit checking
+            var_name = p.name if hasattr(p, 'name') else '?'
+            p_mm = self._precip_to_mm(p, context=f"{self.model_id} {var_name} snowfall")
             
             return p_mm
         
@@ -497,18 +488,6 @@ class BaseDataFetcher(ABC):
         
         # Get precip for this 6-hour bucket
         # Depends on whether precip is accumulated or bucketed
-        def _to_mm(da: xr.DataArray) -> xr.DataArray:
-            """Convert precipitation to mm using units + heuristics."""
-            units = (da.attrs.get('units') or '').lower()
-            if units in ('m', 'meter', 'meters'):
-                return da * 1000.0
-            if units in ('mm', 'millimeter', 'millimeters'):
-                return da
-            if 'kg' in units and ('m-2' in units or 'm**-2' in units or 'm^2' in units or 'kg/m^2' in units):
-                return da
-            # Heuristic: if max < 5, likely meters
-            return (da * 1000.0) if float(da.max()) < 5.0 else da
-
         if self.model_config.tp_is_accumulated_from_init:
             # tp(H) - tp(H-6)
             ds_current = self.fetch_raw_data(run_time, forecast_hour, {"tp"}, subset_region)
@@ -532,7 +511,10 @@ class BaseDataFetcher(ABC):
         
         # Convert to mm/hr (unit-safe)
         # bucket is 6 hours of accumulation
-        bucket_mm = _to_mm(bucket_precip)
+        bucket_mm = self._precip_to_mm(
+            bucket_precip,
+            context=f"{self.model_id} 6hr tp f{forecast_hour:03d}"
+        )
         rate_mmhr = bucket_mm / 6.0  # mm/hr
         
         # Drop time coords
@@ -541,6 +523,49 @@ class BaseDataFetcher(ABC):
             rate_mmhr = rate_mmhr.drop_vars(drop_coords)
         
         return rate_mmhr
+    
+    def _precip_to_mm(self, da: xr.DataArray, *, context: str = "") -> xr.DataArray:
+        """
+        Convert precipitation-like field to millimeters.
+        
+        Accepts:
+          - m, meters -> mm
+          - mm -> mm
+          - kg m-2 (water equiv) -> mm  (1 kg/m^2 == 1 mm)
+        Raises on unknown/empty units to prevent silent scaling bugs.
+        
+        Args:
+            da: DataArray with precipitation data
+            context: Description of what's being converted (for error messages)
+        
+        Returns:
+            DataArray in millimeters
+        """
+        units_raw = da.attrs.get("units")
+        units = (units_raw or "").strip().lower()
+        
+        # Log input for debugging
+        logger.info(
+            "precip field %s units=%r min=%g max=%g",
+            context, units_raw, float(da.min()), float(da.max())
+        )
+        
+        # Normalize common formatting variants
+        units = units.replace("**", "^").replace(" ", "")
+        # e.g. "kg m-2" / "kg/m^2" / "kg m^-2" -> "kgm-2"
+        
+        if units in ("m", "meter", "meters"):
+            return da * 1000.0
+        if units in ("mm", "millimeter", "millimeters"):
+            return da
+        if units in ("kgm-2", "kg/m^2", "kgm^-2", "kgm^(-2)"):
+            # Water equivalent: 1 kg/m^2 == 1 mm
+            return da
+        
+        raise ValueError(
+            f"Unknown precip units={units_raw!r} (normalized={units}) context={context} "
+            f"attrs_keys={list(da.attrs.keys())[:25]}"
+        )
     
     # Shared utility methods
     def _cleanup_old_cache(self):
