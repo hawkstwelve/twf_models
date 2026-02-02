@@ -680,16 +680,68 @@ class ForecastScheduler:
             return
         
         logger.info(f"Enabled models: {list(enabled_models.keys())}")
+        
+        # Filter models to only those with new run data available
+        # This prevents allocating workers to models that have nothing to generate
+        models_with_data = {}
+        for model_id, config in enabled_models.items():
+            try:
+                fetcher = ModelFactory.create_fetcher(model_id)
+                latest_run = fetcher.get_latest_run_time()
+                
+                # Check if this run has already been generated
+                run_str = latest_run.strftime("%Y%m%d_%H")
+                images_path = Path(settings.storage_path)
+                
+                # Quick check: does at least one image exist for this run?
+                existing_images = list(images_path.glob(f"{model_id.lower()}_{run_str}_*.png"))
+                
+                if len(existing_images) == 0:
+                    # No images exist yet, this model has new data
+                    models_with_data[model_id] = config
+                    logger.info(f"  ✓ {model_id}: New run {run_str} available (no existing images)")
+                else:
+                    # Some images exist, check if generation is complete
+                    # Use a simple heuristic: if we have fewer than expected images, still needs work
+                    variables = VariableRegistry.filter_by_model_capabilities(
+                        self.variables, config
+                    )
+                    if model_id == "HRRR":
+                        configured_hours = settings.hrrr_forecast_hours_list
+                    else:
+                        configured_hours = [int(h) for h in settings.forecast_hours.split(',')]
+                    
+                    max_hour = self._get_effective_max_forecast_hour(model_id, latest_run, config)
+                    forecast_hours = [h for h in configured_hours if h <= max_hour]
+                    
+                    # Rough expected image count (variables * forecast_hours, minus f000 restrictions)
+                    expected_images = len(variables) * len(forecast_hours)
+                    
+                    if len(existing_images) < expected_images * 0.8:  # 80% threshold
+                        models_with_data[model_id] = config
+                        logger.info(f"  ⊙ {model_id}: Run {run_str} incomplete ({len(existing_images)} images, expected ~{expected_images})")
+                    else:
+                        logger.info(f"  ⊘ {model_id}: Run {run_str} already complete ({len(existing_images)} images)")
+            except Exception as e:
+                logger.warning(f"  ⚠️  {model_id}: Could not check run status: {e}")
+                # On error, include the model to be safe
+                models_with_data[model_id] = config
+        
+        if not models_with_data:
+            logger.info("No models have new data to generate. Exiting.")
+            return
+        
+        logger.info(f"\nModels to generate: {list(models_with_data.keys())}")
         logger.info(f"Total workers available: {_GLOBAL_POOL_SIZE}")
         logger.info(f"Generation mode: {'PROGRESSIVE (polling)' if use_progressive else 'IMMEDIATE (all at once)'}")
         logger.info(f"Execution mode: {'PARALLEL' if parallel else 'SEQUENTIAL'}\n")
         
-        if parallel and len(enabled_models) > 1:
+        if parallel and len(models_with_data) > 1:
             # PARALLEL EXECUTION: Run all models concurrently with allocated workers
             logger.info("🚀 Running models in PARALLEL")
             
             # Allocate workers per model
-            worker_allocation = allocate_workers_per_model(_GLOBAL_POOL_SIZE, enabled_models)
+            worker_allocation = allocate_workers_per_model(_GLOBAL_POOL_SIZE, models_with_data)
             logger.info(f"Worker allocation: {worker_allocation}\n")
             
             # Thread-safe result storage
@@ -749,7 +801,7 @@ class ForecastScheduler:
             logger.info(f"Global pool size: {_GLOBAL_POOL_SIZE} workers\n")
             
             results = {}
-            for model_id in enabled_models.keys():
+            for model_id in models_with_data.keys():
                 if use_progressive:
                     success = self.generate_forecast_for_model_progressive(
                         model_id,
