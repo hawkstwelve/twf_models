@@ -64,8 +64,8 @@ class Settings(BaseSettings):
     
     # HTTP Caching
     cache_images_seconds: int = 604800  # 7 days - images are immutable
-    cache_maps_list_seconds: int = 300  # 5 minutes - list changes as new maps generate
-    cache_runs_list_seconds: int = 300  # 5 minutes - runs list changes as new runs generate
+    cache_maps_list_seconds: int = 30  # 30 seconds - list changes as new maps generate
+    cache_runs_list_seconds: int = 30  # 30 seconds - runs list changes as new runs generate
     enable_etag: bool = True  # Enable ETag support for conditional requests
     
     @property

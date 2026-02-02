@@ -87,14 +87,14 @@ class MapViewer {
             }
         }, CONFIG.REFRESH_INTERVAL);
         
-        // 11. Refresh available options every 5 minutes
+        // 11. Refresh available options every 60 seconds
         setInterval(async () => {
             await this.fetchRuns();
             await this.fetchAvailableOptions();
             this.populateRunDropdown();
             this.populateVariableDropdown();
             this.populateForecastDropdown();
-        }, 300000); // 5 minutes
+        }, 60000); // 60 seconds
         
         // 12. Sync mobile offsets on window resize
         window.addEventListener('resize', () => this.syncMobileOffsets());
