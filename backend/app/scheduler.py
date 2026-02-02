@@ -924,7 +924,7 @@ class ForecastScheduler:
         Runs models in parallel by default for 32GB server efficiency.
         """
         logger.info("="*80)
-        logger.info("🚀 Starting forecast map generation")
+        logger.info("🚀 Starting forecast map generation (ALL MODELS)")
         logger.info("="*80)
         
         try:
@@ -941,6 +941,56 @@ class ForecastScheduler:
             
         except Exception as e:
             logger.error(f"❌ Error in forecast generation: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+    
+    def generate_hrrr_maps(self):
+        """
+        Generate forecast maps specifically for HRRR model.
+        
+        This is called hourly by the HRRR-specific scheduler job.
+        HRRR runs hourly, so this ensures we capture all HRRR runs.
+        The method checks if HRRR is enabled and if new data is available.
+        """
+        logger.info("="*80)
+        logger.info("🌩️  Starting HRRR-specific map generation")
+        logger.info("="*80)
+        
+        try:
+            # Check if HRRR is enabled
+            hrrr_config = ModelRegistry.get('HRRR')
+            if not hrrr_config or not hrrr_config.enabled:
+                logger.info("HRRR is not enabled, skipping")
+                return
+            
+            # Use progressive generation setting from config
+            use_progressive = settings.progressive_generation
+            
+            # Generate only HRRR
+            if use_progressive:
+                success = self.generate_forecast_for_model_progressive(
+                    'HRRR',
+                    max_duration_minutes=45,  # Shorter timeout for hourly job
+                    check_interval_seconds=30,
+                    worker_count=_GLOBAL_POOL_SIZE  # Use all workers for single model
+                )
+            else:
+                success = self.generate_forecast_for_model(
+                    'HRRR',
+                    worker_count=_GLOBAL_POOL_SIZE
+                )
+            
+            if success:
+                logger.info("="*80)
+                logger.info("✅ HRRR generation complete")
+                logger.info("="*80)
+            else:
+                logger.info("="*80)
+                logger.info("⊘ HRRR: No new data or already complete")
+                logger.info("="*80)
+            
+        except Exception as e:
+            logger.error(f"❌ Error in HRRR generation: {e}")
             import traceback
             logger.error(traceback.format_exc())
     
@@ -1027,17 +1077,31 @@ class ForecastScheduler:
         logger.info("Starting Multi-Model Forecast Scheduler...")
         logger.info(f"Global pool size: {_GLOBAL_POOL_SIZE} workers")
         
-        # Schedule: Run every 6 hours at 30 minutes past the hour
+        # Job 1: GFS/AIGFS - Run every 6 hours at 30 minutes past the hour
         # (3:30, 9:30, 15:30, 21:30 UTC - allows 3h30m after model run for data availability)
         # Corresponds to: 9:30PM, 3:30AM, 9:30AM, 3:30PM CST
+        # HRRR may also run with this job if it hasn't been generated recently
         self.scheduler.add_job(
             self.generate_forecast_maps,
             trigger=CronTrigger(hour='3,9,15,21', minute='30'),
             id='multi_model_forecast',
-            name='Multi-Model Forecast Generation',
+            name='Multi-Model Forecast Generation (GFS/AIGFS/HRRR)',
             replace_existing=True,
             max_instances=1,
             misfire_grace_time=3600  # Allow catching up if missed by up to 1 hour
+        )
+        
+        # Job 2: HRRR-specific - Run every hour at 45 minutes past the hour
+        # HRRR runs hourly, data typically available 30-45 minutes after run time
+        # Example: HRRR 12z data available ~12:30-12:45 UTC
+        self.scheduler.add_job(
+            self.generate_hrrr_maps,
+            trigger=CronTrigger(minute='45'),
+            id='hrrr_hourly',
+            name='HRRR Hourly Generation',
+            replace_existing=True,
+            max_instances=1,
+            misfire_grace_time=1800  # Allow catching up if missed by up to 30 minutes
         )
         
         logger.info("Scheduler started. Jobs:")
