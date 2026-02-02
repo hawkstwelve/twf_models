@@ -275,6 +275,8 @@ class ForecastScheduler:
             # Determine forecast hours (use model-specific if available)
             if model_id == "HRRR":
                 configured_hours = settings.hrrr_forecast_hours_list
+            elif model_id == "AIGFS":
+                configured_hours = settings.aigfs_forecast_hours_list
             else:
                 configured_hours = [int(h) for h in settings.forecast_hours.split(',')]
             max_hour = self._get_effective_max_forecast_hour(model_id, run_time, model_config)
@@ -354,6 +356,8 @@ class ForecastScheduler:
             # Determine forecast hours (use model-specific if available)
             if model_id == "HRRR":
                 configured_hours = settings.hrrr_forecast_hours_list
+            elif model_id == "AIGFS":
+                configured_hours = settings.aigfs_forecast_hours_list
             else:
                 configured_hours = [int(h) for h in settings.forecast_hours.split(',')]
             max_hour = self._get_effective_max_forecast_hour(model_id, run_time, model_config)
@@ -708,6 +712,8 @@ class ForecastScheduler:
                     )
                     if model_id == "HRRR":
                         configured_hours = settings.hrrr_forecast_hours_list
+                    elif model_id == "AIGFS":
+                        configured_hours = settings.aigfs_forecast_hours_list
                     else:
                         configured_hours = [int(h) for h in settings.forecast_hours.split(',')]
                     
