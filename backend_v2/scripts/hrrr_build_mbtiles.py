@@ -305,7 +305,7 @@ def build_mbtiles_from_3857_tif(
     # Note: skip gdaladdo for MBTiles to avoid redundant/bloated overviews.
 
 
-def to_rgba_geotiff(src_tif: Path, rgba_tif: Path) -> None:
+def to_rgba_byte_geotiff(src_tif: Path, rgba_tif: Path) -> None:
     require_gdal("gdal_translate")
     rgba_tif.parent.mkdir(parents=True, exist_ok=True)
     run_cmd(
@@ -313,6 +313,8 @@ def to_rgba_geotiff(src_tif: Path, rgba_tif: Path) -> None:
             "gdal_translate",
             "-of",
             "GTiff",
+            "-ot",
+            "Byte",
             "-b",
             "1",
             "-b",
@@ -325,10 +327,29 @@ def to_rgba_geotiff(src_tif: Path, rgba_tif: Path) -> None:
             "TILED=YES",
             "-co",
             "COMPRESS=DEFLATE",
+            "-co",
+            "PHOTOMETRIC=RGB",
+            "-co",
+            "ALPHA=YES",
             str(src_tif),
             str(rgba_tif),
         ]
     )
+
+
+def assert_rgba_byte(info: dict) -> None:
+    bands = info.get("bands") or []
+    if len(bands) != 4:
+        raise RuntimeError("RGBA GeoTIFF must have 4 bands")
+    if any(band.get("dataType") != "Byte" for band in bands):
+        raise RuntimeError("RGBA GeoTIFF bands must be Byte")
+    alpha_present = any(
+        band.get("colorInterpretation") == "Alpha"
+        or str(band.get("description", "")).lower() == "alpha"
+        for band in bands
+    )
+    if not alpha_present:
+        raise RuntimeError("RGBA GeoTIFF is missing alpha band")
 
 
 def update_mbtiles_metadata(
@@ -522,7 +543,7 @@ def main() -> int:
             base_name = grib_path.stem
             byte_tif = warp_dir / f"{base_name}.byte.tif"
             warped_tif = warp_dir / f"{base_name}.3857.tif"
-            rgba_tif = warp_dir / f"{base_name}.3857.rgba.tif"
+            rgba_tif = warp_dir / f"{base_name}.3857.rgba.byte.tif"
 
             start_time = time.time()
             rebuild_byte = needs_rebuild(byte_tif)
@@ -550,7 +571,9 @@ def main() -> int:
 
             if not rgba_tif.exists() or rgba_tif.stat().st_size == 0:
                 print(f"Building RGBA GeoTIFF: {rgba_tif}")
-                to_rgba_geotiff(warped_tif, rgba_tif)
+                to_rgba_byte_geotiff(warped_tif, rgba_tif)
+            rgba_info = gdalinfo_json(rgba_tif)
+            assert_rgba_byte(rgba_info)
 
             out_path = Path(args.out)
             if out_path.exists():
