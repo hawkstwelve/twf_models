@@ -341,8 +341,12 @@ def assert_rgba_byte(info: dict) -> None:
     bands = info.get("bands") or []
     if len(bands) != 4:
         raise RuntimeError("RGBA GeoTIFF must have 4 bands")
-    if any(band.get("dataType") != "Byte" for band in bands):
-        raise RuntimeError("RGBA GeoTIFF bands must be Byte")
+    for band in bands:
+        if _gdal_band_type(band) != "Byte":
+            raise RuntimeError(
+                "RGBA GeoTIFF bands must be Byte "
+                f"(band={band.get('band')} type={_gdal_band_type(band)})"
+            )
     alpha_present = any(
         band.get("colorInterpretation") == "Alpha"
         or str(band.get("description", "")).lower() == "alpha"
@@ -350,6 +354,10 @@ def assert_rgba_byte(info: dict) -> None:
     )
     if not alpha_present:
         raise RuntimeError("RGBA GeoTIFF is missing alpha band")
+
+
+def _gdal_band_type(band: dict) -> str | None:
+    return band.get("type") or band.get("dataType")
 
 
 def update_mbtiles_metadata(
