@@ -342,6 +342,7 @@ def build_mbtiles_from_3857_gray_alpha_tif(
 
         total_inserted = 0
         total_skipped = 0
+        debug_logged = False
 
         if gdal is not None:
             ds = gdal.Open(str(src_tif))
@@ -417,22 +418,16 @@ def build_mbtiles_from_3857_gray_alpha_tif(
                             total_skipped += 1
                             continue
 
-                        tile_img = Image.merge(
-                            "LA",
-                            (Image.fromarray(l_arr, mode="L"), Image.fromarray(a_arr, mode="L")),
-                        ).convert("LA")
+                        l_img = Image.fromarray(l_arr, mode="L")
+                        a_img = Image.fromarray(a_arr, mode="L")
+                        tile_img = Image.merge("RGBA", (l_img, l_img, l_img, a_img))
                         buffer = BytesIO()
                         tile_img.save(buffer, format="PNG", optimize=True)
                         tile_bytes = buffer.getvalue()
-                        if debug:
+                        if debug and not debug_logged:
                             check = Image.open(BytesIO(tile_bytes))
-                            assert check.mode == "LA"
-                            l_check = np.asarray(check.getchannel(0))
-                            a_check = np.asarray(check.getchannel(1))
-                            assert l_check.dtype == np.uint8
-                            assert a_check.dtype == np.uint8
-                            assert 0 <= int(l_check.min()) <= 255 and 0 <= int(l_check.max()) <= 255
-                            assert 0 <= int(a_check.min()) <= 255 and 0 <= int(a_check.max()) <= 255
+                            print(f"DEBUG tile mode: {check.mode}")
+                            debug_logged = True
 
                         tms_y = (1 << z) - 1 - y
                         batch.append((z, x, tms_y, tile_bytes))
@@ -529,22 +524,16 @@ def build_mbtiles_from_3857_gray_alpha_tif(
                                 total_skipped += 1
                                 continue
 
-                            tile_img = Image.merge(
-                                "LA",
-                                (Image.fromarray(l_arr, mode="L"), Image.fromarray(a_arr, mode="L")),
-                            ).convert("LA")
+                            l_img = Image.fromarray(l_arr, mode="L")
+                            a_img = Image.fromarray(a_arr, mode="L")
+                            tile_img = Image.merge("RGBA", (l_img, l_img, l_img, a_img))
                             buffer = BytesIO()
                             tile_img.save(buffer, format="PNG", optimize=True)
                             tile_bytes = buffer.getvalue()
-                            if debug:
+                            if debug and not debug_logged:
                                 check = Image.open(BytesIO(tile_bytes))
-                                assert check.mode == "LA"
-                                l_check = np.asarray(check.getchannel(0))
-                                a_check = np.asarray(check.getchannel(1))
-                                assert l_check.dtype == np.uint8
-                                assert a_check.dtype == np.uint8
-                                assert 0 <= int(l_check.min()) <= 255 and 0 <= int(l_check.max()) <= 255
-                                assert 0 <= int(a_check.min()) <= 255 and 0 <= int(a_check.max()) <= 255
+                                print(f"DEBUG tile mode: {check.mode}")
+                                debug_logged = True
 
                             tms_y = (1 << z) - 1 - y
                             batch.append((z, x, tms_y, tile_bytes))
