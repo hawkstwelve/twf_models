@@ -50,3 +50,5 @@ herbie_cache/
 venv/
 .venv/
 .env
+
+.data/
