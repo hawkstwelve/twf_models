@@ -271,10 +271,10 @@ Items should only be marked complete when validated locally **and** reviewed aga
 
 ### Milestone 1 — V2 Backend Skeleton
 - [x] `backend_v2/` directory scaffolded
-- [ ] FastAPI app boots locally
-- [ ] `/api/v2/models` endpoint responds
-- [ ] Versioned routing (`/api/v2`) enforced
-- [ ] No imports or dependencies from V1
+- [x] FastAPI app boots locally
+- [x] `/api/v2/models` endpoint responds
+- [x] Versioned routing (`/api/v2`) enforced
+- [x] No imports or dependencies from V1
 
 **Exit criteria:** Backend runs locally without touching V1.
 
