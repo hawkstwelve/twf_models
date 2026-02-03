@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import shutil
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from herbie import Herbie
@@ -58,8 +58,19 @@ def fetch_hrrr_grib(
     )
 
     if run_dt is None:
-        herbie = Herbie("latest", model=model, product=product, fxx=fh)
-        run_dt = herbie.date
+        now = datetime.utcnow().replace(minute=0, second=0, microsecond=0)
+
+        herbie = None
+        for i in range(0, 12):
+            candidate = now - timedelta(hours=i)
+            H = Herbie(candidate, model=model, product=product, fxx=fh)
+            if H.grib:
+                herbie = H
+                run_dt = H.date
+                break
+
+        if herbie is None or run_dt is None:
+            raise RuntimeError("Could not resolve latest HRRR cycle in the last 12 hours")
     else:
         herbie = Herbie(run_dt, model=model, product=product, fxx=fh)
 
