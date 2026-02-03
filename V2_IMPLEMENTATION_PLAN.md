@@ -281,11 +281,11 @@ Items should only be marked complete when validated locally **and** reviewed aga
 ---
 
 ### Milestone 2 — MBTiles Tile Serving
-- [ ] MBTiles reader implemented
-- [ ] XYZ tile endpoint implemented
-- [ ] Correct TMS → XYZ row inversion verified
-- [ ] PNG tiles served with correct headers
-- [ ] Fake/test MBTiles used for validation
+- [x] MBTiles reader implemented
+- [x] XYZ tile endpoint implemented
+- [x] Correct TMS → XYZ row inversion verified
+- [x] PNG tiles served with correct headers
+- [x] Fake/test MBTiles used for validation
 
 **Exit criteria:** Tiles load correctly in a browser or Leaflet test map.
 
@@ -304,12 +304,12 @@ Items should only be marked complete when validated locally **and** reviewed aga
 ---
 
 ### Milestone 4 — V2 Frontend (MVP)
-- [ ] Leaflet map loads
-- [ ] Tile overlay renders
-- [ ] Variable selector wired to API
-- [ ] Legend displays correctly
-- [ ] Time slider + play works
-- [ ] Forecast hour switching updates tiles
+- [x] Leaflet map loads
+- [x] Tile overlay renders
+- [x] Variable selector wired to API
+- [x] Legend displays correctly
+- [x] Time slider + play works
+- [x] Forecast hour switching updates tiles
 
 **Exit criteria:** Interactive HRRR map usable for PNW.
 

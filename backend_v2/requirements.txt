@@ -4,7 +4,7 @@ pydantic==2.6.4
 numpy>=1.21.6,<2.0
 xarray==2023.11.0
 cfgrib==0.9.10.4
-scipy==1.11.4
+scipy>=1.12,<1.13
 pillow==10.3.0
 pyproj==3.6.1
 herbie-data>=2024.7.1,<2027.0.0
