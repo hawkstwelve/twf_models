@@ -286,10 +286,8 @@ def build_mbtiles_from_3857_tif(
             "gdal_translate",
             "-of",
             "MBTILES",
-            "-b",
-            "1",
-            "-b",
-            "2",
+            "-ot",
+            "Byte",
             "-co",
             "TILE_FORMAT=PNG",
             "-co",
@@ -344,14 +342,16 @@ def assert_rgba_byte(info: dict) -> None:
     if len(bands) != 4:
         raise RuntimeError("RGBA GeoTIFF must have 4 bands")
     for band in bands:
-        if _gdal_band_type(band) != "Byte":
+        band_type = _gdal_band_type(band)
+        if band_type not in ("Byte", 1, "1"):
             raise RuntimeError(
                 "RGBA GeoTIFF bands must be Byte "
-                f"(band={band.get('band')} type={_gdal_band_type(band)})"
+                f"(band={band.get('band')} type={band_type})"
             )
     alpha_present = any(
         band.get("colorInterpretation") == "Alpha"
         or str(band.get("description", "")).lower() == "alpha"
+        or band.get("band") == 4
         for band in bands
     )
     if not alpha_present:
@@ -360,6 +360,50 @@ def assert_rgba_byte(info: dict) -> None:
 
 def _gdal_band_type(band: dict) -> str | None:
     return band.get("type") or band.get("dataType")
+
+
+def _debug_pngcheck(mbtiles_path: Path) -> None:
+    try:
+        conn = sqlite3.connect(str(mbtiles_path))
+        try:
+            row = conn.execute("SELECT hex(tile_data) FROM tiles LIMIT 1").fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        print(f"WARN: Failed to read MBTiles for debug: {exc}")
+        return
+
+    if not row or not row[0]:
+        print("WARN: No tiles found for debug pngcheck")
+        return
+
+    tile_bytes = bytes.fromhex(row[0])
+    tmp_path = Path("/tmp/tile.png")
+    try:
+        tmp_path.write_bytes(tile_bytes)
+    except OSError as exc:
+        print(f"WARN: Failed to write debug tile: {exc}")
+        return
+
+    try:
+        result = subprocess.run(
+            ["pngcheck", "-v", str(tmp_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    except FileNotFoundError:
+        print("WARN: pngcheck not found; skipping debug verification")
+        return
+
+    ihdr_line = next(
+        (line for line in (result.stdout or "").splitlines() if "IHDR" in line),
+        None,
+    )
+    if ihdr_line:
+        print(f"pngcheck: {ihdr_line}")
+    elif result.stdout:
+        print("pngcheck output:\n" + result.stdout)
 
 
 def update_mbtiles_metadata(
@@ -422,6 +466,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--p-low", type=float, default=2.0)
     parser.add_argument("--p-high", type=float, default=98.0)
     parser.add_argument("--log", action="store_true")
+    parser.add_argument("--debug", action="store_true")
     parser.add_argument("--keep-cycles", type=int, default=None)
     return parser.parse_args()
 
@@ -579,11 +624,19 @@ def main() -> int:
             assert_alpha_present(info)
             log_warped_info(warped_tif, info)
 
-            if not rgba_tif.exists() or rgba_tif.stat().st_size == 0:
+            rebuild_rgba = not rgba_tif.exists() or rgba_tif.stat().st_size == 0
+            if not rebuild_rgba:
+                try:
+                    rgba_info = gdalinfo_json(rgba_tif)
+                    assert_rgba_byte(rgba_info)
+                except Exception:
+                    rebuild_rgba = True
+
+            if rebuild_rgba:
                 print(f"Building RGBA GeoTIFF: {rgba_tif}")
                 to_rgba_byte_geotiff(warped_tif, rgba_tif)
-            rgba_info = gdalinfo_json(rgba_tif)
-            assert_rgba_byte(rgba_info)
+                rgba_info = gdalinfo_json(rgba_tif)
+                assert_rgba_byte(rgba_info)
 
             out_path = Path(args.out)
             if out_path.exists():
@@ -596,6 +649,9 @@ def main() -> int:
                 z_min=args.z_min,
                 z_max=args.z_max,
             )
+
+            if args.debug:
+                _debug_pngcheck(out_path)
 
             center_lon = (bounds_wgs84[0] + bounds_wgs84[2]) / 2.0
             center_lat = (bounds_wgs84[1] + bounds_wgs84[3]) / 2.0
