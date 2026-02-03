@@ -305,6 +305,32 @@ def build_mbtiles_from_3857_tif(
     # Note: skip gdaladdo for MBTiles to avoid redundant/bloated overviews.
 
 
+def to_rgba_geotiff(src_tif: Path, rgba_tif: Path) -> None:
+    require_gdal("gdal_translate")
+    rgba_tif.parent.mkdir(parents=True, exist_ok=True)
+    run_cmd(
+        [
+            "gdal_translate",
+            "-of",
+            "GTiff",
+            "-b",
+            "1",
+            "-b",
+            "1",
+            "-b",
+            "1",
+            "-b",
+            "2",
+            "-co",
+            "TILED=YES",
+            "-co",
+            "COMPRESS=DEFLATE",
+            str(src_tif),
+            str(rgba_tif),
+        ]
+    )
+
+
 def update_mbtiles_metadata(
     mbtiles_path: Path,
     *,
@@ -496,6 +522,7 @@ def main() -> int:
             base_name = grib_path.stem
             byte_tif = warp_dir / f"{base_name}.byte.tif"
             warped_tif = warp_dir / f"{base_name}.3857.tif"
+            rgba_tif = warp_dir / f"{base_name}.3857.rgba.tif"
 
             start_time = time.time()
             rebuild_byte = needs_rebuild(byte_tif)
@@ -521,13 +548,17 @@ def main() -> int:
             assert_alpha_present(info)
             log_warped_info(warped_tif, info)
 
+            if not rgba_tif.exists() or rgba_tif.stat().st_size == 0:
+                print(f"Building RGBA GeoTIFF: {rgba_tif}")
+                to_rgba_geotiff(warped_tif, rgba_tif)
+
             out_path = Path(args.out)
             if out_path.exists():
                 out_path.unlink()
 
             print(f"Building MBTiles: {out_path}")
             build_mbtiles_from_3857_tif(
-                warped_tif,
+                rgba_tif,
                 out_path,
                 z_min=args.z_min,
                 z_max=args.z_max,
