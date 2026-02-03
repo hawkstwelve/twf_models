@@ -7,6 +7,8 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Response
 
 import os
+print("LOADED tiles_mbtiles:", __file__)
+print("TWF_V2_MBTILES_PATH in process:", os.getenv("TWF_V2_MBTILES_PATH"))
 
 from ..config import MBTILES_ROOT
 from ..utils.pathing import safe_join
