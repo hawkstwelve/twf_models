@@ -8,16 +8,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
+from io import BytesIO
 from pathlib import Path
 from xml.sax.saxutils import escape
 
 import numpy as np
 import xarray as xr
+from PIL import Image
 from pyproj import CRS, Transformer
 
 from app.services.grid import detect_latlon_names, normalize_latlon_coords
@@ -27,6 +31,15 @@ from app.services.paths import default_hrrr_cache_dir
 from app.services.variable_registry import normalize_api_variable, select_dataarray
 
 EPS = 1e-9
+ORIGIN_SHIFT = 20037508.342789244
+TILE_SIZE = 256
+
+try:
+    from osgeo import gdal
+
+    gdal.UseExceptions()
+except Exception:  # pragma: no cover - optional dependency
+    gdal = None
 
 
 def require_gdal(cmd_name: str) -> None:
@@ -163,6 +176,30 @@ def _write_vrt(
     vrt_path.write_text(vrt)
 
 
+def _tile_bounds_3857(x: int, y: int, z: int) -> tuple[float, float, float, float]:
+    res = (2 * ORIGIN_SHIFT) / (TILE_SIZE * (2**z))
+    minx = x * TILE_SIZE * res - ORIGIN_SHIFT
+    maxx = (x + 1) * TILE_SIZE * res - ORIGIN_SHIFT
+    maxy = ORIGIN_SHIFT - y * TILE_SIZE * res
+    miny = ORIGIN_SHIFT - (y + 1) * TILE_SIZE * res
+    return minx, miny, maxx, maxy
+
+
+def _tile_range_for_bounds(bounds: tuple[float, float, float, float], z: int) -> tuple[int, int, int, int]:
+    minx, miny, maxx, maxy = bounds
+    res = (2 * ORIGIN_SHIFT) / (TILE_SIZE * (2**z))
+    x_min = math.floor((minx + ORIGIN_SHIFT) / (TILE_SIZE * res))
+    x_max = math.ceil((maxx + ORIGIN_SHIFT) / (TILE_SIZE * res)) -1
+    y_min = math.floor((ORIGIN_SHIFT - maxy) / (TILE_SIZE * res))
+    y_max = math.ceil((ORIGIN_SHIFT - miny) / (TILE_SIZE * res)) -1
+    max_index = (1 << z) - 1
+    x_min = max(0, min(max_index, x_min))
+    x_max = max(0, min(max_index, x_max))
+    y_min = max(0, min(max_index, y_min))
+    y_max = max(0, min(max_index, y_max))
+    return x_min, x_max, y_min, y_max
+
+
 def write_byte_geotiff_from_da(
     da: xr.DataArray,
     out_tif: Path,
@@ -272,98 +309,254 @@ def warp_to_3857(src_tif: Path, dst_tif: Path) -> None:
     )
 
 
-def build_mbtiles_from_3857_tif(
-    warped_tif: Path,
+def build_mbtiles_from_3857_gray_alpha_tif(
+    src_tif: Path,
     mbtiles_path: Path,
-    *,
     z_min: int,
     z_max: int,
 ) -> None:
-    require_gdal("gdal_translate")
+    info = gdalinfo_json(src_tif)
+    bounds = info.get("cornerCoordinates") or {}
+    lower_left = bounds.get("lowerLeft")
+    upper_right = bounds.get("upperRight")
+    if not lower_left or not upper_right:
+        raise RuntimeError("gdalinfo missing cornerCoordinates for bounds")
+
+    minx, miny = lower_left
+    maxx, maxy = upper_right
+
     mbtiles_path.parent.mkdir(parents=True, exist_ok=True)
-    run_cmd(
-        [
-            "gdal_translate",
-            "-of",
-            "MBTILES",
-            "-b",
-            "1",
-            "-b",
-            "2",
-            "-b",
-            "3",
-            "-mask",
-            "4",
-            "-co",
-            "TILE_FORMAT=PNG",
-            "-co",
-            f"MINZOOM={z_min}",
-            "-co",
-            f"MAXZOOM={z_max}",
-            "-co",
-            "ZOOM_LEVEL_STRATEGY=LOWER",
-            str(warped_tif),
-            str(mbtiles_path),
-        ]
-    )
-    # Note: skip gdaladdo for MBTiles to avoid redundant/bloated overviews.
+    if mbtiles_path.exists():
+        mbtiles_path.unlink()
 
+    conn = sqlite3.connect(str(mbtiles_path))
+    try:
+        conn.execute("CREATE TABLE metadata (name TEXT, value TEXT);")
+        conn.execute(
+            "CREATE TABLE tiles (zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_data BLOB);"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX tile_index ON tiles (zoom_level, tile_column, tile_row);"
+        )
 
-def to_rgba_byte_geotiff(src_tif: Path, rgba_tif: Path) -> None:
-    require_gdal("gdal_translate")
-    rgba_tif.parent.mkdir(parents=True, exist_ok=True)
-    run_cmd(
-        [
-            "gdal_translate",
-            "-of",
-            "GTiff",
-            "-ot",
-            "Byte",
-            "-b",
-            "1",
-            "-b",
-            "1",
-            "-b",
-            "1",
-            "-b",
-            "2",
-            "-co",
-            "TILED=YES",
-            "-co",
-            "COMPRESS=DEFLATE",
-            "-co",
-            "PHOTOMETRIC=RGB",
-            "-co",
-            "ALPHA=YES",
-            str(src_tif),
-            str(rgba_tif),
-        ]
-    )
+        total_inserted = 0
+        total_skipped = 0
 
+        if gdal is not None:
+            ds = gdal.Open(str(src_tif))
+            if ds is None:
+                raise RuntimeError(f"Failed to open GeoTIFF: {src_tif}")
+            gt = ds.GetGeoTransform()
+            success, inv_gt = gdal.InvGeoTransform(gt)
+            if not success:
+                raise RuntimeError("Failed to invert geotransform")
 
-def assert_rgba_byte(info: dict) -> None:
-    bands = info.get("bands") or []
-    if len(bands) != 4:
-        raise RuntimeError("RGBA GeoTIFF must have 4 bands")
-    for band in bands:
-        band_type = _gdal_band_type(band)
-        if band_type not in ("Byte", 1, "1"):
-            raise RuntimeError(
-                "RGBA GeoTIFF bands must be Byte "
-                f"(band={band.get('band')} type={band_type})"
-            )
-    alpha_present = any(
-        band.get("colorInterpretation") == "Alpha"
-        or str(band.get("description", "")).lower() == "alpha"
-        or band.get("band") == 4
-        for band in bands
-    )
-    if not alpha_present:
-        raise RuntimeError("RGBA GeoTIFF is missing alpha band")
+            band_l = ds.GetRasterBand(1)
+            band_a = ds.GetRasterBand(2)
 
+            for z in range(z_min, z_max + 1):
+                x_min, x_max, y_min, y_max = _tile_range_for_bounds((minx, miny, maxx, maxy), z)
+                print(f"Zoom {z}: x[{x_min},{x_max}] y[{y_min},{y_max}]")
+                for y in range(y_min, y_max + 1):
+                    batch: list[tuple[int, int, int, bytes]] = []
+                    for x in range(x_min, x_max + 1):
+                        tminx, tminy, tmaxx, tmaxy = _tile_bounds_3857(x, y, z)
+                        px0, py0 = gdal.ApplyGeoTransform(inv_gt, tminx, tmaxy)
+                        px1, py1 = gdal.ApplyGeoTransform(inv_gt, tmaxx, tminy)
+                        xoff = max(0,int(math.floor(min(px0, px1))))
+                        yoff = max(0,int(math.floor(min(py0, py1))))
+                        xend = int(math.ceil(max(px0, px1)))
+                        yend = int(math.ceil(max(py0, py1)))
+                        xsize = xend - xoff
+                        ysize = yend - yoff
+                        if xsize <= 0 or ysize <= 0:
+                            total_skipped += 1
+                            continue
 
-def _gdal_band_type(band: dict) -> str | None:
-    return band.get("type") or band.get("dataType")
+                        if xoff < 0:
+                            xsize += xoff
+                            xoff = 0
+                        if yoff < 0:
+                            ysize += yoff
+                            yoff = 0
+                        if xoff + xsize > ds.RasterXSize:
+                            xsize = ds.RasterXSize - xoff
+                        if yoff + ysize > ds.RasterYSize:
+                            ysize = ds.RasterYSize - yoff
+                        if xsize <= 0 or ysize <= 0:
+                            total_skipped += 1
+                            continue
+
+                        l_arr = band_l.ReadAsArray(
+                            xoff,
+                            yoff,
+                            xsize,
+                            ysize,
+                            buf_xsize=TILE_SIZE,
+                            buf_ysize=TILE_SIZE,
+                            resample_alg=gdal.GRIORA_Bilinear,
+                        )
+                        a_arr = band_a.ReadAsArray(
+                            xoff,
+                            yoff,
+                            xsize,
+                            ysize,
+                            buf_xsize=TILE_SIZE,
+                            buf_ysize=TILE_SIZE,
+                            resample_alg=gdal.GRIORA_NearestNeighbour,
+                        )
+                        if l_arr is None or a_arr is None:
+                            total_skipped += 1
+                            continue
+
+                        l_arr = np.asarray(l_arr, dtype=np.uint8)
+                        a_arr = np.asarray(a_arr, dtype=np.uint8)
+
+                        if a_arr.max() == 0:
+                            total_skipped += 1
+                            continue
+
+                        tile_img = Image.merge(
+                            "LA",
+                            (Image.fromarray(l_arr, mode="L"), Image.fromarray(a_arr, mode="L")),
+                        )
+                        buffer = BytesIO()
+                        tile_img.save(buffer, format="PNG", optimize=True)
+                        tile_bytes = buffer.getvalue()
+
+                        tms_y = (1 << z) - 1 - y
+                        batch.append((z, x, tms_y, tile_bytes))
+                        total_inserted += 1
+                        if len(batch) >= 200:
+                            conn.executemany(
+                                "INSERT INTO tiles (zoom_level, tile_column, tile_row, tile_data) VALUES (?, ?, ?, ?);",
+                                batch,
+                            )
+                            batch.clear()
+                    if batch:
+                        conn.executemany(
+                            "INSERT INTO tiles (zoom_level, tile_column, tile_row, tile_data) VALUES (?, ?, ?, ?);",
+                            batch,
+                        )
+                        batch.clear()
+        else:
+            require_gdal("gdal_translate")
+            for z in range(z_min, z_max + 1):
+                x_min, x_max, y_min, y_max = _tile_range_for_bounds((minx, miny, maxx, maxy), z)
+                print(f"Zoom {z}: x[{x_min},{x_max}] y[{y_min},{y_max}]")
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    tmpdir_path = Path(tmpdir)
+                    for y in range(y_min, y_max + 1):
+                        batch: list[tuple[int, int, int, bytes]] = []
+                        for x in range(x_min, x_max + 1):
+                            tminx, tminy, tmaxx, tmaxy = _tile_bounds_3857(x, y, z)
+                            l_path = tmpdir_path / "tile_l.bin"
+                            a_path = tmpdir_path / "tile_a.bin"
+
+                            run_cmd(
+                                [
+                                    "gdal_translate",
+                                    "-of",
+                                    "ENVI",
+                                    "-ot",
+                                    "Byte",
+                                    "-b",
+                                    "1",
+                                    "-r",
+                                    "bilinear",
+                                    "-projwin",
+                                    str(tminx),
+                                    str(tmaxy),
+                                    str(tmaxx),
+                                    str(tminy),
+                                    "-outsize",
+                                    str(TILE_SIZE),
+                                    str(TILE_SIZE),
+                                    str(src_tif),
+                                    str(l_path),
+                                ]
+                            )
+                            run_cmd(
+                                [
+                                    "gdal_translate",
+                                    "-of",
+                                    "ENVI",
+                                    "-ot",
+                                    "Byte",
+                                    "-b",
+                                    "2",
+                                    "-r",
+                                    "nearest",
+                                    "-projwin",
+                                    str(tminx),
+                                    str(tmaxy),
+                                    str(tmaxx),
+                                    str(tminy),
+                                    "-outsize",
+                                    str(TILE_SIZE),
+                                    str(TILE_SIZE),
+                                    str(src_tif),
+                                    str(a_path),
+                                ]
+                            )
+
+                            try:
+                                l_arr = np.fromfile(l_path, dtype=np.uint8)
+                                a_arr = np.fromfile(a_path, dtype=np.uint8)
+                            except OSError:
+                                total_skipped += 1
+                                continue
+
+                            if l_arr.size != TILE_SIZE * TILE_SIZE or a_arr.size != TILE_SIZE * TILE_SIZE:
+                                total_skipped += 1
+                                continue
+
+                            l_arr = l_arr.reshape((TILE_SIZE, TILE_SIZE))
+                            a_arr = a_arr.reshape((TILE_SIZE, TILE_SIZE))
+                            if a_arr.max() == 0:
+                                total_skipped += 1
+                                continue
+
+                            tile_img = Image.merge(
+                                "LA",
+                                (Image.fromarray(l_arr, mode="L"), Image.fromarray(a_arr, mode="L")),
+                            )
+                            buffer = BytesIO()
+                            tile_img.save(buffer, format="PNG", optimize=True)
+                            tile_bytes = buffer.getvalue()
+
+                            tms_y = (1 << z) - 1 - y
+                            batch.append((z, x, tms_y, tile_bytes))
+                            total_inserted += 1
+                            if len(batch) >= 200:
+                                conn.executemany(
+                                    "INSERT INTO tiles (zoom_level, tile_column, tile_row, tile_data) VALUES (?, ?, ?, ?);",
+                                    batch,
+                                )
+                                batch.clear()
+
+                            for temp_path in (
+                                l_path,
+                                a_path,
+                                l_path.with_suffix(l_path.suffix + ".hdr"),
+                                a_path.with_suffix(a_path.suffix + ".hdr"),
+                            ):
+                                try:
+                                    temp_path.unlink()
+                                except OSError:
+                                    pass
+
+                        if batch:
+                            conn.executemany(
+                                "INSERT INTO tiles (zoom_level, tile_column, tile_row, tile_data) VALUES (?, ?, ?, ?);",
+                                batch,
+                            )
+                            batch.clear()
+
+        conn.commit()
+        print(f"Tiles inserted: {total_inserted} skipped: {total_skipped}")
+    finally:
+        conn.close()
 
 
 def _debug_pngcheck(mbtiles_path: Path) -> None:
@@ -602,7 +795,6 @@ def main() -> int:
             base_name = grib_path.stem
             byte_tif = warp_dir / f"{base_name}.byte.tif"
             warped_tif = warp_dir / f"{base_name}.3857.tif"
-            rgba_tif = warp_dir / f"{base_name}.3857.rgba.byte.tif"
 
             start_time = time.time()
             rebuild_byte = needs_rebuild(byte_tif)
@@ -628,27 +820,13 @@ def main() -> int:
             assert_alpha_present(info)
             log_warped_info(warped_tif, info)
 
-            rebuild_rgba = not rgba_tif.exists() or rgba_tif.stat().st_size == 0
-            if not rebuild_rgba:
-                try:
-                    rgba_info = gdalinfo_json(rgba_tif)
-                    assert_rgba_byte(rgba_info)
-                except Exception:
-                    rebuild_rgba = True
-
-            if rebuild_rgba:
-                print(f"Building RGBA GeoTIFF: {rgba_tif}")
-                to_rgba_byte_geotiff(warped_tif, rgba_tif)
-                rgba_info = gdalinfo_json(rgba_tif)
-                assert_rgba_byte(rgba_info)
-
             out_path = Path(args.out)
             if out_path.exists():
                 out_path.unlink()
 
             print(f"Building MBTiles: {out_path}")
-            build_mbtiles_from_3857_tif(
-                rgba_tif,
+            build_mbtiles_from_3857_gray_alpha_tif(
+                warped_tif,
                 out_path,
                 z_min=args.z_min,
                 z_max=args.z_max,
@@ -667,6 +845,15 @@ def main() -> int:
                 name=out_path.stem,
                 center=(center_lon, center_lat, args.z_min),
             )
+
+            print("Smoke test commands:")
+            print(f"sqlite3 {out_path} \"select count(*) from tiles;\"")
+            print(
+                "sqlite3 "
+                f"{out_path} \"select hex(tile_data) from tiles limit 1;\" "
+                "| tr -d '\\n' | xxd -r -p > /tmp/tile.png"
+            )
+            print("pngcheck -v /tmp/tile.png | head -n 12")
 
             elapsed = time.time() - start_time
             print(f"Done: MBTiles built in {elapsed:.1f}s")
