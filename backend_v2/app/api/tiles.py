@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import logging
+import os
 import re
+import sqlite3
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Response
 
-from ..config import MBTILES_ROOT
-from ..services.mbtiles import get_tile_bytes
-from ..utils.pathing import safe_join
-
 router = APIRouter(prefix="/tiles/v2", tags=["v2-tiles"])
+logger = logging.getLogger(__name__)
 SEGMENT_RE = re.compile(r"^[a-z0-9_-]+$")
+MBTILES_ENV = "TWF_V2_MBTILES_PATH"
 
 
 @router.get("/{model}/{run}/{var}/{fh}/{z}/{x}/{y}.png")
@@ -29,14 +31,45 @@ def get_tile(
                 detail=f"Invalid {label} segment: must match ^[a-z0-9_-]+$",
             )
 
-    try:
-        mbtiles_path = safe_join(MBTILES_ROOT, model, run, f"{var}.mbtiles")
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    env_value = os.environ.get(MBTILES_ENV)
+    if not env_value:
+        raise HTTPException(
+            status_code=500,
+            detail=f"{MBTILES_ENV} not set or MBTiles not found: {env_value or ''}",
+        )
+    mbtiles_path = Path(env_value)
+    if not mbtiles_path.exists():
+        raise HTTPException(
+            status_code=500,
+            detail=f"{MBTILES_ENV} not set or MBTiles not found: {mbtiles_path}",
+        )
 
-    tile_bytes = get_tile_bytes(mbtiles_path, z, x, y)
-    if tile_bytes is None:
+    tms_y = (1 << z) - 1 - y
+
+    try:
+        with sqlite3.connect(f"file:{mbtiles_path}?mode=ro", uri=True) as conn:
+            row = conn.execute(
+                "SELECT tile_data FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=? LIMIT 1",
+                (z, x, tms_y),
+            ).fetchone()
+    except sqlite3.Error as exc:
+        raise HTTPException(status_code=500, detail=f"MBTiles read error: {exc}") from exc
+
+    found = bool(row and row[0])
+    logger.warning(
+        "MBTiles lookup path=%s z=%s x=%s y=%s tms_y=%s found=%s",
+        mbtiles_path,
+        z,
+        x,
+        y,
+        tms_y,
+        found,
+    )
+
+    if not found:
         raise HTTPException(status_code=404, detail="Tile not found")
+
+    tile_bytes = row[0]
 
     headers = {"Cache-Control": "public, max-age=31536000, immutable"}
     try:
