@@ -314,6 +314,7 @@ def build_mbtiles_from_3857_gray_alpha_tif(
     mbtiles_path: Path,
     z_min: int,
     z_max: int,
+    debug: bool = False,
 ) -> None:
     info = gdalinfo_json(src_tif)
     bounds = info.get("cornerCoordinates") or {}
@@ -409,8 +410,8 @@ def build_mbtiles_from_3857_gray_alpha_tif(
                             total_skipped += 1
                             continue
 
-                        l_arr = np.asarray(l_arr, dtype=np.uint8)
-                        a_arr = np.asarray(a_arr, dtype=np.uint8)
+                        l_arr = np.asarray(l_arr).astype(np.uint8, copy=False)
+                        a_arr = np.asarray(a_arr).astype(np.uint8, copy=False)
 
                         if a_arr.max() == 0:
                             total_skipped += 1
@@ -419,10 +420,19 @@ def build_mbtiles_from_3857_gray_alpha_tif(
                         tile_img = Image.merge(
                             "LA",
                             (Image.fromarray(l_arr, mode="L"), Image.fromarray(a_arr, mode="L")),
-                        )
+                        ).convert("LA")
                         buffer = BytesIO()
                         tile_img.save(buffer, format="PNG", optimize=True)
                         tile_bytes = buffer.getvalue()
+                        if debug:
+                            check = Image.open(BytesIO(tile_bytes))
+                            assert check.mode == "LA"
+                            l_check = np.asarray(check.getchannel(0))
+                            a_check = np.asarray(check.getchannel(1))
+                            assert l_check.dtype == np.uint8
+                            assert a_check.dtype == np.uint8
+                            assert 0 <= int(l_check.min()) <= 255 and 0 <= int(l_check.max()) <= 255
+                            assert 0 <= int(a_check.min()) <= 255 and 0 <= int(a_check.max()) <= 255
 
                         tms_y = (1 << z) - 1 - y
                         batch.append((z, x, tms_y, tile_bytes))
@@ -513,6 +523,8 @@ def build_mbtiles_from_3857_gray_alpha_tif(
 
                             l_arr = l_arr.reshape((TILE_SIZE, TILE_SIZE))
                             a_arr = a_arr.reshape((TILE_SIZE, TILE_SIZE))
+                            l_arr = np.asarray(l_arr).astype(np.uint8, copy=False)
+                            a_arr = np.asarray(a_arr).astype(np.uint8, copy=False)
                             if a_arr.max() == 0:
                                 total_skipped += 1
                                 continue
@@ -520,10 +532,19 @@ def build_mbtiles_from_3857_gray_alpha_tif(
                             tile_img = Image.merge(
                                 "LA",
                                 (Image.fromarray(l_arr, mode="L"), Image.fromarray(a_arr, mode="L")),
-                            )
+                            ).convert("LA")
                             buffer = BytesIO()
                             tile_img.save(buffer, format="PNG", optimize=True)
                             tile_bytes = buffer.getvalue()
+                            if debug:
+                                check = Image.open(BytesIO(tile_bytes))
+                                assert check.mode == "LA"
+                                l_check = np.asarray(check.getchannel(0))
+                                a_check = np.asarray(check.getchannel(1))
+                                assert l_check.dtype == np.uint8
+                                assert a_check.dtype == np.uint8
+                                assert 0 <= int(l_check.min()) <= 255 and 0 <= int(l_check.max()) <= 255
+                                assert 0 <= int(a_check.min()) <= 255 and 0 <= int(a_check.max()) <= 255
 
                             tms_y = (1 << z) - 1 - y
                             batch.append((z, x, tms_y, tile_bytes))
@@ -830,6 +851,7 @@ def main() -> int:
                 out_path,
                 z_min=args.z_min,
                 z_max=args.z_max,
+                debug=args.debug,
             )
 
             if args.debug:
