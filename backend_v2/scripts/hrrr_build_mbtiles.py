@@ -293,6 +293,8 @@ def build_mbtiles_from_3857_tif(
             "-co",
             "TILE_FORMAT=PNG",
             "-co",
+            "NBITS=8",
+            "-co",
             "ZOOM_LEVEL_STRATEGY=LOWER",
             "-co",
             f"MINZOOM={z_min}",
