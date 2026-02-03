@@ -11,6 +11,7 @@ from app.config import settings
 from app.models.schemas import MapInfo, MapListResponse, UpdateResponse, GFSRun, GFSRunListResponse, ModelInfo, ModelListResponse
 from app.services.map_generator import MapGenerator
 from app.models.model_registry import ModelRegistry
+from app.api.v2.tiles_mbtiles import router as v2_tiles_router
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -405,3 +406,6 @@ async def trigger_update(
         job_id=f"update_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
         message="Update job started. Maps will be generated in the background."
     )
+
+
+router.include_router(v2_tiles_router)
