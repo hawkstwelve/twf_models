@@ -430,6 +430,19 @@ def main() -> int:
     try:
         if normalized_var == "wspd10m":
             try:
+                def log_debug(message: str) -> None:
+                    if args.debug:
+                        print(message)
+                    else:
+                        print(message)
+
+                def summarize_da(name: str, da: xr.DataArray) -> str:
+                    grib_keys = [key for key in da.attrs.keys() if key.startswith("GRIB_")]
+                    return (
+                        f"{name}: name={da.name} dims={da.dims} shape={da.shape} "
+                        f"coords={list(da.coords.keys())} grib_keys={grib_keys}"
+                    )
+
                 def select_first(ds: xr.Dataset, candidates: list[str], label: str) -> tuple[xr.DataArray, str]:
                     errors: list[str] = []
                     for cand in candidates:
@@ -438,6 +451,9 @@ def main() -> int:
                         except Exception as exc:
                             errors.append(f"{cand}: {type(exc).__name__}: {exc}")
                     available = sorted(ds.data_vars.keys())
+                    if len(available) == 1:
+                        only_key = available[0]
+                        return ds[only_key], only_key
                     raise RuntimeError(
                         f"Failed to select {label}. Tried {candidates}. "
                         f"Available: {available}. Errors: {errors}"
@@ -449,19 +465,35 @@ def main() -> int:
                 v_candidates = ["vgrd10m", "v10", "10v"]
                 u_da, u_key = select_first(ds_u, u_candidates, "u wind")
                 v_da, v_key = select_first(ds_v, v_candidates, "v wind")
+                log_debug(f"wspd10m: selected u_key={u_key} v_key={v_key}")
+                log_debug(summarize_da("u_da", u_da))
+                log_debug(summarize_da("v_da", v_da))
+
                 if "time" in u_da.dims:
                     u_da = u_da.isel(time=0)
+                    log_debug("wspd10m: selected time=0 for u_da")
                 if "time" in v_da.dims:
                     v_da = v_da.isel(time=0)
+                    log_debug("wspd10m: selected time=0 for v_da")
+
                 u_da = u_da.squeeze()
                 v_da = v_da.squeeze()
-                print(f"wspd10m: selected u_key={u_key} v_key={v_key}")
-                speed = (u_da**2 + v_da**2) ** 0.5
-                speed = speed.astype(np.float32).load()
-                speed.name = "wspd10m"
-                speed.attrs = dict(u_da.attrs)
-                speed.attrs["GRIB_units"] = "m/s"
-                da = speed
+
+                try:
+                    u_da, v_da = xr.align(u_da, v_da, join="exact")
+                except Exception as exc:
+                    raise RuntimeError(
+                        "Failed to align u/v grids. "
+                        f"u_dims={u_da.dims} u_shape={u_da.shape} u_coords={list(u_da.coords.keys())} "
+                        f"v_dims={v_da.dims} v_shape={v_da.shape} v_coords={list(v_da.coords.keys())}"
+                    ) from exc
+
+                wspd = np.hypot(u_da.astype("float32"), v_da.astype("float32")).astype("float32")
+                wspd.name = "wspd10m"
+                wspd.attrs = dict(u_da.attrs)
+                wspd.attrs["GRIB_units"] = "m/s"
+                da = wspd
+
                 print(
                     "Derived wspd10m: "
                     f"min={float(np.nanmin(da.values)):.2f} max={float(np.nanmax(da.values)):.2f}"
@@ -503,123 +535,127 @@ def main() -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 4
 
-        if "time" in da.dims:
-            da = da.isel(time=0)
-        da = da.squeeze()
+    if "time" in da.dims:
+        da = da.isel(time=0)
+    da = da.squeeze()
 
-        values = np.asarray(da.values, dtype=np.float32)
-        if values.ndim != 2:
-            raise ValueError(f"Expected 2D values after squeeze, got shape {values.shape}")
-
-        try:
-            da = normalize_latlon_coords(da)
-            lat_name, lon_name = detect_latlon_names(da)
-        except Exception as exc:
-            print(f"ERROR: Failed to normalize lat/lon coords: {exc}", file=sys.stderr)
-            return 5
-
-        lat_vals = da.coords[lat_name].values
-        lon_vals = da.coords[lon_name].values
-        print(
-            f"Requested var '{args.var}' normalized to '{normalized_var}' using dataset var '{da.name}'\n"
-            f"GRIB domain: lat[{lat_name}] min={np.nanmin(lat_vals):.4f} max={np.nanmax(lat_vals):.4f}\n"
-            f"GRIB domain: lon[{lon_name}] min={np.nanmin(lon_vals):.4f} max={np.nanmax(lon_vals):.4f}"
+    values = np.asarray(da.values, dtype=np.float32)
+    if values.ndim != 2:
+        raise RuntimeError(
+            "Expected 2D values after squeeze. "
+            f"dims={da.dims} shape={values.shape} coords={list(da.coords.keys())} "
+            f"attrs_keys={sorted(list(da.attrs.keys()))}"
         )
 
-        if clip_bbox_wgs84:
-            bounds_wgs84 = clip_bbox_wgs84
-            print(f"Metadata will use clipped bounds: {bounds_wgs84}")
-        else:
-            bounds_wgs84 = (
-                float(np.nanmin(lon_vals)),
-                float(np.nanmin(lat_vals)),
-                float(np.nanmax(lon_vals)),
-                float(np.nanmax(lat_vals)),
-            )
-            print(f"Metadata will use full GRIB bounds: {bounds_wgs84}")
+    try:
+        da = normalize_latlon_coords(da)
+        lat_name, lon_name = detect_latlon_names(da)
+    except Exception as exc:
+        print(f"ERROR: Failed to normalize lat/lon coords: {exc}", file=sys.stderr)
+        return 5
 
-        try:
-            start_time = time.time()
-            byte_band, alpha_band, meta = encode_to_byte_and_alpha(values, var_key=args.var)
+    lat_vals = da.coords[lat_name].values
+    lon_vals = da.coords[lon_name].values
+    print(
+        f"Requested var '{args.var}' normalized to '{normalized_var}' using dataset var '{da.name}'\n"
+        f"GRIB domain: lat[{lat_name}] min={np.nanmin(lat_vals):.4f} max={np.nanmax(lat_vals):.4f}\n"
+        f"GRIB domain: lon[{lon_name}] min={np.nanmin(lon_vals):.4f} max={np.nanmax(lon_vals):.4f}"
+    )
 
-            run_id = _resolve_run_id(grib_path)
-            out_dir = Path(args.out_root) / args.model / args.region / run_id / args.var
-            out_dir.mkdir(parents=True, exist_ok=True)
+    if clip_bbox_wgs84:
+        bounds_wgs84 = clip_bbox_wgs84
+        print(f"Metadata will use clipped bounds: {bounds_wgs84}")
+    else:
+        bounds_wgs84 = (
+            float(np.nanmin(lon_vals)),
+            float(np.nanmin(lat_vals)),
+            float(np.nanmax(lon_vals)),
+            float(np.nanmax(lat_vals)),
+        )
+        print(f"Metadata will use full GRIB bounds: {bounds_wgs84}")
 
-            cog_path = out_dir / f"fh{args.fh:03d}.cog.tif"
-            sidecar_path = out_dir / f"fh{args.fh:03d}.json"
+    try:
+        start_time = time.time()
+        byte_band, alpha_band, meta = encode_to_byte_and_alpha(values, var_key=args.var)
 
-            with tempfile.TemporaryDirectory(prefix="hrrr_cog_") as temp_dir:
-                temp_root = Path(temp_dir)
-                base_name = grib_path.stem
-                byte_tif = temp_root / f"{base_name}.byte.tif"
-                warped_tif = temp_root / f"{base_name}.3857.tif"
+        run_id = _resolve_run_id(grib_path)
+        out_dir = Path(args.out_root) / args.model / args.region / run_id / args.var
+        out_dir.mkdir(parents=True, exist_ok=True)
 
-                print(f"Writing byte GeoTIFF: {byte_tif}")
-                write_byte_geotiff_from_arrays(da, byte_band, alpha_band, byte_tif)
+        cog_path = out_dir / f"fh{args.fh:03d}.cog.tif"
+        sidecar_path = out_dir / f"fh{args.fh:03d}.json"
 
-                print(f"Warping to EPSG:3857: {warped_tif}")
-                warp_to_3857(byte_tif, warped_tif, clip_bounds_3857=clip_bounds_3857)
+        with tempfile.TemporaryDirectory(prefix="hrrr_cog_") as temp_dir:
+            temp_root = Path(temp_dir)
+            base_name = grib_path.stem
+            byte_tif = temp_root / f"{base_name}.byte.tif"
+            warped_tif = temp_root / f"{base_name}.3857.tif"
 
-                info = gdalinfo_json(warped_tif)
-                assert_alpha_present(info)
-                log_warped_info(warped_tif, info)
+            print(f"Writing byte GeoTIFF: {byte_tif}")
+            write_byte_geotiff_from_arrays(da, byte_band, alpha_band, byte_tif)
 
-                if clip_bounds_3857:
-                    corner = info.get("cornerCoordinates") or {}
-                    ll = corner.get("lowerLeft") or [0.0, 0.0]
-                    ur = corner.get("upperRight") or [0.0, 0.0]
-                    print(
-                        f"Warped GeoTIFF bounds (EPSG:3857): [{ll[0]:.2f}, {ll[1]:.2f}] to [{ur[0]:.2f}, {ur[1]:.2f}]"
-                    )
-                    print(
-                        f"Expected clip bounds (EPSG:3857): [{clip_bounds_3857[0]:.2f}, {clip_bounds_3857[1]:.2f}] "
-                        f"to [{clip_bounds_3857[2]:.2f}, {clip_bounds_3857[3]:.2f}]"
-                    )
+            print(f"Warping to EPSG:3857: {warped_tif}")
+            warp_to_3857(byte_tif, warped_tif, clip_bounds_3857=clip_bounds_3857)
 
-                print(f"Writing COG: {cog_path}")
-                require_gdal("gdal_translate")
-                run_cmd(
-                    [
-                        "gdal_translate",
-                        "-of",
-                        "COG",
-                        "-co",
-                        "COMPRESS=DEFLATE",
-                        str(warped_tif),
-                        str(cog_path),
-                    ]
+            info = gdalinfo_json(warped_tif)
+            assert_alpha_present(info)
+            log_warped_info(warped_tif, info)
+
+            if clip_bounds_3857:
+                corner = info.get("cornerCoordinates") or {}
+                ll = corner.get("lowerLeft") or [0.0, 0.0]
+                ur = corner.get("upperRight") or [0.0, 0.0]
+                print(
+                    f"Warped GeoTIFF bounds (EPSG:3857): [{ll[0]:.2f}, {ll[1]:.2f}] to [{ur[0]:.2f}, {ur[1]:.2f}]"
+                )
+                print(
+                    f"Expected clip bounds (EPSG:3857): [{clip_bounds_3857[0]:.2f}, {clip_bounds_3857[1]:.2f}] "
+                    f"to [{clip_bounds_3857[2]:.2f}, {clip_bounds_3857[3]:.2f}]"
                 )
 
-                require_gdal("gdaladdo")
-                run_cmd(
-                    [
-                        "gdaladdo",
-                        str(cog_path),
-                        "2",
-                        "4",
-                        "8",
-                        "16",
-                        "32",
-                        "64",
-                    ]
-                )
-
-            _write_sidecar_json(
-                sidecar_path,
-                model=args.model,
-                region=args.region,
-                run=run_id,
-                var=args.var,
-                fh=args.fh,
-                meta=meta,
+            print(f"Writing COG: {cog_path}")
+            require_gdal("gdal_translate")
+            run_cmd(
+                [
+                    "gdal_translate",
+                    "-of",
+                    "COG",
+                    "-co",
+                    "COMPRESS=DEFLATE",
+                    str(warped_tif),
+                    str(cog_path),
+                ]
             )
 
-            elapsed = time.time() - start_time
-            print(f"Done: COG built in {elapsed:.1f}s")
-        except Exception as exc:
-            print(f"ERROR: GDAL pipeline failed: {exc}", file=sys.stderr)
-            return 6
+            require_gdal("gdaladdo")
+            run_cmd(
+                [
+                    "gdaladdo",
+                    str(cog_path),
+                    "2",
+                    "4",
+                    "8",
+                    "16",
+                    "32",
+                    "64",
+                ]
+            )
+
+        _write_sidecar_json(
+            sidecar_path,
+            model=args.model,
+            region=args.region,
+            run=run_id,
+            var=args.var,
+            fh=args.fh,
+            meta=meta,
+        )
+
+        elapsed = time.time() - start_time
+        print(f"Done: COG built in {elapsed:.1f}s")
+    except Exception as exc:
+        print(f"ERROR: GDAL pipeline failed: {exc}", file=sys.stderr)
+        return 6
     finally:
         if ds is not None:
             ds.close()
