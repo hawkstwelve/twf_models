@@ -7,7 +7,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from xml.sax.saxutils import escape
 
@@ -348,7 +348,7 @@ def _write_sidecar_json(
         "var": var,
         "fh": fh,
         "meta": meta,
-        "created_utc": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        "created_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
     }
     path.write_text(json.dumps(payload, indent=2, sort_keys=True))
 

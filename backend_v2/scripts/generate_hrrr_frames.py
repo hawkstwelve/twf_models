@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import re
 import shutil
 import subprocess
 import sys
@@ -12,6 +13,7 @@ from app.services.hrrr_runs import HRRRCacheConfig, get_latest_cycle_dir
 from app.services.paths import default_hrrr_cache_dir
 
 logger = logging.getLogger(__name__)
+RUN_RE = re.compile(r"^\d{8}_(\d{2})z$")
 
 
 def parse_args() -> argparse.Namespace:
@@ -20,6 +22,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", type=str, default="hrrr")
     parser.add_argument("--region", type=str, default="pnw")
     parser.add_argument("--out-root", type=str, default="/opt/twf_models/data/v2")
+    parser.add_argument("--run", type=str, default="latest")
+    parser.add_argument("--vars", type=str, default=None)
+    parser.add_argument("--fh", type=str, default=None)
+    parser.add_argument("--no-retention", action="store_true")
     return parser.parse_args()
 
 
@@ -29,6 +35,31 @@ def resolve_latest_run(cfg: HRRRCacheConfig) -> tuple[str, int]:
     run_id = f"{day_dir.name}_{cycle_dir.name}z"
     cycle_hour = int(cycle_dir.name)
     return run_id, cycle_hour
+
+
+def parse_fh_arg(value: str) -> list[int]:
+    text = value.strip()
+    if not text:
+        raise ValueError("--fh cannot be empty")
+    if "-" in text:
+        parts = [item.strip() for item in text.split("-") if item.strip()]
+        if len(parts) != 2:
+            raise ValueError(f"Invalid --fh range format: {value}")
+        start, end = (int(parts[0]), int(parts[1]))
+        if end < start:
+            raise ValueError(f"Invalid --fh range (end < start): {value}")
+        return list(range(start, end + 1))
+    values = [int(item.strip()) for item in text.split(",") if item.strip()]
+    if not values:
+        raise ValueError(f"Invalid --fh list format: {value}")
+    return sorted(set(values))
+
+
+def parse_vars_arg(value: str) -> list[str]:
+    items = [item.strip().lower() for item in value.split(",") if item.strip()]
+    if not items:
+        raise ValueError("--vars cannot be empty")
+    return items
 
 
 def select_mvp_vars() -> list[str]:
@@ -139,19 +170,51 @@ def main() -> int:
     cache_dir = Path(args.cache_dir) if args.cache_dir else default_hrrr_cache_dir()
     cfg = HRRRCacheConfig(base_dir=cache_dir, keep_runs=1)
 
-    try:
-        run_id, cycle_hour = resolve_latest_run(cfg)
-    except Exception as exc:
-        logger.error("Failed to resolve latest HRRR run: %s", exc)
-        return 1
-
-    if cycle_hour in {0, 6, 12, 18}:
-        fhs = list(range(0, 49))
+    if args.run == "latest":
+        try:
+            run_id, cycle_hour = resolve_latest_run(cfg)
+        except Exception as exc:
+            logger.error("Failed to resolve latest HRRR run: %s", exc)
+            return 1
     else:
-        fhs = list(range(0, 19))
+        match = RUN_RE.match(args.run)
+        if not match:
+            logger.error("Invalid --run format (expected YYYYMMDD_HHz): %s", args.run)
+            return 1
+        run_id = args.run
+        cycle_hour = int(match.group(1))
+        out_dir = Path(args.out_root) / args.model / args.region / run_id
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            logger.error("Failed to prepare output dir %s: %s", out_dir, exc)
+            return 1
 
-    vars_to_build = select_mvp_vars()
-    logger.info("Latest run: %s (cycle=%02d) fhs=%s vars=%s", run_id, cycle_hour, fhs[-1], vars_to_build)
+    if args.fh:
+        try:
+            fhs = parse_fh_arg(args.fh)
+        except ValueError as exc:
+            logger.error("Invalid --fh value: %s", exc)
+            return 1
+    else:
+        if cycle_hour in {0, 6, 12, 18}:
+            fhs = list(range(0, 49))
+        else:
+            fhs = list(range(0, 19))
+
+    if args.vars:
+        try:
+            vars_to_build = parse_vars_arg(args.vars)
+        except ValueError as exc:
+            logger.error("Invalid --vars value: %s", exc)
+            return 1
+        missing = [var for var in vars_to_build if var not in VAR_SPECS]
+        if missing:
+            logger.error("Unknown vars in --vars: %s", ", ".join(missing))
+            return 1
+    else:
+        vars_to_build = select_mvp_vars()
+    logger.info("Run: %s (cycle=%02d) fhs=%s vars=%s", run_id, cycle_hour, fhs[-1], vars_to_build)
 
     script_path = Path(__file__).resolve().parent / "hrrr_build_cog.py"
     failures = build_frames(
@@ -162,12 +225,13 @@ def main() -> int:
         args=args,
     )
 
-    enforce_latest_run_retention(
-        out_root=Path(args.out_root),
-        model=args.model,
-        region=args.region,
-        keep_run=run_id,
-    )
+    if not args.no_retention:
+        enforce_latest_run_retention(
+            out_root=Path(args.out_root),
+            model=args.model,
+            region=args.region,
+            keep_run=run_id,
+        )
 
     if failures:
         logger.warning("Completed with %s failures", len(failures))
