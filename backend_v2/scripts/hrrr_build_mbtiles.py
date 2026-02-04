@@ -34,6 +34,9 @@ EPS = 1e-9
 ORIGIN_SHIFT = 20037508.342789244
 TILE_SIZE = 256
 
+# PNW bounding box: WA, OR, NW Idaho, Western MT
+PNW_BBOX_WGS84 = (-125.5, 41.5, -111.0, 49.5)  # (min_lon, min_lat, max_lon, max_lat)
+
 try:
     from osgeo import gdal
 
@@ -65,6 +68,22 @@ def run_cmd_json(args: list[str]) -> dict:
         return json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"Failed to parse JSON from {' '.join(args)}") from exc
+
+
+def wgs84_bbox_to_3857(bbox_wgs84: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+    """Convert WGS84 bounding box to EPSG:3857 (Web Mercator) in meters.
+    
+    Args:
+        bbox_wgs84: (min_lon, min_lat, max_lon, max_lat) in degrees
+    
+    Returns:
+        (minx, miny, maxx, maxy) in EPSG:3857 meters
+    """
+    min_lon, min_lat, max_lon, max_lat = bbox_wgs84
+    transformer = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
+    minx, miny = transformer.transform(min_lon, min_lat)
+    maxx, maxy = transformer.transform(max_lon, max_lat)
+    return minx, miny, maxx, maxy
 
 
 def compute_scale_params(
@@ -285,28 +304,47 @@ def write_byte_geotiff_from_da(
     return out_tif
 
 
-def warp_to_3857(src_tif: Path, dst_tif: Path) -> None:
+def warp_to_3857(src_tif: Path, dst_tif: Path, clip_bounds_3857: tuple[float, float, float, float] | None = None) -> None:
+    """Warp GeoTIFF to EPSG:3857, optionally clipping to a bounding box.
+    
+    Args:
+        src_tif: Source GeoTIFF path
+        dst_tif: Destination GeoTIFF path
+        clip_bounds_3857: Optional (minx, miny, maxx, maxy) in EPSG:3857 meters to clip output
+    """
     require_gdal("gdalwarp")
     dst_tif.parent.mkdir(parents=True, exist_ok=True)
-    run_cmd(
-        [
-            "gdalwarp",
-            "-t_srs",
+    
+    cmd = [
+        "gdalwarp",
+        "-t_srs",
+        "EPSG:3857",
+        "-r",
+        "bilinear",
+        "-srcalpha",
+        "-wo",
+        "SRC_ALPHA=YES",
+        "-co",
+        "TILED=YES",
+        "-co",
+        "COMPRESS=DEFLATE",
+        "-overwrite",
+    ]
+    
+    if clip_bounds_3857 is not None:
+        minx, miny, maxx, maxy = clip_bounds_3857
+        cmd.extend([
+            "-te",
+            str(minx),
+            str(miny),
+            str(maxx),
+            str(maxy),
+            "-te_srs",
             "EPSG:3857",
-            "-r",
-            "bilinear",
-            "-srcalpha",
-            "-wo",
-            "SRC_ALPHA=YES",
-            "-co",
-            "TILED=YES",
-            "-co",
-            "COMPRESS=DEFLATE",
-            "-overwrite",
-            str(src_tif),
-            str(dst_tif),
-        ]
-    )
+        ])
+    
+    cmd.extend([str(src_tif), str(dst_tif)])
+    run_cmd(cmd)
 
 
 def build_mbtiles_from_3857_gray_alpha_tif(
@@ -675,6 +713,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log", action="store_true")
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--keep-cycles", type=int, default=None)
+    parser.add_argument(
+        "--bbox",
+        type=str,
+        default=None,
+        help="Clip to custom WGS84 bbox: 'min_lon,min_lat,max_lon,max_lat' (default: PNW region)",
+    )
+    parser.add_argument(
+        "--no-clip",
+        action="store_true",
+        help="Disable geographic clipping (generates tiles for full HRRR domain)",
+    )
     return parser.parse_args()
 
 
@@ -724,6 +773,31 @@ def main() -> int:
     args = parse_args()
     cache_dir = Path(args.cache_dir) if args.cache_dir else default_hrrr_cache_dir()
     cfg = HRRRCacheConfig(base_dir=cache_dir, keep_runs=1)
+    
+    # Determine clipping bbox
+    if args.no_clip:
+        clip_bbox_wgs84 = None
+        clip_bounds_3857 = None
+        print("Clipping disabled: will generate tiles for full HRRR domain")
+    elif args.bbox:
+        try:
+            parts = [float(x.strip()) for x in args.bbox.split(",")]
+            if len(parts) != 4:
+                raise ValueError("Expected 4 values")
+            clip_bbox_wgs84 = tuple(parts)
+            clip_bounds_3857 = wgs84_bbox_to_3857(clip_bbox_wgs84)
+            print(f"Using custom clip bbox (WGS84): {clip_bbox_wgs84}")
+        except Exception as exc:
+            print(f"ERROR: Invalid --bbox format: {exc}", file=sys.stderr)
+            return 1
+    else:
+        clip_bbox_wgs84 = PNW_BBOX_WGS84
+        clip_bounds_3857 = wgs84_bbox_to_3857(PNW_BBOX_WGS84)
+        print(f"Using default PNW clip bbox (WGS84): {clip_bbox_wgs84}")
+    
+    if clip_bounds_3857:
+        print(f"Clip bounds (EPSG:3857): minx={clip_bounds_3857[0]:.2f} miny={clip_bounds_3857[1]:.2f} "
+              f"maxx={clip_bounds_3857[2]:.2f} maxy={clip_bounds_3857[3]:.2f}")
 
     try:
         grib_path = fetch_hrrr_grib(
@@ -785,16 +859,22 @@ def main() -> int:
         lon_vals = da.coords[lon_name].values
         print(
             f"Requested var '{args.var}' normalized to '{normalized_var}' using dataset var '{da.name}'\n"
-            f"lat[{lat_name}] min={np.nanmin(lat_vals):.4f} max={np.nanmax(lat_vals):.4f}\n"
-            f"lon[{lon_name}] min={np.nanmin(lon_vals):.4f} max={np.nanmax(lon_vals):.4f}"
+            f"GRIB domain: lat[{lat_name}] min={np.nanmin(lat_vals):.4f} max={np.nanmax(lat_vals):.4f}\n"
+            f"GRIB domain: lon[{lon_name}] min={np.nanmin(lon_vals):.4f} max={np.nanmax(lon_vals):.4f}"
         )
 
-        bounds_wgs84 = (
-            float(np.nanmin(lon_vals)),
-            float(np.nanmin(lat_vals)),
-            float(np.nanmax(lon_vals)),
-            float(np.nanmax(lat_vals)),
-        )
+        # Use clipped bbox for metadata (if clipping enabled) or full GRIB domain (if --no-clip)
+        if clip_bbox_wgs84:
+            bounds_wgs84 = clip_bbox_wgs84
+            print(f"Metadata will use clipped bounds: {bounds_wgs84}")
+        else:
+            bounds_wgs84 = (
+                float(np.nanmin(lon_vals)),
+                float(np.nanmin(lat_vals)),
+                float(np.nanmax(lon_vals)),
+                float(np.nanmax(lat_vals)),
+            )
+            print(f"Metadata will use full GRIB bounds: {bounds_wgs84}")
 
         try:
             vmin, vmax = compute_scale_params(da, args.p_low, args.p_high, args.log, EPS)
@@ -822,13 +902,22 @@ def main() -> int:
 
             if not warped_tif.exists() or warped_tif.stat().st_size == 0 or rebuild_byte:
                 print(f"Warping to EPSG:3857: {warped_tif}")
-                warp_to_3857(byte_tif, warped_tif)
+                warp_to_3857(byte_tif, warped_tif, clip_bounds_3857=clip_bounds_3857)
             else:
                 print(f"Reusing warped GeoTIFF: {warped_tif}")
 
             info = gdalinfo_json(warped_tif)
             assert_alpha_present(info)
             log_warped_info(warped_tif, info)
+            
+            # Verify clipping worked
+            if clip_bounds_3857:
+                corner = info.get("cornerCoordinates") or {}
+                ll = corner.get("lowerLeft") or [0.0, 0.0]
+                ur = corner.get("upperRight") or [0.0, 0.0]
+                print(f"Warped GeoTIFF bounds (EPSG:3857): [{ll[0]:.2f}, {ll[1]:.2f}] to [{ur[0]:.2f}, {ur[1]:.2f}]")
+                print(f"Expected clip bounds (EPSG:3857): [{clip_bounds_3857[0]:.2f}, {clip_bounds_3857[1]:.2f}] "
+                      f"to [{clip_bounds_3857[2]:.2f}, {clip_bounds_3857[3]:.2f}]")
 
             out_path = Path(args.out)
             if out_path.exists():

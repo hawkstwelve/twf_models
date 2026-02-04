@@ -292,12 +292,12 @@ Items should only be marked complete when validated locally **and** reviewed aga
 ---
 
 ### Milestone 3 — Tile Generation Pipeline (HRRR)
-- [ ] Herbie-based HRRR fetch working
-- [ ] GRIB → GeoTIFF conversion implemented
-- [ ] Reprojection to EPSG:3857 validated
-- [ ] z=5–11 tile generation working
-- [ ] MBTiles written correctly
-- [ ] Latest-run-only retention enforced
+- [x] Herbie-based HRRR fetch working
+- [x] GRIB → GeoTIFF conversion implemented
+- [x] Reprojection to EPSG:3857 validated
+- [x] z=5–11 tile generation working
+- [x] MBTiles written correctly
+- [x] Latest-run-only retention enforced
 
 **Exit criteria:** A full HRRR run produces usable tiles end-to-end.
 
