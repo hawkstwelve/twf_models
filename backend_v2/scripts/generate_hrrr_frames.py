@@ -1,0 +1,183 @@
+from __future__ import annotations
+
+import argparse
+import logging
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+from app.services.colormaps_v2 import VAR_SPECS
+from app.services.hrrr_runs import HRRRCacheConfig, get_latest_cycle_dir
+from app.services.paths import default_hrrr_cache_dir
+
+logger = logging.getLogger(__name__)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Generate HRRR V2 COG frames for the latest run.")
+    parser.add_argument("--cache-dir", type=str, default=None)
+    parser.add_argument("--model", type=str, default="hrrr")
+    parser.add_argument("--region", type=str, default="pnw")
+    parser.add_argument("--out-root", type=str, default="/opt/twf_models/data/v2")
+    return parser.parse_args()
+
+
+def resolve_latest_run(cfg: HRRRCacheConfig) -> tuple[str, int]:
+    cycle_dir = get_latest_cycle_dir(cfg)
+    day_dir = cycle_dir.parent
+    run_id = f"{day_dir.name}_{cycle_dir.name}z"
+    cycle_hour = int(cycle_dir.name)
+    return run_id, cycle_hour
+
+
+def select_mvp_vars() -> list[str]:
+    vars_available = list(VAR_SPECS.keys())
+    if "tmp2m" not in VAR_SPECS:
+        raise RuntimeError("VAR_SPECS missing required tmp2m")
+
+    wind_like = next((key for key in vars_available if "wind" in key), None)
+    if wind_like is None:
+        logger.warning("No wind-like variable found in VAR_SPECS; selecting fallback")
+
+    discrete_var = "radar_rain" if "radar_rain" in VAR_SPECS else None
+    if discrete_var is None:
+        discrete_var = next(
+            (key for key, spec in VAR_SPECS.items() if spec.get("type") == "discrete"),
+            None,
+        )
+
+    chosen = ["tmp2m"]
+    if wind_like and wind_like not in chosen:
+        chosen.append(wind_like)
+    if discrete_var and discrete_var not in chosen:
+        chosen.append(discrete_var)
+
+    for key in vars_available:
+        if len(chosen) >= 3:
+            break
+        if key not in chosen:
+            chosen.append(key)
+
+    if len(chosen) < 3:
+        raise RuntimeError(f"Unable to select 3 MVP vars from VAR_SPECS (got {chosen})")
+
+    return chosen[:3]
+
+
+def build_frames(
+    *,
+    script_path: Path,
+    run_id: str,
+    fhs: list[int],
+    vars_to_build: list[str],
+    args: argparse.Namespace,
+) -> list[dict]:
+    failures: list[dict] = []
+    for var in vars_to_build:
+        for fh in fhs:
+            cmd = [
+                sys.executable,
+                str(script_path),
+                "--run",
+                run_id,
+                "--fh",
+                str(fh),
+                "--var",
+                var,
+                "--model",
+                args.model,
+                "--region",
+                args.region,
+                "--out-root",
+                args.out_root,
+            ]
+            if args.cache_dir:
+                cmd.extend(["--cache-dir", args.cache_dir])
+
+            logger.info("Building COG: var=%s fh=%s", var, fh)
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            if result.returncode != 0:
+                logger.error(
+                    "Failed COG build: var=%s fh=%s code=%s stderr=%s",
+                    var,
+                    fh,
+                    result.returncode,
+                    (result.stderr or "").strip(),
+                )
+                failures.append(
+                    {
+                        "var": var,
+                        "fh": fh,
+                        "code": result.returncode,
+                        "stderr": (result.stderr or "").strip(),
+                    }
+                )
+            else:
+                logger.info("Success: var=%s fh=%s", var, fh)
+
+    return failures
+
+
+def enforce_latest_run_retention(*, out_root: Path, model: str, region: str, keep_run: str) -> None:
+    root = out_root / model / region
+    if not root.exists():
+        return
+    for entry in root.iterdir():
+        if not entry.is_dir():
+            continue
+        if entry.name == keep_run:
+            continue
+        logger.info("Removing old run dir: %s", entry)
+        shutil.rmtree(entry, ignore_errors=True)
+
+
+def main() -> int:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    args = parse_args()
+
+    cache_dir = Path(args.cache_dir) if args.cache_dir else default_hrrr_cache_dir()
+    cfg = HRRRCacheConfig(base_dir=cache_dir, keep_runs=1)
+
+    try:
+        run_id, cycle_hour = resolve_latest_run(cfg)
+    except Exception as exc:
+        logger.error("Failed to resolve latest HRRR run: %s", exc)
+        return 1
+
+    if cycle_hour in {0, 6, 12, 18}:
+        fhs = list(range(0, 49))
+    else:
+        fhs = list(range(0, 19))
+
+    vars_to_build = select_mvp_vars()
+    logger.info("Latest run: %s (cycle=%02d) fhs=%s vars=%s", run_id, cycle_hour, fhs[-1], vars_to_build)
+
+    script_path = Path(__file__).resolve().parent / "hrrr_build_cog.py"
+    failures = build_frames(
+        script_path=script_path,
+        run_id=run_id,
+        fhs=fhs,
+        vars_to_build=vars_to_build,
+        args=args,
+    )
+
+    enforce_latest_run_retention(
+        out_root=Path(args.out_root),
+        model=args.model,
+        region=args.region,
+        keep_run=run_id,
+    )
+
+    if failures:
+        logger.warning("Completed with %s failures", len(failures))
+        for failure in failures:
+            logger.warning("Failure: var=%s fh=%s code=%s", failure["var"], failure["fh"], failure["code"])
+        return 2
+
+    logger.info("All frames built successfully")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

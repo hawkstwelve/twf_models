@@ -1,86 +1,99 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
-import sqlite3
+from io import BytesIO
 from pathlib import Path
 
+import numpy as np
+import rasterio
+from PIL import Image
+from rasterio.enums import Resampling
+from rasterio.windows import from_bounds
+
 from fastapi import APIRouter, HTTPException, Response
+
+from app.services.colormaps_v2 import get_lut
+from app.services.run_resolution import get_data_root, resolve_run
 
 router = APIRouter(prefix="/tiles/v2", tags=["v2-tiles"])
 logger = logging.getLogger(__name__)
 SEGMENT_RE = re.compile(r"^[a-z0-9_-]+$")
-MBTILES_ENV = "TWF_V2_MBTILES_PATH"
+ORIGIN_SHIFT = 20037508.342789244
+TILE_SIZE = 256
 
 
-@router.get("/{model}/{run}/{var}/{fh}/{z}/{x}/{y}.png")
+def _tile_bounds_3857(x: int, y: int, z: int) -> tuple[float, float, float, float]:
+    res = (2 * ORIGIN_SHIFT) / (TILE_SIZE * (2**z))
+    minx = x * TILE_SIZE * res - ORIGIN_SHIFT
+    maxx = (x + 1) * TILE_SIZE * res - ORIGIN_SHIFT
+    maxy = ORIGIN_SHIFT - y * TILE_SIZE * res
+    miny = ORIGIN_SHIFT - (y + 1) * TILE_SIZE * res
+    return minx, miny, maxx, maxy
+
+
+@router.get("/{model}/{region}/{run}/{var}/{fh}/{z}/{x}/{y}.png")
 def get_tile(
     model: str,
+    region: str,
     run: str,
     var: str,
-    fh: str,
+    fh: int,
     z: int,
     x: int,
     y: int,
 ) -> Response:
-    for label, value in ("model", model), ("run", run), ("var", var), ("fh", fh):
+    for label, value in ("model", model), ("region", region), ("run", run), ("var", var):
         if not SEGMENT_RE.match(value):
             raise HTTPException(
                 status_code=400,
                 detail=f"Invalid {label} segment: must match ^[a-z0-9_-]+$",
             )
 
-    env_value = os.environ.get(MBTILES_ENV)
-    if not env_value:
-        raise HTTPException(
-            status_code=500,
-            detail=f"{MBTILES_ENV} not set or MBTiles not found: {env_value or ''}",
-        )
-    mbtiles_path = Path(env_value)
-    if not mbtiles_path.exists():
-        raise HTTPException(
-            status_code=500,
-            detail=f"{MBTILES_ENV} not set or MBTiles not found: {mbtiles_path}",
-        )
+    resolved_run = resolve_run(model, region, run)
+    root = get_data_root()
+    cog_path = Path(root) / model / region / resolved_run / var / f"fh{fh:03d}.cog.tif"
+    if not cog_path.exists():
+        raise HTTPException(status_code=404, detail="Tile source not found")
 
-    tms_y = (1 << z) - 1 - y
-
+    bounds = _tile_bounds_3857(x, y, z)
     try:
-        with sqlite3.connect(f"file:{mbtiles_path}?mode=ro", uri=True) as conn:
-            row = conn.execute(
-                "SELECT tile_data FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=? LIMIT 1",
-                (z, x, tms_y),
-            ).fetchone()
-    except sqlite3.Error as exc:
-        raise HTTPException(status_code=500, detail=f"MBTiles read error: {exc}") from exc
+        with rasterio.open(cog_path) as src:
+            window = from_bounds(*bounds, transform=src.transform)
+            band1 = src.read(
+                1,
+                window=window,
+                out_shape=(TILE_SIZE, TILE_SIZE),
+                resampling=Resampling.nearest,
+                boundless=True,
+                fill_value=0,
+            )
+            band2 = src.read(
+                2,
+                window=window,
+                out_shape=(TILE_SIZE, TILE_SIZE),
+                resampling=Resampling.nearest,
+                boundless=True,
+                fill_value=0,
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"COG read error: {exc}") from exc
 
-    found = bool(row and row[0])
-    logger.warning(
-        "MBTiles lookup path=%s z=%s x=%s y=%s tms_y=%s found=%s",
-        mbtiles_path,
-        z,
-        x,
-        y,
-        tms_y,
-        found,
-    )
+    lut = get_lut(var)
+    rgba = lut[band1]
+    rgba[..., 3] = band2
 
-    if not found:
-        raise HTTPException(status_code=404, detail="Tile not found")
-
-    tile_bytes = row[0]
+    image = Image.fromarray(rgba.astype(np.uint8), mode="RGBA")
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    tile_bytes = buffer.getvalue()
 
     headers = {"Cache-Control": "public, max-age=31536000, immutable"}
     try:
-        stat = mbtiles_path.stat()
+        stat = cog_path.stat()
     except OSError:
         stat = None
     if stat is not None:
-        headers["ETag"] = f"\"{stat.st_mtime_ns}-{stat.st_size}\""
+        headers["ETag"] = f"\"{stat.st_mtime_ns}-{stat.st_size}-{var}-{fh}-{z}-{x}-{y}-{resolved_run}\""
 
-    return Response(
-        content=tile_bytes,
-        media_type="image/png",
-        headers=headers,
-    )
+    return Response(content=tile_bytes, media_type="image/png", headers=headers)
