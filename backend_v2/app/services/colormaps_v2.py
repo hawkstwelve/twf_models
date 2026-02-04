@@ -167,6 +167,17 @@ WIND_SPEED_COLOR_ANCHORS = [
 WIND_SPEED_LEVELS = [0, 4, 6, 8, 9, 10, 12, 14, 16, 20, 22, 24, 26, 30, 34, 36, 40, 44, 48, 52, 58, 64, 70, 75, 85, 95, 100]
 WIND_SPEED_MPH_RANGE = (0.0, 100.0)
 
+# 10m wind speed (mph) palette (continuous)
+wspd10m_colors = [
+    "#ffffff",
+    "#66b2ff",
+    "#00ff00",
+    "#ffff00",
+    "#ff9900",
+    "#ff0000",
+    "#800080",
+]
+
 # 850mb temperature (°C) continuous palette anchors and range
 TEMP850_C_COLOR_ANCHORS = [
     (-40.0, "#E8D0D8"),
@@ -256,6 +267,12 @@ VAR_SPECS = {
         "units": "F",
         "range": (-40.0, 122.5),
         "colors": temp_colors,
+    },
+    "wspd10m": {
+        "type": "continuous",
+        "units": "mph",
+        "range": (0.0, 80.0),
+        "colors": wspd10m_colors,
     },
 }
 

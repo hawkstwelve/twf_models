@@ -7,6 +7,7 @@ import xarray as xr
 VARIABLE_ALIASES: dict[str, str] = {
     "tmp2m": "t2m",
     "2t": "t2m",
+    "wspd10m": "10si",
 }
 
 VARIABLE_SELECTORS: dict[str, dict[str, Any]] = {
@@ -20,11 +21,18 @@ VARIABLE_SELECTORS: dict[str, dict[str, Any]] = {
         "shortName": "prate",
         "typeOfLevel": "surface",
     },
+    "10si": {
+        "cfVarName": "si10",
+        "shortName": "10si",
+        "typeOfLevel": "heightAboveGround",
+        "level": 10,
+    },
 }
 
 HERBIE_SEARCH: dict[str, str] = {
     "t2m": ":TMP:2 m above ground:",
     "prate": ":PRATE:surface:",
+    "10si": ":WIND:10 m above ground:",
 }
 
 
