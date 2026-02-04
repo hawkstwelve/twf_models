@@ -1,4 +1,4 @@
-import { API_BASE, DEFAULTS, VARIABLES } from "./config.js";
+import { API_BASE, DEFAULTS, VARIABLE_LABELS, VARIABLES } from "./config.js";
 
 async function fetchJson(url) {
   const response = await fetch(url, { credentials: "omit" });
@@ -8,12 +8,17 @@ async function fetchJson(url) {
   return response.json();
 }
 
-function normalizeFrames(frames) {
+export function normalizeFrames(frames) {
   if (!Array.isArray(frames)) {
     return [];
   }
   return frames
-    .map((value) => Number(value))
+    .map((value) => {
+      if (value && typeof value === "object") {
+        return Number(value.fh ?? value.value ?? value.id ?? value.name ?? value);
+      }
+      return Number(value);
+    })
     .filter((value) => Number.isFinite(value))
     .sort((a, b) => a - b);
 }
@@ -30,6 +35,26 @@ function asLabel(value) {
     return value.label ?? value.name ?? value.id ?? value.value ?? "";
   }
   return value ?? "";
+}
+
+function applyVariableLabels(items) {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+  return items.map((item) => {
+    const id = asId(item);
+    if (!id) {
+      return item;
+    }
+    const label = VARIABLE_LABELS[id];
+    if (!label) {
+      return item;
+    }
+    if (item && typeof item === "object") {
+      return { ...item, id, label };
+    }
+    return { id, label };
+  });
 }
 
 function setSelectOptions(select, items, { includeLatest = false } = {}) {
@@ -97,6 +122,7 @@ export async function initControls({
   let selectedRegion = DEFAULTS.region;
   let selectedRun = DEFAULTS.run;
   let selectedVar = DEFAULTS.variable;
+  let legendMeta = null;
 
   try {
     models = await fetchJson(`${API_BASE}/models`);
@@ -149,6 +175,8 @@ export async function initControls({
     variables = VARIABLES.map((variable) => variable.id);
   }
 
+  variables = applyVariableLabels(variables);
+
   const varIds = variables.map(asId).filter(Boolean);
   if (varIds.length && !varIds.includes(selectedVar)) {
     selectedVar = varIds[0];
@@ -163,6 +191,10 @@ export async function initControls({
       `${API_BASE}/${selectedModel}/${selectedRegion}/latest/${selectedVar}/frames`
     );
     frames = normalizeFrames(framesResponse);
+    if (Array.isArray(framesResponse)) {
+      const first = framesResponse.find((row) => row && row.has_cog);
+      legendMeta = first?.meta?.meta ?? null;
+    }
   } catch (error) {
     console.warn("Failed to load frames list", error);
     frames = [];
@@ -173,7 +205,9 @@ export async function initControls({
 
   if (varSelect) {
     varSelect.addEventListener("change", (event) => {
-      onVariableChange(event.target.value);
+      const value = event.target.value;
+      console.debug("var change", value);
+      onVariableChange(value);
     });
   }
 
@@ -200,6 +234,7 @@ export async function initControls({
     region: selectedRegion,
     run: selectedRun,
     varKey: selectedVar,
+    legendMeta,
     frames,
     models,
     regions,

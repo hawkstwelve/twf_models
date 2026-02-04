@@ -178,6 +178,36 @@ wspd10m_colors = [
     "#800080",
 ]
 
+WSPD10M_STOPS = [
+    (0, "#FFFFFF"),
+    (4, "#E6F2FF"),
+    (6, "#CCE5FF"),
+    (8, "#99CCFF"),
+    (9, "#66B2FF"),
+    (10, "#3399FF"),
+    (12, "#66FF66"),
+    (14, "#33FF33"),
+    (16, "#00FF00"),
+    (20, "#CCFF33"),
+    (22, "#FFFF00"),
+    (24, "#FFCC00"),
+    (26, "#FF9900"),
+    (30, "#FF6600"),
+    (34, "#FF3300"),
+    (36, "#FF0000"),
+    (40, "#CC0000"),
+    (44, "#990000"),
+    (48, "#800000"),
+    (52, "#660033"),
+    (58, "#660066"),
+    (64, "#800080"),
+    (70, "#990099"),
+    (75, "#B300B3"),
+    (85, "#CC00CC"),
+    (95, "#E600E6"),
+    (100, "#680868"),
+]
+
 # 850mb temperature (°C) continuous palette anchors and range
 TEMP850_C_COLOR_ANCHORS = [
     (-40.0, "#E8D0D8"),
@@ -271,8 +301,9 @@ VAR_SPECS = {
     "wspd10m": {
         "type": "continuous",
         "units": "mph",
-        "range": (0.0, 80.0),
+        "range": (0.0, 100.0),
         "colors": wspd10m_colors,
+        "stops": WSPD10M_STOPS,
     },
 }
 
@@ -316,6 +347,38 @@ def build_continuous_lut(colors_hex: list[str], n: int = 256) -> np.ndarray:
     return lut
 
 
+def build_continuous_lut_from_stops(
+    stops: list[tuple[float, str]],
+    n: int = 256,
+    *,
+    range_vals: tuple[float, float] | None = None,
+) -> np.ndarray:
+    if len(stops) < 2:
+        raise ValueError("stops must contain at least two entries")
+
+    sorted_stops = sorted(stops, key=lambda item: item[0])
+    stop_values = np.array([float(value) for value, _ in sorted_stops], dtype=float)
+    stop_colors = np.array([
+        hex_to_rgba_u8(color, 255)[:3] for _, color in sorted_stops
+    ], dtype=float)
+
+    if range_vals is None:
+        range_min, range_max = float(stop_values[0]), float(stop_values[-1])
+    else:
+        range_min, range_max = float(range_vals[0]), float(range_vals[1])
+
+    if range_max == range_min:
+        raise ValueError("stop range must not be zero")
+
+    target_values = np.linspace(range_min, range_max, num=n)
+    r = np.interp(target_values, stop_values, stop_colors[:, 0])
+    g = np.interp(target_values, stop_values, stop_colors[:, 1])
+    b = np.interp(target_values, stop_values, stop_colors[:, 2])
+    a = np.full(n, 255.0)
+    lut = np.stack([r, g, b, a], axis=1).astype(np.uint8)
+    return lut
+
+
 def get_lut(var_key: str) -> np.ndarray:
     if var_key in _LUT_CACHE:
         return _LUT_CACHE[var_key]
@@ -326,7 +389,15 @@ def get_lut(var_key: str) -> np.ndarray:
     if spec["type"] == "discrete":
         lut = build_discrete_lut(colors)
     else:
-        lut = build_continuous_lut(colors, n=256)
+        stops = spec.get("stops")
+        if stops:
+            lut = build_continuous_lut_from_stops(
+                stops,
+                n=256,
+                range_vals=spec.get("range"),
+            )
+        else:
+            lut = build_continuous_lut(colors, n=256)
     _LUT_CACHE[var_key] = lut
     return lut
 
@@ -387,5 +458,6 @@ def encode_to_byte_and_alpha(
         "units": spec.get("units"),
         "range": [float(range_min), float(range_max)],
         "colors": list(spec.get("colors", [])),
+        "stops": [list(item) for item in spec.get("stops", [])],
     }
     return byte_band, alpha, meta

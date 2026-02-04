@@ -1,6 +1,6 @@
-import { API_BASE, DEFAULTS } from "./config.js?v=20260204-2031";
-import { applyFramesToSlider, initControls } from "./controls.js?v=20260204-2031";
-import { buildTileUrl, createBaseLayer, createLabelLayer, createOverlayLayer } from "./layers.js?v=20260204-2031";
+import { API_BASE, DEFAULTS } from "./config.js?v=20260204-2115";
+import { applyFramesToSlider, initControls, normalizeFrames } from "./controls.js?v=20260204-2115";
+import { buildTileUrl, createBaseLayer, createLabelLayer, createOverlayLayer } from "./layers.js?v=20260204-2115";
 
 console.debug("modules loaded ok");
 
@@ -71,7 +71,8 @@ function updateOverlayUrl() {
     fh: state.fh,
   });
   console.debug("tile url", url);
-  state.overlay.setUrl(url, true);
+  state.overlay.setUrl(url);
+  state.overlay.redraw();
 }
 
 function setForecastHour(fh, { userInitiated = false } = {}) {
@@ -129,6 +130,68 @@ function updateSlider(value) {
   display.textContent = `FH: ${value}`;
 }
 
+function renderLegend(meta) {
+  const legendBar = document.querySelector(".legend-bar");
+  const legendLabels = document.querySelector(".legend-labels");
+  if (!legendBar || !legendLabels) {
+    return;
+  }
+
+  const stops = Array.isArray(meta?.stops) ? meta.stops : null;
+  const colors = Array.isArray(meta?.colors) ? meta.colors : null;
+
+  if ((!stops || stops.length < 2) && (!colors || colors.length < 2)) {
+    legendBar.style.background = "#ccc";
+    legendLabels.innerHTML = "";
+    return;
+  }
+
+  let range = Array.isArray(meta.range) ? meta.range : [0, 1];
+  const units = meta.units ? String(meta.units) : "";
+  const kind = meta.kind ? String(meta.kind) : "continuous";
+
+  let gradient = "";
+  if (stops && stops.length >= 2) {
+    const values = stops.map((item) => Number(item[0])).filter(Number.isFinite);
+    if (values.length >= 2) {
+      range = [Math.min(...values), Math.max(...values)];
+    }
+    const [minVal, maxVal] = range.map((value) => Number(value));
+    const span = Number.isFinite(minVal) && Number.isFinite(maxVal) && maxVal !== minVal
+      ? maxVal - minVal
+      : 1;
+    const stopParts = stops.map(([value, color]) => {
+      const numericValue = Number(value);
+      const pct = Number.isFinite(numericValue)
+        ? Math.max(0, Math.min(100, ((numericValue - minVal) / span) * 100))
+        : 0;
+      return `${color} ${pct.toFixed(2)}%`;
+    });
+    gradient = `linear-gradient(to top, ${stopParts.join(", ")})`;
+  } else if (colors) {
+    gradient = `linear-gradient(to top, ${colors.join(", ")})`;
+  }
+  legendBar.style.background = gradient;
+
+  const minVal = Number(range[0]);
+  const maxVal = Number(range[1]);
+  const minLabel = Number.isFinite(minVal) ? minVal : range[0];
+  const maxLabel = Number.isFinite(maxVal) ? maxVal : range[1];
+
+  legendLabels.innerHTML = "";
+  const title = document.createElement("div");
+  title.className = "legend-units";
+  title.textContent = units ? `${units} (${kind})` : kind;
+  legendLabels.appendChild(title);
+
+  const maxTick = document.createElement("span");
+  maxTick.textContent = `${maxLabel}`;
+  const minTick = document.createElement("span");
+  minTick.textContent = `${minLabel}`;
+  legendLabels.appendChild(maxTick);
+  legendLabels.appendChild(minTick);
+}
+
 async function fetchFrames({ model, region, varKey }) {
   try {
     const response = await fetch(
@@ -139,13 +202,15 @@ async function fetchFrames({ model, region, varKey }) {
       throw new Error(`Frames request failed: ${response.status}`);
     }
     const payload = await response.json();
-    return payload
-      .map((value) => Number(value))
-      .filter((value) => Number.isFinite(value))
-      .sort((a, b) => a - b);
+    const filtered = Array.isArray(payload)
+      ? payload.filter((row) => row && row.has_cog)
+      : [];
+    const frames = normalizeFrames(filtered);
+    const legendMeta = filtered.length ? filtered[0]?.meta?.meta ?? null : null;
+    return { frames, legendMeta };
   } catch (error) {
     console.warn("Failed to refresh frames list", error);
-    return [];
+    return { frames: [], legendMeta: null };
   }
 }
 
@@ -153,15 +218,16 @@ async function bootstrap() {
   const metadata = await initControls({
     onVariableChange: async (value) => {
       setVariable(value);
-      const frames = await fetchFrames({
+      const result = await fetchFrames({
         model: state.model,
         region: state.region,
         varKey: value,
       });
-      state.frames = frames;
-      const nextFh = frames.length ? frames[0] : DEFAULTS.fhStart;
-      applyFramesToSlider(frames, nextFh);
+      state.frames = result.frames;
+      const nextFh = state.frames.length ? state.frames[0] : DEFAULTS.fhStart;
+      applyFramesToSlider(state.frames, nextFh);
       setForecastHour(nextFh, { userInitiated: true });
+      renderLegend(result.legendMeta);
     },
     onForecastHourChange: (value) => {
       setForecastHour(value, { userInitiated: true });
@@ -181,6 +247,14 @@ async function bootstrap() {
     state.run = asId(metadata.run);
     state.varKey = asId(metadata.varKey);
     state.frames = metadata.frames;
+    renderLegend(metadata.legendMeta);
+    const varSelect = document.getElementById("var-select");
+    if (varSelect) {
+      const nextVar = state.varKey || DEFAULTS.variable;
+      if (nextVar) {
+        varSelect.value = nextVar;
+      }
+    }
     const initialFh = state.frames.length ? state.frames[0] : state.fh;
     setForecastHour(initialFh);
     applyFramesToSlider(state.frames, initialFh);

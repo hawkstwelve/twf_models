@@ -23,6 +23,12 @@ export const DEFAULTS = {
   zoom: 6,
 };
 
+export const VARIABLE_LABELS = {
+  tmp2m: "Surface Temperature",
+  wspd10m: "Wind Speed",
+};
+
 export const VARIABLES = [
-  { id: "tmp2m", label: "2m Temperature" },
+  { id: "tmp2m", label: "Surface Temperature" },
+  { id: "wspd10m", label: "Wind Speed" },
 ];
