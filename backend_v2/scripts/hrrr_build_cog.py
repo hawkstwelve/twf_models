@@ -66,11 +66,15 @@ def _encode_with_nodata(
     spec_key = requested_var if requested_var in VAR_SPECS else normalized_var
     spec = VAR_SPECS.get(spec_key, {})
     kind = spec.get("type", "continuous")
+    spec_units = spec.get("units")
     fill_values = _collect_fill_values(da)
 
     valid_mask = np.isfinite(values)
     for fill_value in fill_values:
         valid_mask &= values != fill_value
+
+    if spec_units == "F":
+        values = (values - 273.15) * (9.0 / 5.0) + 32.0
 
     valid_values = values[valid_mask]
     if valid_values.size == 0:
