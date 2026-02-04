@@ -384,50 +384,108 @@ def main() -> int:
             f"maxx={clip_bounds_3857[2]:.2f} maxy={clip_bounds_3857[3]:.2f}"
         )
 
-    try:
-        grib_path = fetch_hrrr_grib(
-            run=args.run,
-            fh=args.fh,
-            variable=args.var,
-            cache_cfg=cfg,
-        )
-    except Exception as exc:
-        print(f"ERROR: Failed to fetch HRRR GRIB: {exc}", file=sys.stderr)
-        return 2
+    normalized_var = normalize_api_variable(args.var)
+    grib_path: Path | None = None
+    u_path: Path | None = None
+    v_path: Path | None = None
 
-    print(f"GRIB path: {grib_path}")
+    if normalized_var == "wspd10m":
+        try:
+            u_path = fetch_hrrr_grib(
+                run=args.run,
+                fh=args.fh,
+                variable="ugrd10m",
+                cache_cfg=cfg,
+            )
+            v_path = fetch_hrrr_grib(
+                run=args.run,
+                fh=args.fh,
+                variable="vgrd10m",
+                cache_cfg=cfg,
+            )
+            grib_path = u_path
+        except Exception as exc:
+            print(f"ERROR: Failed to fetch HRRR GRIB for wspd10m: {exc}", file=sys.stderr)
+            return 2
+
+        print(f"GRIB path (u10): {u_path}")
+        print(f"GRIB path (v10): {v_path}")
+    else:
+        try:
+            grib_path = fetch_hrrr_grib(
+                run=args.run,
+                fh=args.fh,
+                variable=args.var,
+                cache_cfg=cfg,
+            )
+        except Exception as exc:
+            print(f"ERROR: Failed to fetch HRRR GRIB: {exc}", file=sys.stderr)
+            return 2
+
+        print(f"GRIB path: {grib_path}")
 
     ds: xr.Dataset | None = None
+    ds_u: xr.Dataset | None = None
+    ds_v: xr.Dataset | None = None
     try:
-        try:
-            ds = xr.open_dataset(grib_path, engine="cfgrib")
-        except Exception as exc:
-            message = str(exc)
-            if "multiple values for unique key" in message:
+        if normalized_var == "wspd10m":
+            try:
+                ds_u = xr.open_dataset(u_path, engine="cfgrib")
+                ds_v = xr.open_dataset(v_path, engine="cfgrib")
+                u_da = select_dataarray(ds_u, "ugrd10m")
+                v_da = select_dataarray(ds_v, "vgrd10m")
+                if "time" in u_da.dims:
+                    u_da = u_da.isel(time=0)
+                if "time" in v_da.dims:
+                    v_da = v_da.isel(time=0)
+                u_da = u_da.squeeze()
+                v_da = v_da.squeeze()
+                speed = (u_da**2 + v_da**2) ** 0.5
+                speed = speed.astype(np.float32).load()
+                speed.name = "wspd10m"
+                speed.attrs = dict(u_da.attrs)
+                speed.attrs["GRIB_units"] = "m/s"
+                da = speed
                 print(
-                    "ERROR: cfgrib index collision. Ensure subsetting worked for the requested variable.\n"
-                    f"{exc}",
-                    file=sys.stderr,
+                    "Derived wspd10m: "
+                    f"min={float(np.nanmin(da.values)):.2f} max={float(np.nanmax(da.values)):.2f}"
                 )
-            elif "eccodes" in message.lower() or "ecCodes" in message or "Cannot find the ecCodes library" in message:
-                print(
-                    "ERROR: Failed to open GRIB with cfgrib. ecCodes library not available.\n"
-                    f"{exc}",
-                    file=sys.stderr,
-                )
-            else:
-                print(f"ERROR: Failed to open GRIB with cfgrib.\n{exc}", file=sys.stderr)
-            return 3
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Failed to derive wspd10m from ugrd10m/vgrd10m: {exc}"
+                ) from exc
+        else:
+            try:
+                ds = xr.open_dataset(grib_path, engine="cfgrib")
+            except Exception as exc:
+                message = str(exc)
+                if "multiple values for unique key" in message:
+                    print(
+                        "ERROR: cfgrib index collision. Ensure subsetting worked for the requested variable.\n"
+                        f"{exc}",
+                        file=sys.stderr,
+                    )
+                elif "eccodes" in message.lower() or "ecCodes" in message or "Cannot find the ecCodes library" in message:
+                    print(
+                        "ERROR: Failed to open GRIB with cfgrib. ecCodes library not available.\n"
+                        f"{exc}",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(f"ERROR: Failed to open GRIB with cfgrib.\n{exc}", file=sys.stderr)
+                return 3
 
-        normalized_var = normalize_api_variable(args.var)
-        try:
-            da = select_dataarray(ds, normalized_var)
-        except Exception as exc:
-            print(
-                f"ERROR: Failed to select variable '{args.var}' (normalized='{normalized_var}'): {exc}",
-                file=sys.stderr,
-            )
-            return 4
+            try:
+                da = select_dataarray(ds, normalized_var)
+            except Exception as exc:
+                print(
+                    f"ERROR: Failed to select variable '{args.var}' (normalized='{normalized_var}'): {exc}",
+                    file=sys.stderr,
+                )
+                return 4
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 4
 
         if "time" in da.dims:
             da = da.isel(time=0)
@@ -549,6 +607,10 @@ def main() -> int:
     finally:
         if ds is not None:
             ds.close()
+        if ds_u is not None:
+            ds_u.close()
+        if ds_v is not None:
+            ds_v.close()
 
     if args.keep_cycles:
         try:
