@@ -2,12 +2,17 @@ from __future__ import annotations
 
 from typing import Any
 
+import logging
+
 import xarray as xr
+
+logger = logging.getLogger(__name__)
 
 VARIABLE_ALIASES: dict[str, str] = {
     "tmp2m": "t2m",
     "2t": "t2m",
-    "wspd10m": "10si",
+    "ugrd10m": "10u",
+    "vgrd10m": "10v",
 }
 
 VARIABLE_SELECTORS: dict[str, dict[str, Any]] = {
@@ -21,9 +26,15 @@ VARIABLE_SELECTORS: dict[str, dict[str, Any]] = {
         "shortName": "prate",
         "typeOfLevel": "surface",
     },
-    "10si": {
-        "cfVarName": "si10",
-        "shortName": "10si",
+    "10u": {
+        "cfVarName": "u10",
+        "shortName": "10u",
+        "typeOfLevel": "heightAboveGround",
+        "level": 10,
+    },
+    "10v": {
+        "cfVarName": "v10",
+        "shortName": "10v",
         "typeOfLevel": "heightAboveGround",
         "level": 10,
     },
@@ -32,7 +43,9 @@ VARIABLE_SELECTORS: dict[str, dict[str, Any]] = {
 HERBIE_SEARCH: dict[str, str] = {
     "t2m": ":TMP:2 m above ground:",
     "prate": ":PRATE:surface:",
-    "10si": ":WIND:10 m above ground:",
+    "10u": ":UGRD:10 m above ground:",
+    "10v": ":VGRD:10 m above ground:",
+    "wspd10m": ":UGRD:10 m above ground:|:VGRD:10 m above ground:",
 }
 
 
@@ -91,6 +104,22 @@ def _score_candidate(da: xr.DataArray, selector: dict[str, Any]) -> int:
 
 def select_dataarray(ds: xr.Dataset, api_var: str) -> xr.DataArray:
     normalized = normalize_api_variable(api_var)
+    if normalized == "wspd10m":
+        u_da = select_dataarray(ds, "10u")
+        v_da = select_dataarray(ds, "10v")
+        speed = (u_da**2 + v_da**2) ** 0.5
+        speed_mph = speed * 2.23694
+        speed_mph = speed_mph.copy()
+        speed_mph.name = "wspd10m"
+        speed_mph.attrs = dict(u_da.attrs)
+        speed_mph.attrs["GRIB_units"] = "mph"
+        logger.info(
+            "Derived wspd10m from u=%s v=%s shape=%s",
+            u_da.name,
+            v_da.name,
+            speed_mph.shape,
+        )
+        return speed_mph
     selector = VARIABLE_SELECTORS.get(normalized)
 
     direct_candidate = ds.data_vars.get(normalized)

@@ -45,7 +45,11 @@ def fetch_hrrr_grib(
     run_dt = _parse_run_datetime(run)
 
     normalized_var = normalize_api_variable(variable) if variable else None
-    search = herbie_search_for(variable) if variable else None
+    if variable == "wspd10m":
+        normalized_var = "wspd10m"
+        search = herbie_search_for("wspd10m")
+    else:
+        search = herbie_search_for(variable) if variable else None
 
     logger.info(
         "Fetching HRRR GRIB: run=%s fh=%02d model=%s product=%s variable=%s search=%s",

@@ -12,5 +12,5 @@ def test_wspd10m_var_specs_present() -> None:
 
 
 def test_wspd10m_variable_registry_mapping() -> None:
-    assert normalize_api_variable("wspd10m") == "10si"
+    assert normalize_api_variable("wspd10m") == "wspd10m"
     assert herbie_search_for("wspd10m") is not None
