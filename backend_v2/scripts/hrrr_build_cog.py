@@ -59,10 +59,12 @@ def _collect_fill_values(da: xr.DataArray) -> list[float]:
 def _encode_with_nodata(
     values: np.ndarray,
     *,
-    var_key: str,
+    requested_var: str,
+    normalized_var: str,
     da: xr.DataArray,
-) -> tuple[np.ndarray, np.ndarray, dict, np.ndarray, dict]:
-    spec = VAR_SPECS.get(var_key, {})
+) -> tuple[np.ndarray, np.ndarray, dict, np.ndarray, dict, str]:
+    spec_key = requested_var if requested_var in VAR_SPECS else normalized_var
+    spec = VAR_SPECS.get(spec_key, {})
     kind = spec.get("type", "continuous")
     fill_values = _collect_fill_values(da)
 
@@ -72,20 +74,22 @@ def _encode_with_nodata(
 
     valid_values = values[valid_mask]
     if valid_values.size == 0:
-        raise RuntimeError(f"No valid data found after masking for {var_key}")
+        raise RuntimeError(f"No valid data found after masking for {requested_var}")
 
     if kind == "discrete":
         levels = spec.get("levels") or []
         colors = spec.get("colors") or []
         if not levels or not colors:
-            raise RuntimeError(f"Discrete spec missing levels/colors for {var_key}")
+            raise RuntimeError(f"Discrete spec missing levels/colors for {requested_var}")
         bins = np.digitize(np.where(valid_mask, values, levels[0]), levels, right=False) - 1
         bins = np.clip(bins, 0, len(colors) - 1).astype(np.uint8)
         byte_band = bins.astype(np.uint8)
         byte_band[~valid_mask] = 255
         alpha = np.where(byte_band == 255, 0, 255).astype(np.uint8)
         meta = {
-            "var_key": var_key,
+            "var_key": requested_var,
+            "source_var": normalized_var,
+            "spec_key": spec_key,
             "kind": "discrete",
             "units": spec.get("units"),
             "levels": list(levels),
@@ -95,7 +99,7 @@ def _encode_with_nodata(
             "vmin": float(np.nanmin(valid_values)),
             "vmax": float(np.nanmax(valid_values)),
         }
-        return byte_band, alpha, meta, valid_mask, stats
+        return byte_band, alpha, meta, valid_mask, stats, spec_key
 
     range_vals = spec.get("range")
     if range_vals and len(range_vals) == 2:
@@ -114,7 +118,9 @@ def _encode_with_nodata(
     byte_band[~valid_mask] = 255
     alpha = np.where(byte_band == 255, 0, 255).astype(np.uint8)
     meta = {
-        "var_key": var_key,
+        "var_key": requested_var,
+        "source_var": normalized_var,
+        "spec_key": spec_key,
         "kind": "continuous",
         "units": spec.get("units"),
         "range": [float(vmin), float(vmax)],
@@ -126,7 +132,7 @@ def _encode_with_nodata(
         "scale_min": float(vmin),
         "scale_max": float(vmax),
     }
-    return byte_band, alpha, meta, valid_mask, stats
+    return byte_band, alpha, meta, valid_mask, stats, spec_key
 
 
 def require_gdal(cmd_name: str) -> None:
@@ -705,13 +711,14 @@ def main() -> int:
 
     try:
         start_time = time.time()
-        byte_band, alpha_band, meta, valid_mask, stats = _encode_with_nodata(
+        byte_band, alpha_band, meta, valid_mask, stats, spec_key_used = _encode_with_nodata(
             values,
-            var_key=normalized_var,
+            requested_var=args.var,
+            normalized_var=normalized_var,
             da=da,
         )
 
-        if normalized_var == "tmp2m":
+        if args.var == "tmp2m":
             valid_count = int(np.count_nonzero(valid_mask))
             total_count = int(values.size)
             nodata_count = int(np.count_nonzero(byte_band == 255))
@@ -737,6 +744,13 @@ def main() -> int:
                     "tmp2m scaling failed: byte range is 255-only with no nodata; "
                     "check units/range or valid-mask logic."
                 )
+
+        print(
+            "Meta debug: "
+            f"requested_var={args.var} normalized_var={normalized_var} "
+            f"spec_key_used={spec_key_used} units={meta.get('units')} "
+            f"range={meta.get('range')} colors_len={len(meta.get('colors') or [])}"
+        )
 
         run_id = _resolve_run_id(grib_path)
         out_dir = Path(args.out_root) / args.model / args.region / run_id / args.var
