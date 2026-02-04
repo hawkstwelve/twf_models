@@ -139,6 +139,8 @@ function renderLegend(meta) {
 
   const stops = Array.isArray(meta?.stops) ? meta.stops : null;
   const colors = Array.isArray(meta?.colors) ? meta.colors : null;
+  const levels = Array.isArray(meta?.levels) ? meta.levels : null;
+  const kind = meta?.kind ? String(meta.kind) : "continuous";
 
   if ((!stops || stops.length < 2) && (!colors || colors.length < 2)) {
     legendBar.style.background = "#ccc";
@@ -148,10 +150,33 @@ function renderLegend(meta) {
 
   let range = Array.isArray(meta.range) ? meta.range : [0, 1];
   const units = meta.units ? String(meta.units) : "";
-  const kind = meta.kind ? String(meta.kind) : "continuous";
 
   let gradient = "";
-  if (stops && stops.length >= 2) {
+  if ((kind === "discrete" || levels) && levels && colors && colors.length) {
+    const numericLevels = levels.map((value) => Number(value)).filter(Number.isFinite);
+    if (numericLevels.length >= 2) {
+      range = [Math.min(...numericLevels), Math.max(...numericLevels)];
+    }
+    const [minVal, maxVal] = range.map((value) => Number(value));
+    const span = Number.isFinite(minVal) && Number.isFinite(maxVal) && maxVal !== minVal
+      ? maxVal - minVal
+      : 1;
+    const stopParts = [];
+    const intervalCount = Math.min(colors.length, levels.length - 1);
+    for (let idx = 0; idx < intervalCount; idx += 1) {
+      const startVal = Number(levels[idx]);
+      const endVal = Number(levels[idx + 1]);
+      const startPct = Number.isFinite(startVal)
+        ? Math.max(0, Math.min(100, ((startVal - minVal) / span) * 100))
+        : 0;
+      const endPct = Number.isFinite(endVal)
+        ? Math.max(0, Math.min(100, ((endVal - minVal) / span) * 100))
+        : startPct;
+      const color = colors[idx] ?? colors[colors.length - 1];
+      stopParts.push(`${color} ${startPct.toFixed(2)}%`, `${color} ${endPct.toFixed(2)}%`);
+    }
+    gradient = `linear-gradient(to top, ${stopParts.join(", ")})`;
+  } else if (stops && stops.length >= 2) {
     const values = stops.map((item) => Number(item[0])).filter(Number.isFinite);
     if (values.length >= 2) {
       range = [Math.min(...values), Math.max(...values)];
@@ -184,12 +209,24 @@ function renderLegend(meta) {
   title.textContent = units ? `${units} (${kind})` : kind;
   legendLabels.appendChild(title);
 
-  const maxTick = document.createElement("span");
-  maxTick.textContent = `${maxLabel}`;
-  const minTick = document.createElement("span");
-  minTick.textContent = `${minLabel}`;
-  legendLabels.appendChild(maxTick);
-  legendLabels.appendChild(minTick);
+  if ((kind === "discrete" || levels) && levels && levels.length) {
+    const numericLevels = levels.map((value) => Number(value)).filter(Number.isFinite);
+    const ticks = numericLevels.length ? numericLevels : levels;
+    const maxTicks = 8;
+    const step = ticks.length > maxTicks ? Math.ceil(ticks.length / maxTicks) : 1;
+    for (let idx = ticks.length - 1; idx >= 0; idx -= step) {
+      const tick = document.createElement("span");
+      tick.textContent = `${ticks[idx]}`;
+      legendLabels.appendChild(tick);
+    }
+  } else {
+    const maxTick = document.createElement("span");
+    maxTick.textContent = `${maxLabel}`;
+    const minTick = document.createElement("span");
+    minTick.textContent = `${minLabel}`;
+    legendLabels.appendChild(maxTick);
+    legendLabels.appendChild(minTick);
+  }
 }
 
 async function fetchFrames({ model, region, varKey }) {
