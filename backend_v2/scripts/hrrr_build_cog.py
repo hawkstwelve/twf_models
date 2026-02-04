@@ -430,16 +430,32 @@ def main() -> int:
     try:
         if normalized_var == "wspd10m":
             try:
+                def select_first(ds: xr.Dataset, candidates: list[str], label: str) -> tuple[xr.DataArray, str]:
+                    errors: list[str] = []
+                    for cand in candidates:
+                        try:
+                            return select_dataarray(ds, cand), cand
+                        except Exception as exc:
+                            errors.append(f"{cand}: {type(exc).__name__}: {exc}")
+                    available = sorted(ds.data_vars.keys())
+                    raise RuntimeError(
+                        f"Failed to select {label}. Tried {candidates}. "
+                        f"Available: {available}. Errors: {errors}"
+                    )
+
                 ds_u = xr.open_dataset(u_path, engine="cfgrib")
                 ds_v = xr.open_dataset(v_path, engine="cfgrib")
-                u_da = select_dataarray(ds_u, "ugrd10m")
-                v_da = select_dataarray(ds_v, "vgrd10m")
+                u_candidates = ["ugrd10m", "u10", "10u"]
+                v_candidates = ["vgrd10m", "v10", "10v"]
+                u_da, u_key = select_first(ds_u, u_candidates, "u wind")
+                v_da, v_key = select_first(ds_v, v_candidates, "v wind")
                 if "time" in u_da.dims:
                     u_da = u_da.isel(time=0)
                 if "time" in v_da.dims:
                     v_da = v_da.isel(time=0)
                 u_da = u_da.squeeze()
                 v_da = v_da.squeeze()
+                print(f"wspd10m: selected u_key={u_key} v_key={v_key}")
                 speed = (u_da**2 + v_da**2) ** 0.5
                 speed = speed.astype(np.float32).load()
                 speed.name = "wspd10m"
@@ -452,7 +468,7 @@ def main() -> int:
                 )
             except Exception as exc:
                 raise RuntimeError(
-                    f"Failed to derive wspd10m from ugrd10m/vgrd10m: {exc}"
+                    f"Failed to derive wspd10m: {type(exc).__name__}: {exc}"
                 ) from exc
         else:
             try:
