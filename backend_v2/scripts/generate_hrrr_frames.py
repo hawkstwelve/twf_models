@@ -62,6 +62,20 @@ def parse_vars_arg(value: str) -> list[str]:
     return items
 
 
+def to_fetch_run(run_id: str) -> str:
+    if run_id == "latest":
+        return "latest"
+    if RUN_RE.match(run_id):
+        return run_id.replace("_", "")[:-1]
+    if re.fullmatch(r"^\d{10}$", run_id):
+        return run_id
+    if re.fullmatch(r"^\d{8}$", run_id):
+        return run_id
+    raise ValueError(
+        "Invalid run_id for fetch_hrrr_grib. Expected 'latest', YYYYMMDD_HHz, YYYYMMDDHH, or YYYYMMDD."
+    )
+
+
 def select_mvp_vars() -> list[str]:
     vars_available = list(VAR_SPECS.keys())
     if "tmp2m" not in VAR_SPECS:
@@ -100,6 +114,7 @@ def build_frames(
     *,
     script_path: Path,
     run_id: str,
+    fetch_run: str,
     fhs: list[int],
     vars_to_build: list[str],
     args: argparse.Namespace,
@@ -111,7 +126,7 @@ def build_frames(
                 sys.executable,
                 str(script_path),
                 "--run",
-                run_id,
+                fetch_run,
                 "--fh",
                 str(fh),
                 "--var",
@@ -216,10 +231,18 @@ def main() -> int:
         vars_to_build = select_mvp_vars()
     logger.info("Run: %s (cycle=%02d) fhs=%s vars=%s", run_id, cycle_hour, fhs[-1], vars_to_build)
 
+    try:
+        fetch_run = to_fetch_run(run_id if args.run != "latest" else "latest")
+    except ValueError as exc:
+        logger.error(str(exc))
+        return 1
+    logger.info("Using fetch_run=%s for run_id=%s", fetch_run, run_id)
+
     script_path = Path(__file__).resolve().parent / "hrrr_build_cog.py"
     failures = build_frames(
         script_path=script_path,
         run_id=run_id,
+        fetch_run=fetch_run,
         fhs=fhs,
         vars_to_build=vars_to_build,
         args=args,
