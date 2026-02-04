@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -23,6 +25,7 @@ from app.services.paths import default_hrrr_cache_dir
 from app.services.variable_registry import normalize_api_variable, select_dataarray
 
 EPS = 1e-9
+logger = logging.getLogger(__name__)
 
 # PNW bounding box: WA, OR, NW Idaho, Western MT
 PNW_BBOX_WGS84 = (-125.5, 41.5, -111.0, 49.5)  # (min_lon, min_lat, max_lon, max_lat)
@@ -405,7 +408,7 @@ def main() -> int:
             )
             grib_path = u_path
         except Exception as exc:
-            print(f"ERROR: Failed to fetch HRRR GRIB for wspd10m: {exc}", file=sys.stderr)
+            logger.exception("Failed to fetch HRRR GRIB for wspd10m")
             return 2
 
         print(f"GRIB path (u10): {u_path}")
@@ -419,7 +422,7 @@ def main() -> int:
                 cache_cfg=cfg,
             )
         except Exception as exc:
-            print(f"ERROR: Failed to fetch HRRR GRIB: {exc}", file=sys.stderr)
+            logger.exception("Failed to fetch HRRR GRIB")
             return 2
 
         print(f"GRIB path: {grib_path}")
@@ -430,6 +433,9 @@ def main() -> int:
     try:
         if normalized_var == "wspd10m":
             try:
+                u_da: xr.DataArray | None = None
+                v_da: xr.DataArray | None = None
+
                 def log_debug(message: str) -> None:
                     if args.debug:
                         print(message)
@@ -499,6 +505,11 @@ def main() -> int:
                     f"min={float(np.nanmin(da.values)):.2f} max={float(np.nanmax(da.values)):.2f}"
                 )
             except Exception as exc:
+                if u_da is not None:
+                    print(summarize_da("u_da", u_da))
+                if v_da is not None:
+                    print(summarize_da("v_da", v_da))
+                logger.exception("wspd10m derivation failed")
                 raise RuntimeError(
                     f"Failed to derive wspd10m: {type(exc).__name__}: {exc}"
                 ) from exc
@@ -508,31 +519,26 @@ def main() -> int:
             except Exception as exc:
                 message = str(exc)
                 if "multiple values for unique key" in message:
-                    print(
-                        "ERROR: cfgrib index collision. Ensure subsetting worked for the requested variable.\n"
-                        f"{exc}",
-                        file=sys.stderr,
+                    logger.exception(
+                        "cfgrib index collision. Ensure subsetting worked for the requested variable."
                     )
                 elif "eccodes" in message.lower() or "ecCodes" in message or "Cannot find the ecCodes library" in message:
-                    print(
-                        "ERROR: Failed to open GRIB with cfgrib. ecCodes library not available.\n"
-                        f"{exc}",
-                        file=sys.stderr,
-                    )
+                    logger.exception("Failed to open GRIB with cfgrib. ecCodes library not available.")
                 else:
-                    print(f"ERROR: Failed to open GRIB with cfgrib.\n{exc}", file=sys.stderr)
+                    logger.exception("Failed to open GRIB with cfgrib.")
                 return 3
 
             try:
                 da = select_dataarray(ds, normalized_var)
             except Exception as exc:
-                print(
-                    f"ERROR: Failed to select variable '{args.var}' (normalized='{normalized_var}'): {exc}",
-                    file=sys.stderr,
+                logger.exception(
+                    "Failed to select variable '%s' (normalized='%s')",
+                    args.var,
+                    normalized_var,
                 )
                 return 4
     except RuntimeError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        logger.exception("Runtime error during data selection")
         return 4
 
     if "time" in da.dims:
@@ -551,7 +557,7 @@ def main() -> int:
         da = normalize_latlon_coords(da)
         lat_name, lon_name = detect_latlon_names(da)
     except Exception as exc:
-        print(f"ERROR: Failed to normalize lat/lon coords: {exc}", file=sys.stderr)
+        logger.exception("Failed to normalize lat/lon coords")
         return 5
 
     lat_vals = da.coords[lat_name].values
@@ -654,7 +660,7 @@ def main() -> int:
         elapsed = time.time() - start_time
         print(f"Done: COG built in {elapsed:.1f}s")
     except Exception as exc:
-        print(f"ERROR: GDAL pipeline failed: {exc}", file=sys.stderr)
+        logger.exception("GDAL pipeline failed")
         return 6
     finally:
         if ds is not None:
@@ -668,7 +674,7 @@ def main() -> int:
         try:
             summary = ensure_latest_cycles(keep_cycles=args.keep_cycles, cache_cfg=cfg)
         except Exception as exc:
-            print(f"WARN: Failed to enforce cycle retention: {exc}", file=sys.stderr)
+            logger.exception("Failed to enforce cycle retention")
             return 7
         print(f"Retention: {summary}")
 
