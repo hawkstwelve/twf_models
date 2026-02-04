@@ -1,4 +1,4 @@
-import { API_BASE, DEFAULTS } from "./config.js";
+import { API_BASE, DEFAULTS, TILES_BASE } from "./config.js";
 
 const BASEMAP_ATTRIBUTION =
   '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors ' +
@@ -18,15 +18,18 @@ export function createBaseLayer() {
 /**
  * Build the backend tile URL for model overlays
  */
-export function buildOverlayUrl({ model, run, variable, fh }) {
-  return `${API_BASE}/tiles/v2/${model}/${run}/${variable}/${fh}/{z}/{x}/{y}.png`;
+export function buildTileUrl({ model, region, run = "latest", varKey, fh, z = "{z}", x = "{x}", y = "{y}" }) {
+  const baseCandidate = TILES_BASE || API_BASE || "https://api.sodakweather.com";
+  const base = baseCandidate.replace(/\/?(api\/v2|tiles\/v2)\/?$/i, "");
+  const enc = encodeURIComponent;
+  return `${base}/tiles/v2/${enc(model)}/${enc(region)}/${enc(run)}/${enc(varKey)}/${enc(fh)}/${z}/${x}/${y}.png`;
 }
 
 /**
  * Create the Leaflet overlay layer
  */
-export function createOverlayLayer({ model, run, variable, fh }) {
-  const url = buildOverlayUrl({ model, run, variable, fh });
+export function createOverlayLayer({ model, region, run, varKey, fh }) {
+  const url = buildTileUrl({ model, region, run, varKey, fh });
 
   return L.tileLayer(url, {
     minZoom: DEFAULTS.zoomMin,

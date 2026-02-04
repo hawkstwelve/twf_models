@@ -4,10 +4,14 @@ const isLocalDevHost =
 const isLocalDevPort = window.location.port === "8080";
 
 export const API_BASE =
-  isLocalDevHost && isLocalDevPort ? "http://127.0.0.1:8002" : "https://api.sodakweather.com/models-v2";
+  isLocalDevHost && isLocalDevPort ? "http://127.0.0.1:8002/api/v2" : "https://api.sodakweather.com/api/v2";
+
+export const TILES_BASE =
+  isLocalDevHost && isLocalDevPort ? "http://127.0.0.1:8002" : "https://api.sodakweather.com";
 
 export const DEFAULTS = {
   model: "hrrr",
+  region: "pnw",
   run: "latest",
   variable: "tmp2m",
   fhStart: 0,
@@ -19,7 +23,6 @@ export const DEFAULTS = {
   zoom: 6,
 };
 
-// TODO: Replace hardcoded runs/vars/frames with API metadata.
 export const VARIABLES = [
   { id: "tmp2m", label: "2m Temperature" },
 ];

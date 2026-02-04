@@ -17,7 +17,7 @@ import numpy as np
 import xarray as xr
 from pyproj import CRS, Transformer
 
-from app.services.colormaps_v2 import encode_to_byte_and_alpha
+from app.services.colormaps_v2 import VAR_SPECS
 from app.services.grid import detect_latlon_names, normalize_latlon_coords
 from app.services.hrrr_fetch import ensure_latest_cycles, fetch_hrrr_grib
 from app.services.hrrr_runs import HRRRCacheConfig
@@ -29,6 +29,104 @@ logger = logging.getLogger(__name__)
 
 # PNW bounding box: WA, OR, NW Idaho, Western MT
 PNW_BBOX_WGS84 = (-125.5, 41.5, -111.0, 49.5)  # (min_lon, min_lat, max_lon, max_lat)
+
+
+def _collect_fill_values(da: xr.DataArray) -> list[float]:
+    candidates: list[float] = []
+    for source in (da.attrs, getattr(da, "encoding", {}) or {}):
+        for key in ("_FillValue", "missing_value", "GRIB_missingValue", "GRIB_missingValueAtSea"):
+            if key not in source:
+                continue
+            value = source.get(key)
+            if isinstance(value, (list, tuple, np.ndarray)):
+                for item in value:
+                    try:
+                        num = float(item)
+                    except (TypeError, ValueError):
+                        continue
+                    if np.isfinite(num):
+                        candidates.append(num)
+            else:
+                try:
+                    num = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if np.isfinite(num):
+                    candidates.append(num)
+    return candidates
+
+
+def _encode_with_nodata(
+    values: np.ndarray,
+    *,
+    var_key: str,
+    da: xr.DataArray,
+) -> tuple[np.ndarray, np.ndarray, dict, np.ndarray, dict]:
+    spec = VAR_SPECS.get(var_key, {})
+    kind = spec.get("type", "continuous")
+    fill_values = _collect_fill_values(da)
+
+    valid_mask = np.isfinite(values)
+    for fill_value in fill_values:
+        valid_mask &= values != fill_value
+
+    valid_values = values[valid_mask]
+    if valid_values.size == 0:
+        raise RuntimeError(f"No valid data found after masking for {var_key}")
+
+    if kind == "discrete":
+        levels = spec.get("levels") or []
+        colors = spec.get("colors") or []
+        if not levels or not colors:
+            raise RuntimeError(f"Discrete spec missing levels/colors for {var_key}")
+        bins = np.digitize(np.where(valid_mask, values, levels[0]), levels, right=False) - 1
+        bins = np.clip(bins, 0, len(colors) - 1).astype(np.uint8)
+        byte_band = bins.astype(np.uint8)
+        byte_band[~valid_mask] = 255
+        alpha = np.where(byte_band == 255, 0, 255).astype(np.uint8)
+        meta = {
+            "var_key": var_key,
+            "kind": "discrete",
+            "units": spec.get("units"),
+            "levels": list(levels),
+            "colors": list(colors),
+        }
+        stats = {
+            "vmin": float(np.nanmin(valid_values)),
+            "vmax": float(np.nanmax(valid_values)),
+        }
+        return byte_band, alpha, meta, valid_mask, stats
+
+    range_vals = spec.get("range")
+    if range_vals and len(range_vals) == 2:
+        vmin, vmax = float(range_vals[0]), float(range_vals[1])
+    else:
+        if valid_values.size >= 10:
+            vmin, vmax = np.nanpercentile(valid_values, [2, 98])
+        else:
+            vmin, vmax = float(np.nanmin(valid_values)), float(np.nanmax(valid_values))
+        if vmin == vmax:
+            vmin -= 1.0
+            vmax += 1.0
+
+    scaled = np.clip(np.rint((values - vmin) / (vmax - vmin) * 254.0), 0, 254).astype(np.uint8)
+    byte_band = scaled
+    byte_band[~valid_mask] = 255
+    alpha = np.where(byte_band == 255, 0, 255).astype(np.uint8)
+    meta = {
+        "var_key": var_key,
+        "kind": "continuous",
+        "units": spec.get("units"),
+        "range": [float(vmin), float(vmax)],
+        "colors": list(spec.get("colors", [])),
+    }
+    stats = {
+        "vmin": float(np.nanmin(valid_values)),
+        "vmax": float(np.nanmax(valid_values)),
+        "scale_min": float(vmin),
+        "scale_max": float(vmax),
+    }
+    return byte_band, alpha, meta, valid_mask, stats
 
 
 def require_gdal(cmd_name: str) -> None:
@@ -150,6 +248,7 @@ def _write_vrt(
   <VRTRasterBand dataType=\"Byte\" band=\"1\" subClass=\"VRTRawRasterBand\">
     <Description>intensity</Description>
     <ColorInterp>Gray</ColorInterp>
+        <NoDataValue>255</NoDataValue>
     <SourceFilename relativeToVRT=\"0\">{band1_path}</SourceFilename>
     <ImageOffset>0</ImageOffset>
     <PixelOffset>1</PixelOffset>
@@ -246,7 +345,12 @@ def warp_to_3857(src_tif: Path, dst_tif: Path, clip_bounds_3857: tuple[float, fl
         "EPSG:3857",
         "-r",
         "bilinear",
+        "-srcnodata",
+        "255",
+        "-dstnodata",
+        "255",
         "-srcalpha",
+        "-dstalpha",
         "-wo",
         "SRC_ALPHA=YES",
         "-co",
@@ -601,7 +705,38 @@ def main() -> int:
 
     try:
         start_time = time.time()
-        byte_band, alpha_band, meta = encode_to_byte_and_alpha(values, var_key=args.var)
+        byte_band, alpha_band, meta, valid_mask, stats = _encode_with_nodata(
+            values,
+            var_key=normalized_var,
+            da=da,
+        )
+
+        if normalized_var == "tmp2m":
+            valid_count = int(np.count_nonzero(valid_mask))
+            total_count = int(values.size)
+            nodata_count = int(np.count_nonzero(byte_band == 255))
+            nodata_pct = (nodata_count / total_count * 100.0) if total_count else 0.0
+            alpha_nonzero = int(np.count_nonzero(alpha_band))
+            alpha_pct = (alpha_nonzero / total_count * 100.0) if total_count else 0.0
+            valid_bytes = byte_band[byte_band != 255]
+            if valid_bytes.size:
+                byte_min = int(valid_bytes.min())
+                byte_max = int(valid_bytes.max())
+            else:
+                byte_min = 255
+                byte_max = 255
+            print(
+                "tmp2m stats: "
+                f"float_min={stats.get('vmin'):.2f} float_max={stats.get('vmax'):.2f} "
+                f"byte_min={byte_min} byte_max={byte_max} "
+                f"nodata_pct={nodata_pct:.2f} alpha_pct={alpha_pct:.2f} valid={valid_count}/{total_count}"
+            )
+
+            if nodata_pct == 0.0 and byte_min == 255 and byte_max == 255:
+                raise RuntimeError(
+                    "tmp2m scaling failed: byte range is 255-only with no nodata; "
+                    "check units/range or valid-mask logic."
+                )
 
         run_id = _resolve_run_id(grib_path)
         out_dir = Path(args.out_root) / args.model / args.region / run_id / args.var
