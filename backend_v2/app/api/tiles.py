@@ -13,7 +13,7 @@ from rasterio.windows import from_bounds
 
 from fastapi import APIRouter, HTTPException, Response
 
-from app.services.colormaps_v2 import get_lut
+from app.services.colormaps_v2 import encode_to_byte_and_alpha, get_lut
 from app.services.run_resolution import get_data_root, resolve_run
 
 router = APIRouter(prefix="/tiles/v2", tags=["v2-tiles"])
@@ -60,28 +60,88 @@ def get_tile(
     try:
         with rasterio.open(cog_path) as src:
             window = from_bounds(*bounds, transform=src.transform)
-            band1 = src.read(
-                1,
-                window=window,
-                out_shape=(TILE_SIZE, TILE_SIZE),
-                resampling=Resampling.nearest,
-                boundless=True,
-                fill_value=0,
-            )
-            band2 = src.read(
-                2,
-                window=window,
-                out_shape=(TILE_SIZE, TILE_SIZE),
-                resampling=Resampling.nearest,
-                boundless=True,
-                fill_value=0,
-            )
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"COG read error: {exc}") from exc
+            count = src.count
+            dtype = np.dtype(src.dtypes[0])
 
-    lut = get_lut(var)
-    rgba = lut[band1]
-    rgba[..., 3] = band2
+            if count == 2:
+                band1 = src.read(
+                    1,
+                    window=window,
+                    out_shape=(TILE_SIZE, TILE_SIZE),
+                    resampling=Resampling.nearest,
+                    boundless=True,
+                    fill_value=0,
+                ).astype(np.uint8)
+                band2 = src.read(
+                    2,
+                    window=window,
+                    out_shape=(TILE_SIZE, TILE_SIZE),
+                    resampling=Resampling.nearest,
+                    boundless=True,
+                    fill_value=0,
+                ).astype(np.uint8)
+                rgba = np.zeros((TILE_SIZE, TILE_SIZE, 4), dtype=np.uint8)
+                rgba[..., 0] = band1
+                rgba[..., 1] = band1
+                rgba[..., 2] = band1
+                rgba[..., 3] = band2
+            elif count == 4:
+                bands = src.read(
+                    [1, 2, 3, 4],
+                    window=window,
+                    out_shape=(4, TILE_SIZE, TILE_SIZE),
+                    resampling=Resampling.nearest,
+                    boundless=True,
+                    fill_value=0,
+                )
+                rgba = np.moveaxis(bands, 0, -1).astype(np.uint8)
+            elif count == 1:
+                if dtype == np.uint8:
+                    band = src.read(
+                        1,
+                        window=window,
+                        out_shape=(TILE_SIZE, TILE_SIZE),
+                        resampling=Resampling.nearest,
+                        boundless=True,
+                        fill_value=0,
+                        masked=True,
+                    )
+                    data = np.asarray(band.filled(0), dtype=np.uint8)
+                    alpha = np.where(np.ma.getmaskarray(band), 0, 255).astype(np.uint8)
+                    rgba = np.stack([data, data, data, alpha], axis=-1)
+                else:
+                    band = src.read(
+                        1,
+                        window=window,
+                        out_shape=(TILE_SIZE, TILE_SIZE),
+                        resampling=Resampling.nearest,
+                        boundless=True,
+                        fill_value=np.nan,
+                    )
+                    byte_band, alpha_band, _ = encode_to_byte_and_alpha(band, var_key=var)
+                    lut = get_lut(var)
+                    rgba = lut[byte_band]
+                    rgba[..., 3] = alpha_band
+            else:
+                raise RuntimeError(f"Unsupported band count: {count}")
+    except Exception as exc:
+        logger.exception(
+            "Tile render failed model=%s region=%s run=%s var=%s fh=%s z=%s x=%s y=%s path=%s",
+            model,
+            region,
+            resolved_run,
+            var,
+            fh,
+            z,
+            x,
+            y,
+            cog_path,
+        )
+        return Response(
+            content=f"Tile render error: {exc}",
+            media_type="text/plain",
+            status_code=500,
+        )
 
     image = Image.fromarray(rgba.astype(np.uint8), mode="RGBA")
     buffer = BytesIO()
