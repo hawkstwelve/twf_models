@@ -1,7 +1,8 @@
 import { API_BASE, DEFAULTS } from "./config.js";
 
 const BASEMAP_ATTRIBUTION =
-  "&copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a> contributors &copy; <a href=\"https://carto.com/attributions\">CARTO</a>";
+  '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors ' +
+  '&copy; <a href="https://carto.com/attributions">CARTO</a>';
 
 export function createBaseLayer() {
   return L.tileLayer(
@@ -14,10 +15,16 @@ export function createBaseLayer() {
   );
 }
 
+/**
+ * Build the backend tile URL for model overlays
+ */
 export function buildOverlayUrl({ model, run, variable, fh }) {
   return `${API_BASE}/tiles/v2/${model}/${run}/${variable}/${fh}/{z}/{x}/{y}.png`;
 }
 
+/**
+ * Create the Leaflet overlay layer
+ */
 export function createOverlayLayer({ model, run, variable, fh }) {
   const url = buildOverlayUrl({ model, run, variable, fh });
 
@@ -25,9 +32,14 @@ export function createOverlayLayer({ model, run, variable, fh }) {
     minZoom: DEFAULTS.zoomMin,
     maxZoom: DEFAULTS.zoomMax,
     opacity: 1,
+    tileSize: 256,
+
+    // Performance / UX
     keepBuffer: 4,
     updateWhenIdle: true,
     updateWhenZooming: false,
-    tileSize: 256,
+
+    // Required for future canvas operations (legends, screenshots)
+    crossOrigin: true,
   });
 }

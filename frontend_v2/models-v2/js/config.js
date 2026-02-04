@@ -4,11 +4,11 @@ const isLocalDevHost =
 const isLocalDevPort = window.location.port === "8080";
 
 export const API_BASE =
-  isLocalDevHost && isLocalDevPort ? "http://127.0.0.1:8002" : "";
+  isLocalDevHost && isLocalDevPort ? "http://127.0.0.1:8002" : "https://api.sodakweather.com/models-v2";
 
 export const DEFAULTS = {
   model: "hrrr",
-  run: "testrun",
+  run: "latest",
   variable: "tmp2m",
   fhStart: 0,
   fhEnd: 18,
