@@ -42,6 +42,7 @@ def get_tile(
     z: int,
     x: int,
     y: int,
+    debug: bool = False,
 ) -> Response:
     for label, value in ("model", model), ("region", region), ("run", run), ("var", var):
         if not SEGMENT_RE.match(value):
@@ -70,7 +71,7 @@ def get_tile(
                     out_shape=(TILE_SIZE, TILE_SIZE),
                     resampling=Resampling.nearest,
                     boundless=True,
-                    fill_value=0,
+                    fill_value=255,
                 ).astype(np.uint8)
                 band2 = src.read(
                     2,
@@ -80,11 +81,11 @@ def get_tile(
                     boundless=True,
                     fill_value=0,
                 ).astype(np.uint8)
-                rgba = np.zeros((TILE_SIZE, TILE_SIZE, 4), dtype=np.uint8)
-                rgba[..., 0] = band1
-                rgba[..., 1] = band1
-                rgba[..., 2] = band1
-                rgba[..., 3] = band2
+                lut = get_lut(var)
+                rgba = lut[band1]
+                alpha = band2.copy()
+                alpha = np.where(band1 == 255, 0, alpha).astype(np.uint8)
+                rgba[..., 3] = alpha
             elif count == 4:
                 bands = src.read(
                     [1, 2, 3, 4],
@@ -103,12 +104,14 @@ def get_tile(
                         out_shape=(TILE_SIZE, TILE_SIZE),
                         resampling=Resampling.nearest,
                         boundless=True,
-                        fill_value=0,
+                        fill_value=255,
                         masked=True,
                     )
-                    data = np.asarray(band.filled(0), dtype=np.uint8)
-                    alpha = np.where(np.ma.getmaskarray(band), 0, 255).astype(np.uint8)
-                    rgba = np.stack([data, data, data, alpha], axis=-1)
+                    byte_band = np.asarray(band.filled(255), dtype=np.uint8)
+                    alpha = np.where(np.ma.getmaskarray(band) | (byte_band == 255), 0, 255).astype(np.uint8)
+                    lut = get_lut(var)
+                    rgba = lut[byte_band]
+                    rgba[..., 3] = alpha
                 else:
                     band = src.read(
                         1,
@@ -141,6 +144,21 @@ def get_tile(
             content=f"Tile render error: {exc}",
             media_type="text/plain",
             status_code=500,
+        )
+
+    if debug:
+        non_gray = np.any((rgba[..., 0] != rgba[..., 1]) | (rgba[..., 1] != rgba[..., 2]))
+        logger.debug(
+            "tile debug model=%s region=%s run=%s var=%s fh=%s z=%s x=%s y=%s non_gray=%s",
+            model,
+            region,
+            resolved_run,
+            var,
+            fh,
+            z,
+            x,
+            y,
+            bool(non_gray),
         )
 
     image = Image.fromarray(rgba.astype(np.uint8), mode="RGBA")
