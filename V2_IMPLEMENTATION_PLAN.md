@@ -257,30 +257,30 @@ Reference:
 - [x] No V1 dependencies
 
 ### Milestone 2 — Colorbar/LUT System (NEXT)
-- [ ] Create `app/services/colormaps_v2.py`
-- [ ] Copy palettes from V1 (no imports)
-- [ ] Implement LUT builders:
-  - [ ] discrete palettes (levels + colors)
-  - [ ] continuous 256-step palettes
-- [ ] Implement encoder: values → (byte, alpha) + sidecar metadata
+- [x] Create `app/services/colormaps_v2.py`
+- [x] Copy palettes from V1 (no imports)
+- [x] Implement LUT builders:
+  - [x] discrete palettes (levels + colors)
+  - [x] continuous 256-step palettes
+- [x] Implement encoder: values → (byte, alpha) + sidecar metadata
 
 **Exit criteria:** given an array, can produce byte/alpha and a LUT that renders correctly.
 
 ### Milestone 3 — HRRR COG Frame Writer (IN PROGRESS)
-- [ ] Replace MBTiles output with COG output + overviews
-- [ ] Output to `/opt/twf_models/data/v2/.../fhNNN.cog.tif`
-- [ ] Write `fhNNN.json`
-- [ ] Standardize run dir naming `YYYYMMDD_HHz`
-- [ ] Retention: keep latest run only
+- [x] Replace MBTiles output with COG output + overviews
+- [x] Output to `/opt/twf_models/data/v2/.../fhNNN.cog.tif`
+- [x] Write `fhNNN.json`
+- [x] Standardize run dir naming `YYYYMMDD_HHz`
+- [x] Retention: keep latest run only
 
 **Exit criteria:** HRRR `tmp2m` fh000 generates a COG + JSON under the new root.
 
 ### Milestone 4 — COG Tile Serving (NEXT)
-- [ ] Implement `/tiles/v2/{model}/{region}/{run}/{var}/{fh}/{z}/{x}/{y}.png`
-- [ ] Read a 256×256 window from COG (overview-aware)
-- [ ] Apply LUT + alpha → PNG
-- [ ] Add caching headers (`Cache-Control`, `ETag`)
-- [ ] Validate overlay renders in Leaflet at z=5–11
+- [x] Implement `/tiles/v2/{model}/{region}/{run}/{var}/{fh}/{z}/{x}/{y}.png`
+- [x] Read a 256×256 window from COG (overview-aware)
+- [x] Apply LUT + alpha → PNG
+- [x] Add caching headers (`Cache-Control`, `ETag`)
+- [x] Validate overlay renders in Leaflet at z=5–11
 
 **Exit criteria:** Leaflet displays `tmp2m` overlay from COG tiles smoothly.
 
@@ -290,7 +290,7 @@ Reference:
 - [ ] Default selection: latest run, var=tmp2m, fh=0
 
 ### Milestone 6 — HRRR Orchestration + Schedule (MVP)
-- [ ] Create `generate_hrrr_frames.py` to loop vars × fh
+- [x] Create `generate_hrrr_frames.py` to loop vars × fh
 - [ ] Schedule on server (cron or systemd timer)
 - [ ] Logging + failure isolation per frame
 

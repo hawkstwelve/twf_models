@@ -4,13 +4,28 @@ const BASEMAP_ATTRIBUTION =
   '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors ' +
   '&copy; <a href="https://carto.com/attributions">CARTO</a>';
 
-export function createBaseLayer() {
+export function createBaseLayer({ pane = "basemap", zIndex = 200 } = {}) {
   return L.tileLayer(
     "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
     {
       attribution: BASEMAP_ATTRIBUTION,
       subdomains: "abcd",
       maxZoom: 20,
+      pane,
+      zIndex,
+    }
+  );
+}
+
+export function createLabelLayer({ pane = "labels", zIndex = 600 } = {}) {
+  return L.tileLayer(
+    "https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png",
+    {
+      attribution: BASEMAP_ATTRIBUTION,
+      subdomains: "abcd",
+      maxZoom: 20,
+      pane,
+      zIndex,
     }
   );
 }
@@ -28,14 +43,18 @@ export function buildTileUrl({ model, region, run = "latest", varKey, fh, z = "{
 /**
  * Create the Leaflet overlay layer
  */
-export function createOverlayLayer({ model, region, run, varKey, fh }) {
+export function createOverlayLayer({ model, region, run, varKey, fh, pane = "overlay", zIndex = 400 }) {
   const url = buildTileUrl({ model, region, run, varKey, fh });
 
   return L.tileLayer(url, {
     minZoom: DEFAULTS.zoomMin,
     maxZoom: DEFAULTS.zoomMax,
-    opacity: 1,
+    opacity: 0.55,
     tileSize: 256,
+    maxNativeZoom: 9,
+    pane,
+    zIndex,
+    className: "twf-overlay-title",
 
     // Performance / UX
     keepBuffer: 4,

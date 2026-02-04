@@ -1,6 +1,6 @@
 import { API_BASE, DEFAULTS } from "./config.js?v=20260204-2031";
 import { applyFramesToSlider, initControls } from "./controls.js?v=20260204-2031";
-import { buildTileUrl, createBaseLayer, createOverlayLayer } from "./layers.js?v=20260204-2031";
+import { buildTileUrl, createBaseLayer, createLabelLayer, createOverlayLayer } from "./layers.js?v=20260204-2031";
 
 console.debug("modules loaded ok");
 
@@ -28,9 +28,16 @@ const map = L.map("map", {
   zoomControl: true,
 }).setView(DEFAULTS.center, DEFAULTS.zoom);
 
+map.createPane("basemap");
+map.getPane("basemap").style.zIndex = "200";
+map.createPane("overlay");
+map.getPane("overlay").style.zIndex = "400";
+map.createPane("labels");
+map.getPane("labels").style.zIndex = "600";
+
 console.log("map init ok");
 
-createBaseLayer().addTo(map);
+createBaseLayer({ pane: "basemap", zIndex: 200 }).addTo(map);
 
 state.overlay = createOverlayLayer({
   model: state.model,
@@ -38,8 +45,22 @@ state.overlay = createOverlayLayer({
   run: state.run,
   varKey: state.varKey,
   fh: state.fh,
+  pane: "overlay",
+  zIndex: 400,
 });
 state.overlay.addTo(map);
+
+createLabelLayer({ pane: "labels", zIndex: 600 }).addTo(map);
+
+const opacitySlider = document.querySelector('.control-group.stub input[type="range"]');
+if (opacitySlider) {
+  opacitySlider.disabled = false;
+  opacitySlider.value = Math.round((state.overlay.options.opacity ?? 0.55) * 100).toString();
+  opacitySlider.addEventListener("input", (event) => {
+    const value = Number(event.target.value) / 100;
+    state.overlay.setOpacity(value);
+  });
+}
 
 function updateOverlayUrl() {
   const url = buildTileUrl({
