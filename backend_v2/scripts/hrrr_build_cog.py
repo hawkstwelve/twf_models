@@ -560,32 +560,44 @@ def main() -> int:
             f"attrs_keys={sorted(list(da.attrs.keys()))}"
         )
 
+    lat_name = None
+    lon_name = None
     try:
         da = normalize_latlon_coords(da)
         lat_name, lon_name = detect_latlon_names(da)
-    except Exception as exc:
+    except ValueError:
+        logger.info("No lat/lon coords present; using region bounds for metadata")
+    except Exception:
         logger.exception("Failed to normalize lat/lon coords")
         return 5
 
-    lat_vals = da.coords[lat_name].values
-    lon_vals = da.coords[lon_name].values
-    print(
-        f"Requested var '{args.var}' normalized to '{normalized_var}' using dataset var '{da.name}'\n"
-        f"GRIB domain: lat[{lat_name}] min={np.nanmin(lat_vals):.4f} max={np.nanmax(lat_vals):.4f}\n"
-        f"GRIB domain: lon[{lon_name}] min={np.nanmin(lon_vals):.4f} max={np.nanmax(lon_vals):.4f}"
-    )
+    if lat_name and lon_name:
+        lat_vals = da.coords[lat_name].values
+        lon_vals = da.coords[lon_name].values
+        print(
+            f"Requested var '{args.var}' normalized to '{normalized_var}' using dataset var '{da.name}'\n"
+            f"GRIB domain: lat[{lat_name}] min={np.nanmin(lat_vals):.4f} max={np.nanmax(lat_vals):.4f}\n"
+            f"GRIB domain: lon[{lon_name}] min={np.nanmin(lon_vals):.4f} max={np.nanmax(lon_vals):.4f}"
+        )
+    else:
+        lat_vals = None
+        lon_vals = None
 
     if clip_bbox_wgs84:
         bounds_wgs84 = clip_bbox_wgs84
         print(f"Metadata will use clipped bounds: {bounds_wgs84}")
     else:
-        bounds_wgs84 = (
-            float(np.nanmin(lon_vals)),
-            float(np.nanmin(lat_vals)),
-            float(np.nanmax(lon_vals)),
-            float(np.nanmax(lat_vals)),
-        )
-        print(f"Metadata will use full GRIB bounds: {bounds_wgs84}")
+        if lat_vals is None or lon_vals is None:
+            bounds_wgs84 = PNW_BBOX_WGS84
+            print(f"Metadata will use region bounds: {bounds_wgs84}")
+        else:
+            bounds_wgs84 = (
+                float(np.nanmin(lon_vals)),
+                float(np.nanmin(lat_vals)),
+                float(np.nanmax(lon_vals)),
+                float(np.nanmax(lat_vals)),
+            )
+            print(f"Metadata will use full GRIB bounds: {bounds_wgs84}")
 
     try:
         start_time = time.time()
