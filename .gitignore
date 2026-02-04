@@ -52,3 +52,7 @@ venv/
 .env
 
 .data/
+
+backend_v2/.python.version
+mbtiles/
+venv_v2/
