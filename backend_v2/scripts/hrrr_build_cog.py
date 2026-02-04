@@ -485,20 +485,27 @@ def main() -> int:
                 u_da = u_da.squeeze()
                 v_da = v_da.squeeze()
 
-                try:
-                    u_da, v_da = xr.align(u_da, v_da, join="exact")
-                except Exception as exc:
+                if u_da.shape != v_da.shape:
                     raise RuntimeError(
-                        "Failed to align u/v grids. "
-                        f"u_dims={u_da.dims} u_shape={u_da.shape} u_coords={list(u_da.coords.keys())} "
-                        f"v_dims={v_da.dims} v_shape={v_da.shape} v_coords={list(v_da.coords.keys())}"
-                    ) from exc
+                        "U/V grids have different shapes after squeeze. "
+                        f"u_shape={u_da.shape} v_shape={v_da.shape} "
+                        f"u_dims={u_da.dims} v_dims={v_da.dims}"
+                    )
+                if u_da.ndim != 2 or v_da.ndim != 2:
+                    raise RuntimeError(
+                        "U/V grids are not 2D after squeeze. "
+                        f"u_dims={u_da.dims} v_dims={v_da.dims}"
+                    )
 
-                wspd = np.hypot(u_da.astype("float32"), v_da.astype("float32")).astype("float32")
-                wspd.name = "wspd10m"
-                wspd.attrs = dict(u_da.attrs)
+                u_vals = np.asarray(u_da.data, dtype=np.float32)
+                v_vals = np.asarray(v_da.data, dtype=np.float32)
+                wspd_np = np.hypot(u_vals, v_vals).astype(np.float32)
+                wspd = xr.DataArray(wspd_np, dims=("y", "x"), name="wspd10m")
+                wspd.attrs = {key: value for key, value in u_da.attrs.items() if key.startswith("GRIB_")}
                 wspd.attrs["GRIB_units"] = "m/s"
                 da = wspd
+                log_debug(f"wspd10m: wspd dims={da.dims} shape={da.shape}")
+                log_debug(f"wspd10m: attrs keys={sorted(list(da.attrs.keys()))}")
 
                 print(
                     "Derived wspd10m: "
