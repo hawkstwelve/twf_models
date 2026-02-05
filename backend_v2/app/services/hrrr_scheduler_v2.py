@@ -30,6 +30,8 @@ DEFAULT_DATA_ROOT = Path("/opt/twf_models/data/v2")
 PRIMARY_VAR_DEFAULT = "tmp2m"
 VAR_DEFAULTS = "tmp2m,wspd10m"
 PROBE_INTERVAL_SECONDS = 90
+RATE_LIMIT_SECONDS = 300
+CACHE_TTL_SECONDS = 7200
 RELEASE_WINDOW_START_MINUTE = 0
 RELEASE_WINDOW_END_MINUTE = 20
 RELEASE_POLL_SECONDS = 60
@@ -42,6 +44,9 @@ SLEEP_JITTER_RATIO = 0.1
 
 class RunResolutionError(RuntimeError):
     pass
+
+
+_UPSTREAM_LOG_CACHE: dict[tuple[str, int, str], dict[str, object]] = {}
 
 
 def parse_args() -> argparse.Namespace:
@@ -393,6 +398,21 @@ def _apply_sleep_jitter(seconds: int) -> float:
     return max(1.0, jittered)
 
 
+def _normalize_reason(text: str | None) -> str:
+    if not text:
+        return "unknown"
+    trimmed = text.strip()
+    if not trimmed:
+        return "unknown"
+    return trimmed.splitlines()[0]
+
+
+def _prune_upstream_log_cache(now_ts: float) -> None:
+    expired = [key for key, entry in _UPSTREAM_LOG_CACHE.items() if now_ts - entry["last_seen_ts"] > CACHE_TTL_SECONDS]
+    for key in expired:
+        _UPSTREAM_LOG_CACHE.pop(key, None)
+
+
 def run_scheduler(args: argparse.Namespace) -> int:
     out_root = _data_root()
     cache_cfg = HRRRCacheConfig(base_dir=default_hrrr_cache_dir(), keep_runs=1)
@@ -577,13 +597,14 @@ def run_scheduler(args: argparse.Namespace) -> int:
 
             _summarize_loop(active_run_id, completed, total, len(pending), newest_run_id, latest_pointer_run)
 
+            loop_not_ready: dict[tuple[str, int, str], set[str]] = {}
+
             if pending:
                 primary_set = set(primary_vars)
                 pending.sort(key=lambda item: (item[1], 0 if item[0] in primary_set else 1, item[0]))
                 batch_size = min(len(pending), max_workers * 2)
                 batch = pending[:batch_size]
                 tasks = []
-                logged_upstream: set[tuple[str, str, int]] = set()
                 for var, fh in batch:
                     tasks.append(
                         {
@@ -611,17 +632,9 @@ def run_scheduler(args: argparse.Namespace) -> int:
                     else:
                         combined = f"{result['stderr']}\n{result['stdout']}"
                         if is_upstream_not_ready_message(combined):
-                            key = (result["run_id"], result["var"], result["fh"])
-                            if key in logged_upstream:
-                                continue
-                            logged_upstream.add(key)
-                            logger.warning(
-                                "Upstream not ready: run=%s var=%s fh=%s detail=%s",
-                                result["run_id"],
-                                result["var"],
-                                result["fh"],
-                                result["stderr"] or result["stdout"],
-                            )
+                            reason = _normalize_reason(result["stderr"] or result["stdout"])
+                            key = (result["run_id"], result["fh"], reason)
+                            loop_not_ready.setdefault(key, set()).add(result["var"])
                         else:
                             logger.error(
                                 "Build failed: run=%s var=%s fh=%s code=%s stderr=%s",
@@ -631,6 +644,29 @@ def run_scheduler(args: argparse.Namespace) -> int:
                                 result["returncode"],
                                 result["stderr"],
                             )
+
+            now_ts = time.time()
+            _prune_upstream_log_cache(now_ts)
+            for (run_id, fh, reason), vars_set in loop_not_ready.items():
+                cache_key = (run_id, fh, reason)
+                entry = _UPSTREAM_LOG_CACHE.get(cache_key)
+                last_logged_ts = entry["last_logged_ts"] if entry else 0.0
+                if now_ts - last_logged_ts < RATE_LIMIT_SECONDS:
+                    if entry:
+                        entry["last_seen_ts"] = now_ts
+                    continue
+                vars_list = sorted(vars_set)
+                logger.info(
+                    "Upstream not ready: run=%s fh=%s vars=%s reason=%s",
+                    run_id,
+                    fh,
+                    vars_list,
+                    reason,
+                )
+                _UPSTREAM_LOG_CACHE[cache_key] = {
+                    "last_logged_ts": now_ts,
+                    "last_seen_ts": now_ts,
+                }
 
             _enforce_output_retention(
                 out_root,
