@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import json
 import logging
 import shutil
@@ -68,6 +69,8 @@ def _encode_with_nodata(
     requested_var: str,
     normalized_var: str,
     da: xr.DataArray,
+    allow_range_fallback: bool,
+    fallback_percentiles: tuple[float, float] = (2.0, 98.0),
 ) -> tuple[np.ndarray, np.ndarray, dict, np.ndarray, dict, str]:
     spec_key = requested_var if requested_var in VAR_SPECS else normalized_var
     spec = VAR_SPECS.get(spec_key, {})
@@ -112,16 +115,26 @@ def _encode_with_nodata(
         return byte_band, alpha, meta, valid_mask, stats, spec_key
 
     range_vals = spec.get("range")
+    range_source = "spec"
+    range_percentiles = None
     if range_vals and len(range_vals) == 2:
         vmin, vmax = float(range_vals[0]), float(range_vals[1])
     else:
+        if not allow_range_fallback:
+            raise RuntimeError(
+                f"Missing fixed range for continuous var '{requested_var}'. "
+                "Add 'range' to VAR_SPECS or enable fallback explicitly."
+            )
+        p_low, p_high = fallback_percentiles
         if valid_values.size >= 10:
-            vmin, vmax = np.nanpercentile(valid_values, [2, 98])
+            vmin, vmax = np.nanpercentile(valid_values, [p_low, p_high])
         else:
             vmin, vmax = float(np.nanmin(valid_values)), float(np.nanmax(valid_values))
         if vmin == vmax:
             vmin -= 1.0
             vmax += 1.0
+        range_source = "fallback_percentile"
+        range_percentiles = [float(p_low), float(p_high)]
 
     scaled = np.clip(np.rint((values - vmin) / (vmax - vmin) * 254.0), 0, 254).astype(np.uint8)
     byte_band = scaled
@@ -134,6 +147,8 @@ def _encode_with_nodata(
         "kind": "continuous",
         "units": spec.get("units"),
         "range": [float(vmin), float(vmax)],
+        "range_source": range_source,
+        "range_percentiles": range_percentiles,
         "colors": list(spec.get("colors", [])),
     }
     stats = {
@@ -445,6 +460,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Disable geographic clipping (generates tiles for full HRRR domain)",
     )
+    parser.add_argument(
+        "--allow-range-fallback",
+        action="store_true",
+        help="Allow percentile fallback if a continuous var lacks a fixed range",
+    )
     return parser.parse_args()
 
 
@@ -507,6 +527,9 @@ def main() -> int:
             f"maxx={clip_bounds_3857[2]:.2f} maxy={clip_bounds_3857[3]:.2f}"
         )
 
+    allow_range_fallback = bool(
+        args.allow_range_fallback or os.environ.get("TWF_V2_ALLOW_RANGE_FALLBACK")
+    )
     normalized_var = normalize_api_variable(args.var)
     grib_path: Path | None = None
     u_path: Path | None = None
@@ -726,6 +749,7 @@ def main() -> int:
             requested_var=args.var,
             normalized_var=normalized_var,
             da=da,
+            allow_range_fallback=allow_range_fallback,
         )
 
         if args.var == "tmp2m":

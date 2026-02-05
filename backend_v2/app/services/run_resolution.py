@@ -9,7 +9,7 @@ from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
 
-DATA_ROOT_ENV = "DATA_V2_ROOT"
+DATA_ROOT_ENV = "TWF_DATA_V2_ROOT"
 DEFAULT_ROOT = "/opt/twf_models/data/v2"
 RUN_RE = re.compile(r"^\d{8}_\d{2}z$")
 

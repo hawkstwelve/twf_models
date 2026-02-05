@@ -37,6 +37,17 @@ function asLabel(value) {
   return value ?? "";
 }
 
+function formatLatestLabel(runId) {
+  if (!runId) {
+    return "Latest";
+  }
+  const match = String(runId).match(/_(\d{2})z$/i);
+  if (!match) {
+    return "Latest";
+  }
+  return `Latest (${match[1]}z)`;
+}
+
 function applyVariableLabels(items) {
   if (!Array.isArray(items)) {
     return [];
@@ -87,9 +98,20 @@ function setSelectOptions(select, items, { includeLatest = false } = {}) {
     return;
   }
   select.innerHTML = "";
-  const rawValues = includeLatest
-    ? ["latest", ...items.filter((item) => asId(item) !== "latest")]
-    : items;
+  let rawValues = items;
+  if (includeLatest && items.length > 0) {
+    const filtered = items.filter((item) => asId(item) !== "latest");
+    const latestItem = filtered[0];
+    if (latestItem) {
+      const latestLabel = formatLatestLabel(asId(latestItem) || asLabel(latestItem));
+      rawValues = [
+        { id: "latest", label: latestLabel },
+        ...filtered.slice(1),
+      ];
+    } else {
+      rawValues = items;
+    }
+  }
   rawValues.forEach((item) => {
     const option = document.createElement("option");
     const idValue = asId(item);
@@ -124,8 +146,42 @@ export function applyFramesToSlider(frames, currentValue) {
   fhDisplay.textContent = `FH: ${value}`;
 }
 
+function pickDefaultValue(items, preferred) {
+  const ids = items.map(asId).filter(Boolean);
+  if (preferred && ids.includes(preferred)) {
+    return preferred;
+  }
+  return ids[0] ?? preferred ?? "";
+}
+
+async function fetchVars({ model, region, run }) {
+  const runKey = run && run !== "latest" ? run : "latest";
+  try {
+    return await fetchJson(`${API_BASE}/${model}/${region}/${runKey}/vars`);
+  } catch (error) {
+    console.warn("Failed to load vars list", error);
+    return VARIABLES.map((variable) => variable.id);
+  }
+}
+
+async function fetchFrames({ model, region, run, varKey }) {
+  const runKey = run && run !== "latest" ? run : "latest";
+  try {
+    const response = await fetchJson(`${API_BASE}/${model}/${region}/${runKey}/${varKey}/frames`);
+    const frames = normalizeFrames(response);
+    if (Array.isArray(response)) {
+      const first = response.find((row) => row && row.has_cog);
+      return { frames, legendMeta: first?.meta?.meta ?? null };
+    }
+    return { frames, legendMeta: null };
+  } catch (error) {
+    console.warn("Failed to load frames list", error);
+    return { frames: [], legendMeta: null };
+  }
+}
+
 export async function initControls({
-  onVariableChange,
+  onSelectionChange,
   onForecastHourChange,
   onPlayToggle,
 }) {
@@ -156,9 +212,7 @@ export async function initControls({
   }
 
   const modelIds = models.map(asId).filter(Boolean);
-  if (modelIds.length && !modelIds.includes(selectedModel)) {
-    selectedModel = modelIds[0];
-  }
+  selectedModel = pickDefaultValue(models, selectedModel);
   setSelectOptions(modelSelect, models);
   if (modelSelect) {
     modelSelect.value = selectedModel;
@@ -171,9 +225,7 @@ export async function initControls({
   }
 
   const regionIds = regions.map(asId).filter(Boolean);
-  if (regionIds.length && !regionIds.includes(selectedRegion)) {
-    selectedRegion = regionIds[0];
-  }
+  selectedRegion = pickDefaultValue(regions, selectedRegion);
   setSelectOptions(regionSelect, regions);
   if (regionSelect) {
     regionSelect.value = selectedRegion;
@@ -185,54 +237,162 @@ export async function initControls({
     console.warn("Failed to load runs list", error);
   }
   const runIds = runs.map(asId).filter(Boolean);
-  if (runIds.length && !runIds.includes(selectedRun)) {
-    selectedRun = runIds[0];
-  }
+  selectedRun = DEFAULTS.run;
   setSelectOptions(runSelect, runs, { includeLatest: true });
   if (runSelect) {
     runSelect.value = selectedRun;
   }
 
-  try {
-    variables = await fetchJson(`${API_BASE}/${selectedModel}/${selectedRegion}/latest/vars`);
-  } catch (error) {
-    console.warn("Failed to load vars list", error);
-    variables = VARIABLES.map((variable) => variable.id);
-  }
+  variables = await fetchVars({ model: selectedModel, region: selectedRegion, run: selectedRun });
 
   variables = applyVariableLabels(variables);
 
-  const varIds = variables.map(asId).filter(Boolean);
-  if (varIds.length && !varIds.includes(selectedVar)) {
-    selectedVar = varIds[0];
-  }
+  selectedVar = pickDefaultValue(variables, selectedVar);
   if (varSelect) {
     setSelectOptions(varSelect, variables);
     varSelect.value = selectedVar;
   }
 
-  try {
-    const framesResponse = await fetchJson(
-      `${API_BASE}/${selectedModel}/${selectedRegion}/latest/${selectedVar}/frames`
-    );
-    frames = normalizeFrames(framesResponse);
-    if (Array.isArray(framesResponse)) {
-      const first = framesResponse.find((row) => row && row.has_cog);
-      legendMeta = first?.meta?.meta ?? null;
-    }
-  } catch (error) {
-    console.warn("Failed to load frames list", error);
-    frames = [];
-  }
+  ({ frames, legendMeta } = await fetchFrames({
+    model: selectedModel,
+    region: selectedRegion,
+    run: selectedRun,
+    varKey: selectedVar,
+  }));
 
   const initialFh = frames.length ? frames[0] : DEFAULTS.fhStart;
   applyFramesToSlider(frames, initialFh);
 
+  async function notifySelectionChange() {
+    if (!onSelectionChange) {
+      return;
+    }
+    onSelectionChange({
+      model: selectedModel,
+      region: selectedRegion,
+      run: selectedRun,
+      varKey: selectedVar,
+      legendMeta,
+      frames,
+      models,
+      regions,
+      runs,
+      variables,
+    });
+  }
+
+  if (modelSelect) {
+    modelSelect.addEventListener("change", async (event) => {
+      selectedModel = event.target.value;
+      selectedRun = DEFAULTS.run;
+      try {
+        regions = await fetchJson(`${API_BASE}/${selectedModel}/regions`);
+      } catch (error) {
+        console.warn("Failed to load regions list", error);
+        regions = [];
+      }
+      selectedRegion = pickDefaultValue(regions, DEFAULTS.region);
+      setSelectOptions(regionSelect, regions);
+      if (regionSelect) {
+        regionSelect.value = selectedRegion;
+      }
+
+      try {
+        runs = await fetchJson(`${API_BASE}/${selectedModel}/${selectedRegion}/runs`);
+      } catch (error) {
+        console.warn("Failed to load runs list", error);
+        runs = [];
+      }
+      setSelectOptions(runSelect, runs, { includeLatest: true });
+      if (runSelect) {
+        runSelect.value = selectedRun;
+      }
+
+      variables = await fetchVars({ model: selectedModel, region: selectedRegion, run: selectedRun });
+      variables = applyVariableLabels(variables);
+      selectedVar = pickDefaultValue(variables, DEFAULTS.variable);
+      if (varSelect) {
+        setSelectOptions(varSelect, variables);
+        varSelect.value = selectedVar;
+      }
+
+      ({ frames, legendMeta } = await fetchFrames({
+        model: selectedModel,
+        region: selectedRegion,
+        run: selectedRun,
+        varKey: selectedVar,
+      }));
+
+      await notifySelectionChange();
+    });
+  }
+
+  if (regionSelect) {
+    regionSelect.addEventListener("change", async (event) => {
+      selectedRegion = event.target.value;
+      selectedRun = DEFAULTS.run;
+      try {
+        runs = await fetchJson(`${API_BASE}/${selectedModel}/${selectedRegion}/runs`);
+      } catch (error) {
+        console.warn("Failed to load runs list", error);
+        runs = [];
+      }
+      setSelectOptions(runSelect, runs, { includeLatest: true });
+      if (runSelect) {
+        runSelect.value = selectedRun;
+      }
+
+      variables = await fetchVars({ model: selectedModel, region: selectedRegion, run: selectedRun });
+      variables = applyVariableLabels(variables);
+      selectedVar = pickDefaultValue(variables, DEFAULTS.variable);
+      if (varSelect) {
+        setSelectOptions(varSelect, variables);
+        varSelect.value = selectedVar;
+      }
+
+      ({ frames, legendMeta } = await fetchFrames({
+        model: selectedModel,
+        region: selectedRegion,
+        run: selectedRun,
+        varKey: selectedVar,
+      }));
+
+      await notifySelectionChange();
+    });
+  }
+
+  if (runSelect) {
+    runSelect.addEventListener("change", async (event) => {
+      selectedRun = event.target.value || DEFAULTS.run;
+      variables = await fetchVars({ model: selectedModel, region: selectedRegion, run: selectedRun });
+      variables = applyVariableLabels(variables);
+      selectedVar = pickDefaultValue(variables, DEFAULTS.variable);
+      if (varSelect) {
+        setSelectOptions(varSelect, variables);
+        varSelect.value = selectedVar;
+      }
+
+      ({ frames, legendMeta } = await fetchFrames({
+        model: selectedModel,
+        region: selectedRegion,
+        run: selectedRun,
+        varKey: selectedVar,
+      }));
+
+      await notifySelectionChange();
+    });
+  }
+
   if (varSelect) {
-    varSelect.addEventListener("change", (event) => {
-      const value = event.target.value;
-      console.debug("var change", value);
-      onVariableChange(value);
+    varSelect.addEventListener("change", async (event) => {
+      selectedVar = event.target.value;
+      ({ frames, legendMeta } = await fetchFrames({
+        model: selectedModel,
+        region: selectedRegion,
+        run: selectedRun,
+        varKey: selectedVar,
+      }));
+      await notifySelectionChange();
     });
   }
 

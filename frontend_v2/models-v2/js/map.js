@@ -1,5 +1,5 @@
 import { API_BASE, DEFAULTS } from "./config.js?v=20260204-2115";
-import { applyFramesToSlider, initControls, normalizeFrames } from "./controls.js?v=20260204-2115";
+import { applyFramesToSlider, initControls } from "./controls.js?v=20260204-2115";
 import { buildTileUrl, createBaseLayer, createLabelLayer, createOverlayLayer } from "./layers.js?v=20260204-2115";
 
 console.debug("modules loaded ok");
@@ -83,11 +83,6 @@ function setForecastHour(fh, { userInitiated = false } = {}) {
     playToggle.textContent = "Play";
   }
   state.fh = fh;
-  updateOverlayUrl();
-}
-
-function setVariable(variable) {
-  state.varKey = variable;
   updateOverlayUrl();
 }
 
@@ -256,42 +251,26 @@ function renderLegend(meta) {
   }
 }
 
-async function fetchFrames({ model, region, varKey }) {
-  try {
-    const response = await fetch(
-      `${API_BASE}/${model}/${region}/latest/${varKey}/frames`,
-      { credentials: "omit" }
-    );
-    if (!response.ok) {
-      throw new Error(`Frames request failed: ${response.status}`);
-    }
-    const payload = await response.json();
-    const filtered = Array.isArray(payload)
-      ? payload.filter((row) => row && row.has_cog)
-      : [];
-    const frames = normalizeFrames(filtered);
-    const legendMeta = filtered.length ? filtered[0]?.meta?.meta ?? null : null;
-    return { frames, legendMeta };
-  } catch (error) {
-    console.warn("Failed to refresh frames list", error);
-    return { frames: [], legendMeta: null };
+function applySelection(metadata, { userInitiated = false } = {}) {
+  if (!metadata) {
+    return;
   }
+  state.model = asId(metadata.model);
+  state.region = asId(metadata.region);
+  state.run = asId(metadata.run);
+  state.varKey = asId(metadata.varKey);
+  state.frames = metadata.frames ?? [];
+  renderLegend(metadata.legendMeta);
+  const nextFh = state.frames.length ? state.frames[0] : DEFAULTS.fhStart;
+  applyFramesToSlider(state.frames, nextFh);
+  setForecastHour(nextFh, { userInitiated });
+  updateOverlayUrl();
 }
 
 async function bootstrap() {
   const metadata = await initControls({
-    onVariableChange: async (value) => {
-      setVariable(value);
-      const result = await fetchFrames({
-        model: state.model,
-        region: state.region,
-        varKey: value,
-      });
-      state.frames = result.frames;
-      const nextFh = state.frames.length ? state.frames[0] : DEFAULTS.fhStart;
-      applyFramesToSlider(state.frames, nextFh);
-      setForecastHour(nextFh, { userInitiated: true });
-      renderLegend(result.legendMeta);
+    onSelectionChange: (next) => {
+      applySelection(next, { userInitiated: true });
     },
     onForecastHourChange: (value) => {
       setForecastHour(value, { userInitiated: true });
@@ -305,25 +284,7 @@ async function bootstrap() {
     },
   });
 
-  if (metadata) {
-    state.model = asId(metadata.model);
-    state.region = asId(metadata.region);
-    state.run = asId(metadata.run);
-    state.varKey = asId(metadata.varKey);
-    state.frames = metadata.frames;
-    renderLegend(metadata.legendMeta);
-    const varSelect = document.getElementById("var-select");
-    if (varSelect) {
-      const nextVar = state.varKey || DEFAULTS.variable;
-      if (nextVar) {
-        varSelect.value = nextVar;
-      }
-    }
-    const initialFh = state.frames.length ? state.frames[0] : state.fh;
-    setForecastHour(initialFh);
-    applyFramesToSlider(state.frames, initialFh);
-    updateOverlayUrl();
-  }
+  applySelection(metadata);
 }
 
 bootstrap();

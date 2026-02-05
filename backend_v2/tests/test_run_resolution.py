@@ -19,7 +19,7 @@ def test_resolve_latest_lexicographic(monkeypatch: pytest.MonkeyPatch, tmp_path:
     _mkdir(root / "hrrr" / "pnw" / "20250203_18z")
     _mkdir(root / "hrrr" / "pnw" / "20250204_12z")
 
-    monkeypatch.setenv("DATA_V2_ROOT", str(root))
+    monkeypatch.setenv("TWF_DATA_V2_ROOT", str(root))
 
     runs = list_runs("hrrr", "pnw")
     assert runs == ["20250204_12z", "20250203_18z"]
@@ -35,7 +35,7 @@ def test_resolve_latest_mtime_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path
     os.utime(run_a, (now - 100, now - 100))
     os.utime(run_b, (now - 10, now - 10))
 
-    monkeypatch.setenv("DATA_V2_ROOT", str(root))
+    monkeypatch.setenv("TWF_DATA_V2_ROOT", str(root))
 
     runs = list_runs("hrrr", "pnw")
     assert runs[0] == "runB"

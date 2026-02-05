@@ -263,6 +263,7 @@ Reference:
   - [x] discrete palettes (levels + colors)
   - [x] continuous 256-step palettes
 - [x] Implement encoder: values → (byte, alpha) + sidecar metadata
+- [x] Enforce fixed-range-only continuous scaling (fallback requires explicit opt-in)
 
 **Exit criteria:** given an array, can produce byte/alpha and a LUT that renders correctly.
 
@@ -285,9 +286,9 @@ Reference:
 **Exit criteria:** Leaflet displays `tmp2m` overlay from COG tiles smoothly.
 
 ### Milestone 5 — Discovery APIs (NEXT)
-- [ ] Implement filesystem discovery endpoints
-- [ ] Frontend consumes discovery endpoints (no hardcoding)
-- [ ] Default selection: latest run, var=tmp2m, fh=0
+- [x] Implement filesystem discovery endpoints
+- [x] Frontend consumes discovery endpoints (no hardcoding)
+- [x] Default selection: latest run, var=tmp2m, fh=0
 
 ### Milestone 6 — HRRR Orchestration + Schedule (MVP)
 - [x] Create `generate_hrrr_frames.py` to loop vars × fh
@@ -296,7 +297,7 @@ Reference:
 
 ### Milestone 7 — Production Hardening
 - [ ] Nginx proxy_cache for tiles
-- [ ] Env var config for data root
+- [x] Env var config for data root
 - [ ] Resource usage verified under animation
 
 ### Milestone 8 — Expansion
@@ -313,3 +314,28 @@ Reference:
 - DO NOT use percentile scaling for palette-driven variables
 - DO NOT store generated runtime data inside the git repo
 - DO NOT bypass API versioning
+
+---
+
+## 12. Repo Alignment Review (Feb 2026)
+
+### 12.1 Confirmed Completed (Evidence in Repo)
+- V2 backend skeleton and routing in `backend_v2/app/main.py` (FastAPI app + routers)
+- Tile service reads COG windows, applies LUT, and emits cache headers in `backend_v2/app/api/tiles.py`
+- COG frame writer + sidecar JSON in `backend_v2/scripts/hrrr_build_cog.py`
+- Batch HRRR frame generator in `backend_v2/scripts/generate_hrrr_frames.py`
+- LUTs, palettes, and byte+alpha encoder in `backend_v2/app/services/colormaps_v2.py`
+- Discovery endpoints and filesystem traversal in `backend_v2/app/api/v2.py` and `backend_v2/app/services/discovery_v2.py`
+- Frontend discovery wiring and tile template in `frontend_v2/models-v2/js/*.js`
+
+### 12.2 Recommended Next Steps (Priority Order)
+1) **Scheduling (M6):** add systemd timer or cron to run `backend_v2/scripts/generate_hrrr_frames.py` on the server. Keep this V2-only.
+2) **Data root env var (M7):** standardize on `TWF_DATA_V2_ROOT` as the authoritative env var.
+3) **Fixed-range enforcement (M2/M3):** continuous variables must use spec-defined fixed ranges. If a var lacks a fixed range, hard-fail by default, or allow fallback only when explicitly enabled and record the computed range in the sidecar JSON to preserve tile/legend consistency. (Completed)
+4) **Frontend selectors (M5):** surface model/region/run selectors in `frontend_v2/models-v2/index.html` to match the discovery-driven controls already implemented in JS. (Completed)
+5) **Default selection (M5):** set default selection to latest run, `tmp2m`, and `fh=0` after discovery returns. (Completed)
+6) **Proxy cache (M7):** add nginx `proxy_cache` in front of `/tiles/v2` once basic scheduling and config are in place.
+
+### 12.3 Notes / Watchlist
+- Legacy MBTiles tile module exists under `backend_v2/app/api/tiles_mbtiles.py` but is not wired into the V2 app; keep or remove intentionally.
+- Avoid percentile scaling for palette-driven variables; this is a correctness risk for legend alignment.
