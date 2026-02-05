@@ -81,11 +81,47 @@ body {
   gap: 8px;
 }
 
+.legend-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 4px;
+}
+
 .legend-bar {
-  height: 16px;
+  height: 20px;
   border-radius: 4px;
   background: linear-gradient(90deg, #2b8cbe, #a6bddb, #ffffbf, #fdae61, #d7191c);
   border: 1px solid var(--border-color);
+  position: relative;
+}
+
+.legend-ticks {
+  position: relative;
+  height: 40px;
+  margin-top: 4px;
+}
+
+.legend-tick {
+  position: absolute;
+  transform: translateX(-50%);
+}
+
+.legend-tick::before {
+  content: "";
+  display: block;
+  width: 1px;
+  height: 6px;
+  background: #666;
+  margin: 0 auto 2px;
+}
+
+.legend-tick-label {
+  display: block;
+  font-size: 10px;
+  color: #444;
+  white-space: nowrap;
+  text-align: center;
 }
 
 .legend-labels {

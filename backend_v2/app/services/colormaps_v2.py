@@ -134,8 +134,7 @@ snow_levels = [
     40.0, 41.0, 42.0, 43.0, 44.0, 45.0, 46.0, 47.0, 48.0,
 ]
 
-# 10m wind speed (mph) discrete palette
-WSPD10M_LEVELS = [0, 4, 6, 8, 9, 10, 12, 14, 16, 20, 22, 24, 26, 30, 34, 36, 40, 44, 48, 52, 58, 64, 70, 75, 85, 95, 100]
+# 10m wind speed (mph) - continuous palette with NWS-style legend breakpoints
 WSPD10M_COLORS = [
     "#FFFFFF",
     "#E6F2FF",
@@ -163,6 +162,38 @@ WSPD10M_COLORS = [
     "#B300B3",
     "#CC00CC",
     "#E600E6",
+    "#680868",
+]
+
+# Legend breakpoints for wind speed (stepped display only, not used for tile LUT)
+WSPD10M_LEGEND_STOPS = [
+    (0, "#FFFFFF"),
+    (4, "#E6F2FF"),
+    (6, "#CCE5FF"),
+    (8, "#99CCFF"),
+    (9, "#66B2FF"),
+    (10, "#3399FF"),
+    (12, "#66FF66"),
+    (14, "#33FF33"),
+    (16, "#00FF00"),
+    (20, "#CCFF33"),
+    (22, "#FFFF00"),
+    (24, "#FFCC00"),
+    (26, "#FF9900"),
+    (30, "#FF6600"),
+    (34, "#FF3300"),
+    (36, "#FF0000"),
+    (40, "#CC0000"),
+    (44, "#990000"),
+    (48, "#800000"),
+    (52, "#660033"),
+    (58, "#660066"),
+    (64, "#800080"),
+    (70, "#990099"),
+    (75, "#B300B3"),
+    (85, "#CC00CC"),
+    (95, "#E600E6"),
+    (100, "#680868"),
 ]
 
 # 850mb temperature (°C) continuous palette anchors and range
@@ -254,12 +285,17 @@ VAR_SPECS = {
         "units": "F",
         "range": (-40.0, 122.5),
         "colors": temp_colors,
+        "display_name": "2m Temperature",
+        "legend_title": "Temperature (°F)",
     },
     "wspd10m": {
-        "type": "discrete",
+        "type": "continuous",
         "units": "mph",
-        "levels": WSPD10M_LEVELS,
+        "range": (0.0, 100.0),
         "colors": WSPD10M_COLORS,
+        "display_name": "10m Wind Speed",
+        "legend_title": "Wind Speed (mph)",
+        "legend_stops": WSPD10M_LEGEND_STOPS,
     },
 }
 
@@ -336,6 +372,12 @@ def build_continuous_lut_from_stops(
 
 
 def get_lut(var_key: str) -> np.ndarray:
+    """Build runtime LUT for tile rendering.
+    
+    For discrete vars: maps byte index to color.
+    For continuous vars: always interpolates colors array into 256 steps.
+    Never uses legend_stops for LUT generation (stops are legend-only).
+    """
     if var_key in _LUT_CACHE:
         return _LUT_CACHE[var_key]
     spec = VAR_SPECS.get(var_key)
@@ -345,15 +387,8 @@ def get_lut(var_key: str) -> np.ndarray:
     if spec["type"] == "discrete":
         lut = build_discrete_lut(colors)
     else:
-        stops = spec.get("stops")
-        if stops:
-            lut = build_continuous_lut_from_stops(
-                stops,
-                n=256,
-                range_vals=spec.get("range"),
-            )
-        else:
-            lut = build_continuous_lut(colors, n=256)
+        # Continuous: always build from colors array, never from stops
+        lut = build_continuous_lut(colors, n=256)
     _LUT_CACHE[var_key] = lut
     return lut
 
@@ -394,6 +429,11 @@ def encode_to_byte_and_alpha(
             "levels": list(levels),
             "colors": list(colors),
         }
+        # Add optional display metadata if present
+        if "display_name" in spec:
+            meta["display_name"] = spec["display_name"]
+        if "legend_title" in spec:
+            meta["legend_title"] = spec["legend_title"]
         return byte_band, alpha, meta
 
     range_vals = spec.get("range")
@@ -414,6 +454,12 @@ def encode_to_byte_and_alpha(
         "units": spec.get("units"),
         "range": [float(range_min), float(range_max)],
         "colors": list(spec.get("colors", [])),
-        "stops": [list(item) for item in spec.get("stops", [])],
     }
+    # Add optional display metadata if present
+    if "display_name" in spec:
+        meta["display_name"] = spec["display_name"]
+    if "legend_title" in spec:
+        meta["legend_title"] = spec["legend_title"]
+    if "legend_stops" in spec:
+        meta["legend_stops"] = [list(item) for item in spec["legend_stops"]]
     return byte_band, alpha, meta

@@ -130,102 +130,137 @@ function updateSlider(value) {
   display.textContent = `FH: ${value}`;
 }
 
-function renderLegend(meta) {
+function renderLegendStepped(meta) {
   const legendBar = document.querySelector(".legend-bar");
-  const legendLabels = document.querySelector(".legend-labels");
-  if (!legendBar || !legendLabels) {
+  const legendTicks = document.querySelector(".legend-ticks");
+  const legendTitle = document.querySelector(".legend-title");
+  
+  if (!legendBar || !legendTicks) {
     return;
   }
 
-  const stops = Array.isArray(meta?.stops) ? meta.stops : null;
-  const colors = Array.isArray(meta?.colors) ? meta.colors : null;
-  const levels = Array.isArray(meta?.levels) ? meta.levels : null;
-  const kind = meta?.kind ? String(meta.kind) : "continuous";
-
-  if ((!stops || stops.length < 2) && (!colors || colors.length < 2)) {
-    legendBar.style.background = "#ccc";
-    legendLabels.innerHTML = "";
+  const legend_stops = meta?.legend_stops;
+  if (!Array.isArray(legend_stops) || legend_stops.length < 2) {
+    console.warn("renderLegendStepped called but legend_stops invalid");
     return;
   }
 
-  let range = Array.isArray(meta.range) ? meta.range : [0, 1];
-  const units = meta.units ? String(meta.units) : "";
+  // Build stepped gradient with hard boundaries (no blending)
+  const values = legend_stops.map(([val]) => Number(val)).filter(Number.isFinite);
+  const minVal = Math.min(...values);
+  const maxVal = Math.max(...values);
+  const span = maxVal - minVal || 1;
 
-  let gradient = "";
-  if ((kind === "discrete" || levels) && levels && colors && colors.length) {
-    const numericLevels = levels.map((value) => Number(value)).filter(Number.isFinite);
-    if (numericLevels.length >= 2) {
-      range = [Math.min(...numericLevels), Math.max(...numericLevels)];
-    }
-    const [minVal, maxVal] = range.map((value) => Number(value));
-    const span = Number.isFinite(minVal) && Number.isFinite(maxVal) && maxVal !== minVal
-      ? maxVal - minVal
-      : 1;
-    const stopParts = [];
-    const intervalCount = Math.min(colors.length, levels.length - 1);
-    for (let idx = 0; idx < intervalCount; idx += 1) {
-      const startVal = Number(levels[idx]);
-      const endVal = Number(levels[idx + 1]);
-      const startPct = Number.isFinite(startVal)
-        ? Math.max(0, Math.min(100, ((startVal - minVal) / span) * 100))
-        : 0;
-      const endPct = Number.isFinite(endVal)
-        ? Math.max(0, Math.min(100, ((endVal - minVal) / span) * 100))
-        : startPct;
-      const color = colors[idx] ?? colors[colors.length - 1];
-      stopParts.push(`${color} ${startPct.toFixed(2)}%`, `${color} ${endPct.toFixed(2)}%`);
-    }
-    gradient = `linear-gradient(to top, ${stopParts.join(", ")})`;
-  } else if (stops && stops.length >= 2) {
-    const values = stops.map((item) => Number(item[0])).filter(Number.isFinite);
-    if (values.length >= 2) {
-      range = [Math.min(...values), Math.max(...values)];
-    }
-    const [minVal, maxVal] = range.map((value) => Number(value));
-    const span = Number.isFinite(minVal) && Number.isFinite(maxVal) && maxVal !== minVal
-      ? maxVal - minVal
-      : 1;
-    const stopParts = stops.map(([value, color]) => {
-      const numericValue = Number(value);
-      const pct = Number.isFinite(numericValue)
-        ? Math.max(0, Math.min(100, ((numericValue - minVal) / span) * 100))
-        : 0;
-      return `${color} ${pct.toFixed(2)}%`;
-    });
-    gradient = `linear-gradient(to top, ${stopParts.join(", ")})`;
-  } else if (colors) {
-    gradient = `linear-gradient(to top, ${colors.join(", ")})`;
+  const segments = [];
+  for (let i = 0; i < legend_stops.length - 1; i++) {
+    const [val1, color1] = legend_stops[i];
+    const [val2] = legend_stops[i + 1];
+    const startPct = ((Number(val1) - minVal) / span) * 100;
+    const endPct = ((Number(val2) - minVal) / span) * 100;
+    // Hard edge: repeat color at both boundaries
+    segments.push(`${color1} ${startPct.toFixed(2)}%`, `${color1} ${endPct.toFixed(2)}%`);
   }
+  const gradient = `linear-gradient(to right, ${segments.join(", ")})`;
   legendBar.style.background = gradient;
 
-  const minVal = Number(range[0]);
-  const maxVal = Number(range[1]);
-  const minLabel = Number.isFinite(minVal) ? minVal : range[0];
-  const maxLabel = Number.isFinite(maxVal) ? maxVal : range[1];
-
-  legendLabels.innerHTML = "";
-  const title = document.createElement("div");
-  title.className = "legend-units";
-  title.textContent = units ? `${units} (${kind})` : kind;
-  legendLabels.appendChild(title);
-
-  if ((kind === "discrete" || levels) && levels && levels.length) {
-    const numericLevels = levels.map((value) => Number(value)).filter(Number.isFinite);
-    const ticks = numericLevels.length ? numericLevels : levels;
-    const maxTicks = 8;
-    const step = ticks.length > maxTicks ? Math.ceil(ticks.length / maxTicks) : 1;
-    for (let idx = ticks.length - 1; idx >= 0; idx -= step) {
-      const tick = document.createElement("span");
-      tick.textContent = `${ticks[idx]}`;
-      legendLabels.appendChild(tick);
+  // Render tick labels
+  legendTicks.innerHTML = "";
+  const maxTicks = 15; // Show all stops for wspd10m (27 stops), but cap others
+  const step = legend_stops.length > maxTicks ? Math.ceil(legend_stops.length / maxTicks) : 1;
+  
+  legend_stops.forEach(([value, color], idx) => {
+    if (idx % step !== 0 && idx !== legend_stops.length - 1) {
+      return; // Skip non-step ticks except last
     }
+    const tick = document.createElement("div");
+    tick.className = "legend-tick";
+    const pct = ((Number(value) - minVal) / span) * 100;
+    tick.style.left = `${pct}%`;
+    
+    const label = document.createElement("span");
+    label.className = "legend-tick-label";
+    label.textContent = Number.isInteger(Number(value)) ? value : Number(value).toFixed(1);
+    tick.appendChild(label);
+    
+    legendTicks.appendChild(tick);
+  });
+
+  // Set legend title
+  if (legendTitle) {
+    const title = meta.legend_title || meta.units || "";
+    legendTitle.textContent = title;
+  }
+}
+
+function renderLegendGradient(meta) {
+  const legendBar = document.querySelector(".legend-bar");
+  const legendTicks = document.querySelector(".legend-ticks");
+  const legendTitle = document.querySelector(".legend-title");
+  
+  if (!legendBar || !legendTicks) {
+    return;
+  }
+
+  const colors = Array.isArray(meta?.colors) ? meta.colors : null;
+  if (!colors || colors.length < 2) {
+    legendBar.style.background = "#ccc";
+    legendTicks.innerHTML = "";
+    if (legendTitle) legendTitle.textContent = "";
+    return;
+  }
+
+  // Build smooth gradient from colors
+  const gradient = `linear-gradient(to right, ${colors.join(", ")})`;
+  legendBar.style.background = gradient;
+
+  // Render min/max ticks
+  const range = Array.isArray(meta.range) ? meta.range : [0, 1];
+  const [minVal, maxVal] = range;
+
+  legendTicks.innerHTML = "";
+  
+  const minTick = document.createElement("div");
+  minTick.className = "legend-tick";
+  minTick.style.left = "0%";
+  const minLabel = document.createElement("span");
+  minLabel.className = "legend-tick-label";
+  minLabel.textContent = Number.isFinite(minVal) ? minVal.toFixed(0) : minVal;
+  minTick.appendChild(minLabel);
+  legendTicks.appendChild(minTick);
+
+  const maxTick = document.createElement("div");
+  maxTick.className = "legend-tick";
+  maxTick.style.left = "100%";
+  const maxLabel = document.createElement("span");
+  maxLabel.className = "legend-tick-label";
+  maxLabel.textContent = Number.isFinite(maxVal) ? maxVal.toFixed(0) : maxVal;
+  maxTick.appendChild(maxLabel);
+  legendTicks.appendChild(maxTick);
+
+  // Set legend title
+  if (legendTitle) {
+    const title = meta.legend_title || meta.units || "";
+    legendTitle.textContent = title;
+  }
+}
+
+function renderLegend(meta) {
+  if (!meta) {
+    const legendBar = document.querySelector(".legend-bar");
+    const legendTicks = document.querySelector(".legend-ticks");
+    const legendTitle = document.querySelector(".legend-title");
+    if (legendBar) legendBar.style.background = "#ccc";
+    if (legendTicks) legendTicks.innerHTML = "";
+    if (legendTitle) legendTitle.textContent = "";
+    return;
+  }
+
+  // Use legend_stops if present (not "stops")
+  const legend_stops = meta.legend_stops;
+  if (Array.isArray(legend_stops) && legend_stops.length >= 2) {
+    renderLegendStepped(meta);
   } else {
-    const maxTick = document.createElement("span");
-    maxTick.textContent = `${maxLabel}`;
-    const minTick = document.createElement("span");
-    minTick.textContent = `${minLabel}`;
-    legendLabels.appendChild(maxTick);
-    legendLabels.appendChild(minTick);
+    renderLegendGradient(meta);
   }
 }
 

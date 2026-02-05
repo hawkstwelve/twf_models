@@ -41,12 +41,37 @@ function applyVariableLabels(items) {
   if (!Array.isArray(items)) {
     return [];
   }
+  
+  // Fallback mapping for display names if backend doesn't provide them
+  const fallbackLabels = {
+    "tmp2m": "Surface Temperature",
+    "wspd10m": "Wind Speed",
+    "precip_rain": "Rain",
+    "precip_snow": "Snow",
+    "precip_sleet": "Sleet",
+    "precip_frzr": "Freezing Rain",
+    "radar_rain": "Radar (Rain)",
+    "radar_snow": "Radar (Snow)",
+    "radar_sleet": "Radar (Sleet)",
+    "radar_frzr": "Radar (Freezing Rain)",
+  };
+  
   return items.map((item) => {
     const id = asId(item);
     if (!id) {
       return item;
     }
-    const label = VARIABLE_LABELS[id];
+    
+    // Priority: 1) display_name from item, 2) VARIABLE_LABELS config, 3) fallback, 4) id
+    let label = null;
+    if (item && typeof item === "object" && item.display_name) {
+      label = item.display_name;
+    } else if (VARIABLE_LABELS[id]) {
+      label = VARIABLE_LABELS[id];
+    } else if (fallbackLabels[id]) {
+      label = fallbackLabels[id];
+    }
+    
     if (!label) {
       return item;
     }
