@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+import subprocess
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -68,6 +69,43 @@ def has_idx(herbie: Herbie) -> bool:
     if idx_path is None:
         return False
     return idx_path.exists()
+
+
+# --- wgrib2 helpers ---
+
+def _wgrib2_available() -> bool:
+    return shutil.which("wgrib2") is not None
+
+
+def _extract_grib_with_wgrib2(*, src: Path, search: str, dst: Path) -> None:
+    """Extract a subset GRIB using wgrib2 -match into dst."""
+    # Ensure parent exists
+    dst.parent.mkdir(parents=True, exist_ok=True)
+
+    # Remove any stale/partial output
+    try:
+        if dst.exists():
+            dst.unlink()
+    except OSError:
+        pass
+
+    cmd = [
+        "wgrib2",
+        str(src),
+        "-match",
+        search,
+        "-grib",
+        str(dst),
+    ]
+
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"wgrib2 extract failed (code={proc.returncode}): {proc.stderr.strip() or proc.stdout.strip()}"
+        )
+
+    if not dst.exists() or dst.stat().st_size == 0:
+        raise RuntimeError(f"wgrib2 extract produced empty output: {dst}")
 
 
 def _format_run_id(run_dt: datetime | None, run: str) -> str:
@@ -172,20 +210,33 @@ def fetch_hrrr_grib(
 
     run_id = _format_run_id(run_dt, run)
     use_full_download = False
-    if search and not has_idx(herbie):
-        use_full_download = True
-        _log_idx_fallback(run_id, fh)
+    want_subset = bool(search)
+
+    # If we want a subset file but Herbie has no IDX, Herbie can't do a remote subset.
+    # In that case, download the full GRIB and (if possible) locally extract the subset
+    # so downstream code still receives a single-variable GRIB.
+    if want_subset and not has_idx(herbie):
+        if _wgrib2_available():
+            use_full_download = True
+            _log_idx_fallback(run_id, fh)
+        else:
+            raise UpstreamNotReady(
+                f"Index not ready for requested HRRR GRIB and wgrib2 not installed: run={run_id} fh={fh:02d}"
+            )
 
     try:
+        downloaded_full = False
         if search and not use_full_download:
             downloaded = herbie.download(save_dir=target_dir, search=search)
         else:
+            downloaded_full = True
             downloaded = herbie.download(save_dir=target_dir)
     except Exception as exc:
         message = str(exc)
         if search and is_idx_missing_message(message):
             _log_idx_fallback(run_id, fh)
             herbie = Herbie(run_dt, model=model, product=product, fxx=fh)
+            downloaded_full = True
             try:
                 downloaded = herbie.download(save_dir=target_dir)
             except Exception as inner_exc:
@@ -212,6 +263,20 @@ def fetch_hrrr_grib(
             path = candidates[0]
         else:
             raise UpstreamNotReady(f"Downloaded GRIB2 not found: {path}")
+
+    # If we downloaded the full GRIB (because IDX was missing) but the caller requested
+    # a specific variable, extract a single-variable GRIB locally so cfgrib/xarray
+    # doesn't choke on multi-field files.
+    if search and 'downloaded_full' in locals() and downloaded_full:
+        if expected_path.exists() and expected_path.stat().st_size > 0:
+            # Another worker may have already produced it.
+            logger.info("Using cached GRIB: %s", expected_path)
+            return expected_path
+
+        logger.info("Extracting subset GRIB with wgrib2: src=%s -> dst=%s match=%s", path, expected_path, search)
+        _extract_grib_with_wgrib2(src=path, search=search, dst=expected_path)
+        logger.info("Cached GRIB: %s", expected_path)
+        return expected_path
 
     if path.stat().st_size == 0:
         try:
