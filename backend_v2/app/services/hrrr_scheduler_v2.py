@@ -262,7 +262,7 @@ def _enforce_output_retention(
         return
 
     runs.sort(key=lambda item: item[0], reverse=True)
-    keep_names = {entry.name for entry in runs[:2]}
+    keep_names = {p.name for _, p in runs[:2]}
     if latest_pointer_run:
         keep_names.add(latest_pointer_run)
     if newest_run:

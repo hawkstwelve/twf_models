@@ -474,6 +474,12 @@ def _resolve_run_id(grib_path: Path) -> str:
     return f"{day_dir.name}_{cycle_dir.name}z"
 
 
+def _normalize_run_arg(value: str) -> str:
+    if re.fullmatch(r"\d{8}_\d{2}z", value):
+        return value[:-1]
+    return value
+
+
 def _write_sidecar_json(
     path: Path,
     *,
@@ -498,6 +504,10 @@ def _write_sidecar_json(
 
 def main() -> int:
     args = parse_args()
+    normalized_run = _normalize_run_arg(args.run)
+    if normalized_run != args.run and args.debug:
+        print(f"Normalized --run from {args.run} to {normalized_run}")
+    args.run = normalized_run
     cache_dir = Path(args.cache_dir) if args.cache_dir else default_hrrr_cache_dir()
     cfg = HRRRCacheConfig(base_dir=cache_dir, keep_runs=1)
 
