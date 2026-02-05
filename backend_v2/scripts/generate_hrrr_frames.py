@@ -8,6 +8,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Add backend_v2 to path so app module can be found
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_BACKEND_V2_DIR = _SCRIPT_DIR.parent
+if str(_BACKEND_V2_DIR) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_V2_DIR))
+
 from app.services.colormaps_v2 import VAR_SPECS
 from app.services.hrrr_runs import HRRRCacheConfig, get_latest_cycle_dir
 from app.services.paths import default_hrrr_cache_dir

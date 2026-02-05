@@ -1,7 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
+
+# Add backend_v2 to path so app module can be found
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_BACKEND_V2_DIR = _SCRIPT_DIR.parent
+if str(_BACKEND_V2_DIR) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_V2_DIR))
 
 from app.services.hrrr_fetch import fetch_hrrr_grib
 from app.services.hrrr_runs import HRRRCacheConfig, resolve_hrrr_grib_path
