@@ -15,6 +15,30 @@ from .variable_registry import herbie_search_for, normalize_api_variable
 logger = logging.getLogger(__name__)
 
 
+class UpstreamNotReady(RuntimeError):
+    pass
+
+
+def is_upstream_not_ready_message(message: str) -> bool:
+    text = message.lower()
+    patterns = [
+        "upstream not ready",
+        "grib2 file not found",
+        "herbie did not return a grib2 path",
+        "no index file was found",
+        "inventory not found",
+        "no inventory",
+        "could not resolve latest hrrr cycle",
+    ]
+    return any(pattern in text for pattern in patterns)
+
+
+def is_upstream_not_ready(exc: BaseException) -> bool:
+    if isinstance(exc, UpstreamNotReady):
+        return True
+    return is_upstream_not_ready_message(str(exc))
+
+
 def _parse_run_datetime(run: str) -> datetime | None:
     if run.lower() == "latest":
         return None
@@ -74,7 +98,7 @@ def fetch_hrrr_grib(
                 break
 
         if herbie is None or run_dt is None:
-            raise RuntimeError("Could not resolve latest HRRR cycle in the last 12 hours")
+            raise UpstreamNotReady("Could not resolve latest HRRR cycle in the last 12 hours")
     else:
         herbie = Herbie(run_dt, model=model, product=product, fxx=fh)
 
@@ -95,13 +119,16 @@ def fetch_hrrr_grib(
         else:
             downloaded = herbie.download(save_dir=target_dir)
     except Exception as exc:
+        message = str(exc)
+        if is_upstream_not_ready_message(message):
+            raise UpstreamNotReady(message) from exc
         raise RuntimeError(f"Herbie download failed: {exc}") from exc
 
     if isinstance(downloaded, (list, tuple)):
         downloaded = downloaded[0] if downloaded else None
 
     if downloaded is None:
-        raise FileNotFoundError("Herbie did not return a GRIB2 path")
+        raise UpstreamNotReady("Herbie did not return a GRIB2 path")
 
     path = Path(downloaded)
     if not path.exists():
@@ -110,14 +137,14 @@ def fetch_hrrr_grib(
             candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
             path = candidates[0]
         else:
-            raise FileNotFoundError(f"Downloaded GRIB2 not found: {path}")
+            raise UpstreamNotReady(f"Downloaded GRIB2 not found: {path}")
 
     if path.stat().st_size == 0:
         try:
             path.unlink()
         except OSError:
             pass
-        raise RuntimeError(f"Downloaded GRIB2 is empty: {path}")
+        raise UpstreamNotReady(f"Downloaded GRIB2 is empty: {path}")
 
     if path.resolve() != expected_path.resolve():
         logger.info("Moving GRIB into cache layout: %s -> %s", path, expected_path)
@@ -134,7 +161,7 @@ def fetch_hrrr_grib(
             parent = parent.parent
 
     if not expected_path.exists() or expected_path.stat().st_size == 0:
-        raise RuntimeError(f"Expected GRIB2 not found after download: {expected_path}")
+        raise UpstreamNotReady(f"Expected GRIB2 not found after download: {expected_path}")
 
     logger.info("Cached GRIB: %s", expected_path)
     return expected_path

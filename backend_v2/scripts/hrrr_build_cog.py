@@ -27,7 +27,13 @@ from pyproj import CRS, Transformer
 
 from app.services.colormaps_v2 import VAR_SPECS
 from app.services.grid import detect_latlon_names, normalize_latlon_coords
-from app.services.hrrr_fetch import ensure_latest_cycles, fetch_hrrr_grib
+from app.services.hrrr_fetch import (
+    UpstreamNotReady,
+    ensure_latest_cycles,
+    fetch_hrrr_grib,
+    is_upstream_not_ready,
+    is_upstream_not_ready_message,
+)
 from app.services.hrrr_runs import HRRRCacheConfig
 from app.services.paths import default_hrrr_cache_dir
 from app.services.variable_registry import normalize_api_variable, select_dataarray
@@ -503,6 +509,16 @@ def _write_sidecar_json(
     path.write_text(json.dumps(payload, indent=2, sort_keys=True))
 
 
+def _log_upstream_not_ready(args: argparse.Namespace, reason: str) -> None:
+    logger.warning(
+        "Upstream not ready: run=%s var=%s fh=%s reason=%s",
+        args.run,
+        args.var,
+        args.fh,
+        reason,
+    )
+
+
 def main() -> int:
     args = parse_args()
     normalized_run = _normalize_run_arg(args.run)
@@ -562,6 +578,9 @@ def main() -> int:
             )
             grib_path = u_path
         except Exception as exc:
+            if is_upstream_not_ready(exc):
+                _log_upstream_not_ready(args, str(exc))
+                return 2
             logger.exception("Failed to fetch HRRR GRIB for wspd10m")
             return 2
 
@@ -576,6 +595,9 @@ def main() -> int:
                 cache_cfg=cfg,
             )
         except Exception as exc:
+            if is_upstream_not_ready(exc):
+                _log_upstream_not_ready(args, str(exc))
+                return 2
             logger.exception("Failed to fetch HRRR GRIB")
             return 2
 
@@ -679,6 +701,9 @@ def main() -> int:
                 ds = xr.open_dataset(grib_path, engine="cfgrib")
             except Exception as exc:
                 message = str(exc)
+                if is_upstream_not_ready_message(message):
+                    _log_upstream_not_ready(args, message)
+                    return 2
                 if "multiple values for unique key" in message:
                     logger.exception(
                         "cfgrib index collision. Ensure subsetting worked for the requested variable."
@@ -699,6 +724,9 @@ def main() -> int:
                 )
                 return 4
     except RuntimeError as exc:
+        if is_upstream_not_ready(exc):
+            _log_upstream_not_ready(args, str(exc))
+            return 2
         logger.exception("Runtime error during data selection")
         return 4
 

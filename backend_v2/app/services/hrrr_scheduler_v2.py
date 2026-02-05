@@ -14,7 +14,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
-from app.services.hrrr_fetch import fetch_hrrr_grib
+from app.services.hrrr_fetch import (
+    fetch_hrrr_grib,
+    is_upstream_not_ready,
+    is_upstream_not_ready_message,
+)
 from app.services.hrrr_runs import HRRRCacheConfig
 from app.services.paths import default_hrrr_cache_dir
 
@@ -133,6 +137,9 @@ def _probe_latest_run(cfg: HRRRCacheConfig, primary_var: str) -> tuple[str, int]
     try:
         return _resolve_latest_run(cfg, primary_var)
     except Exception as exc:
+        if is_upstream_not_ready(exc):
+            logger.warning("Latest run not ready yet: %s", exc)
+            return None
         logger.error("Latest run discovery failed: %s", exc)
         return None
 
@@ -495,8 +502,8 @@ def run_scheduler(args: argparse.Namespace) -> int:
                             result["fh"],
                         )
                     else:
-                        combined = f"{result['stderr']}\n{result['stdout']}".lower()
-                        if "did not find" in combined or "not found" in combined:
+                        combined = f"{result['stderr']}\n{result['stdout']}"
+                        if is_upstream_not_ready_message(combined):
                             logger.warning(
                                 "Upstream not ready: run=%s var=%s fh=%s detail=%s",
                                 result["run_id"],
