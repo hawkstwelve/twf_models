@@ -107,6 +107,16 @@ def _delete_cfgrib_index_files(grib_path: Path) -> None:
         pass
 
 
+def _is_readable_grib(path: Path) -> bool:
+    try:
+        if not path.exists() or path.stat().st_size == 0:
+            return False
+        with path.open("rb") as handle:
+            return bool(handle.read(4))
+    except OSError:
+        return False
+
+
 # --- wgrib2 helpers ---
 
 def _wgrib2_available() -> bool:
@@ -271,26 +281,35 @@ def fetch_hrrr_grib(
     expected_full_path = target_dir / expected_full_filename
 
     run_id = _format_run_id(run_dt, run)
-    use_full_download = False
 
-    # If we want a subset file but Herbie has no IDX, Herbie can't do a remote subset.
-    # In that case, download the full GRIB and (if possible) locally extract the subset
-    # so downstream code still receives a single-variable GRIB.
+    if expected_path.exists() and not _is_readable_grib(expected_path):
+        try:
+            expected_path.unlink()
+        except OSError:
+            pass
+
     if expected_path.exists():
-        if expected_path.stat().st_size == 0:
-            try:
-                expected_path.unlink()
-            except OSError:
-                pass
-        else:
-            _delete_cfgrib_index_files(expected_path)
-            logger.info("Using cached GRIB: %s", expected_path)
-            return GribFetchResult(path=expected_path, is_full_file=expected_suffix == "full")
+        _delete_cfgrib_index_files(expected_path)
+        logger.info("Using cached GRIB: %s", expected_path)
+        return GribFetchResult(path=expected_path, is_full_file=False)
 
+    if (
+        want_subset
+        and ALLOW_FULL_GRIB_FALLBACK
+        and _wgrib2_available()
+        and expected_full_path.exists()
+        and _is_readable_grib(expected_full_path)
+    ):
+        logger.info("Using cached full GRIB for subset: %s", expected_full_path)
+        _extract_grib_with_wgrib2(src=expected_full_path, search=search, dst=expected_path)
+        _delete_cfgrib_index_files(expected_path)
+        logger.info("Cached GRIB: %s", expected_path)
+        return GribFetchResult(path=expected_path, is_full_file=False)
+
+    downloaded_full = False
     download_start = time.time()
     try:
-        downloaded_full = False
-        if search and not use_full_download:
+        if search:
             downloaded = herbie.download(save_dir=target_dir, search=search)
         else:
             downloaded_full = True
@@ -299,10 +318,23 @@ def fetch_hrrr_grib(
         message = str(exc)
         if search and is_idx_missing_message(message):
             if not ALLOW_FULL_GRIB_FALLBACK:
+                logger.info(
+                    "IDX missing and full fallback disabled; deferring: run=%s fh=%02d",
+                    run_id,
+                    fh,
+                )
+                raise UpstreamNotReady("Index not ready for requested HRRR GRIB") from exc
+            if not _wgrib2_available():
+                logger.info(
+                    "IDX missing and wgrib2 unavailable; deferring: run=%s fh=%02d",
+                    run_id,
+                    fh,
+                )
                 raise UpstreamNotReady("Index not ready for requested HRRR GRIB") from exc
             _log_idx_fallback(run_id, fh)
             herbie = Herbie(run_dt, model=model, product=product, fxx=fh)
             downloaded_full = True
+            download_start = time.time()
             try:
                 downloaded = herbie.download(save_dir=target_dir)
             except Exception as inner_exc:
@@ -330,7 +362,7 @@ def fetch_hrrr_grib(
         else:
             raise UpstreamNotReady(f"Downloaded GRIB2 not found: {path}")
 
-    if use_full_download:
+    if downloaded_full:
         elapsed = time.time() - download_start
         if elapsed > FULL_GRIB_MAX_SECONDS:
             raise RuntimeError(f"Full GRIB download exceeded max time ({elapsed:.0f}s)")
@@ -346,14 +378,15 @@ def fetch_hrrr_grib(
             pass
         raise UpstreamNotReady(f"Downloaded GRIB2 is empty: {path}")
 
-    if path.resolve() != expected_path.resolve():
-        logger.info("Moving GRIB into cache layout: %s -> %s", path, expected_path)
+    target_path = expected_full_path if downloaded_full else expected_path
+    if path.resolve() != target_path.resolve():
+        logger.info("Moving GRIB into cache layout: %s -> %s", path, target_path)
         try:
-            path.replace(expected_path)
+            path.replace(target_path)
         except OSError:
-            shutil.move(str(path), str(expected_path))
+            shutil.move(str(path), str(target_path))
 
-        _delete_cfgrib_index_files(expected_path)
+        _delete_cfgrib_index_files(target_path)
 
         parent = path.parent
         while parent != target_dir and parent.exists():
@@ -362,12 +395,22 @@ def fetch_hrrr_grib(
             parent.rmdir()
             parent = parent.parent
 
-    if not expected_path.exists() or expected_path.stat().st_size == 0:
-        raise UpstreamNotReady(f"Expected GRIB2 not found after download: {expected_path}")
+    if downloaded_full and want_subset:
+        if not _wgrib2_available():
+            raise UpstreamNotReady("Index not ready for requested HRRR GRIB")
+        _log_idx_fallback(run_id, fh)
+        logger.info("Extracting subset GRIB with wgrib2: src=%s -> dst=%s match=%s", target_path, expected_path, search)
+        _extract_grib_with_wgrib2(src=target_path, search=search, dst=expected_path)
+        _delete_cfgrib_index_files(expected_path)
+        logger.info("Cached GRIB: %s", expected_path)
+        return GribFetchResult(path=expected_path, is_full_file=False)
 
-    _delete_cfgrib_index_files(expected_path)
-    logger.info("Cached GRIB: %s", expected_path)
-    return GribFetchResult(path=expected_path, is_full_file=expected_suffix == "full")
+    if not target_path.exists() or target_path.stat().st_size == 0:
+        raise UpstreamNotReady(f"Expected GRIB2 not found after download: {target_path}")
+
+    _delete_cfgrib_index_files(target_path)
+    logger.info("Cached GRIB: %s", target_path)
+    return GribFetchResult(path=target_path, is_full_file=downloaded_full)
 
 
 def ensure_latest_cycles(*, keep_cycles: int, cache_cfg: HRRRCacheConfig | None = None) -> dict[str, int]:

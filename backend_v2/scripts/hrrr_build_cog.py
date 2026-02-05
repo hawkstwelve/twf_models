@@ -82,16 +82,23 @@ def _cfgrib_filter_keys(normalized_var: str) -> dict:
     return filter_keys
 
 
-def _open_cfgrib_dataset(grib_path: Path, normalized_var: str) -> xr.Dataset:
+def _coerce_grib_path(grib_path: object) -> Path:
+    if hasattr(grib_path, "path"):
+        grib_path = getattr(grib_path, "path")
+    return Path(os.fspath(grib_path))
+
+
+def _open_cfgrib_dataset(grib_path: object, normalized_var: str) -> xr.Dataset:
+    path = _coerce_grib_path(grib_path)
     try:
-        return xr.open_dataset(grib_path, engine="cfgrib")
+        return xr.open_dataset(path, engine="cfgrib")
     except Exception as exc:
         message = str(exc)
         if "multiple values for key" in message or "typeOfLevel" in message:
             filter_keys = _cfgrib_filter_keys(normalized_var)
             if filter_keys:
                 return xr.open_dataset(
-                    grib_path,
+                    path,
                     engine="cfgrib",
                     backend_kwargs={"filter_by_keys": filter_keys},
                 )
