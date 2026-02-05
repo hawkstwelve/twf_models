@@ -5,6 +5,7 @@ import concurrent.futures
 import json
 import logging
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -29,6 +30,14 @@ DEFAULT_DATA_ROOT = Path("/opt/twf_models/data/v2")
 PRIMARY_VAR_DEFAULT = "tmp2m"
 VAR_DEFAULTS = "tmp2m,wspd10m"
 PROBE_INTERVAL_SECONDS = 90
+RELEASE_WINDOW_START_MINUTE = 0
+RELEASE_WINDOW_END_MINUTE = 20
+RELEASE_POLL_SECONDS = 60
+QUIET_POLL_SECONDS = 600
+BUSY_POLL_SECONDS = 60
+BACKOFF_INITIAL_SECONDS = 60
+BACKOFF_MAX_SECONDS = 600
+SLEEP_JITTER_RATIO = 0.1
 
 
 class RunResolutionError(RuntimeError):
@@ -354,6 +363,36 @@ def _should_abandon_run(active_run: str, newest_run: str, now_utc: datetime) -> 
     return False
 
 
+def in_release_window(now_utc: datetime) -> bool:
+    minute = now_utc.minute
+    return RELEASE_WINDOW_START_MINUTE <= minute <= RELEASE_WINDOW_END_MINUTE
+
+
+def compute_sleep_seconds(
+    now_utc: datetime,
+    *,
+    caught_up: bool,
+    pending: int,
+    latest_missing: bool,
+    latest_missing_backoff: int,
+) -> tuple[int, str]:
+    if pending > 0:
+        return BUSY_POLL_SECONDS, "busy"
+    if latest_missing:
+        return latest_missing_backoff, "backoff"
+    if in_release_window(now_utc):
+        return RELEASE_POLL_SECONDS, "release"
+    return QUIET_POLL_SECONDS, "quiet"
+
+
+def _apply_sleep_jitter(seconds: int) -> float:
+    if seconds <= 0:
+        return 0.0
+    delta = seconds * SLEEP_JITTER_RATIO
+    jittered = seconds + random.uniform(-delta, delta)
+    return max(1.0, jittered)
+
+
 def run_scheduler(args: argparse.Namespace) -> int:
     out_root = _data_root()
     cache_cfg = HRRRCacheConfig(base_dir=default_hrrr_cache_dir(), keep_runs=1)
@@ -368,6 +407,9 @@ def run_scheduler(args: argparse.Namespace) -> int:
     newest_run_id: str | None = None
     newest_cycle_hour: int | None = None
     last_probe_ts = 0.0
+    latest_missing_backoff = BACKOFF_INITIAL_SECONDS
+    latest_missing = False
+    last_sleep_policy: tuple[str, bool, int, bool, int] | None = None
 
     logger.info("Scheduler starting: model=%s region=%s vars=%s", args.model, args.region, vars_to_build)
 
@@ -375,24 +417,70 @@ def run_scheduler(args: argparse.Namespace) -> int:
         while True:
             now_ts = time.time()
             now_utc = datetime.now(timezone.utc)
-            should_probe = active_run_id is None or (now_ts - last_probe_ts >= PROBE_INTERVAL_SECONDS)
+            probe_interval = RELEASE_POLL_SECONDS if in_release_window(now_utc) else QUIET_POLL_SECONDS
+            if latest_missing:
+                probe_interval = max(probe_interval, latest_missing_backoff)
+            should_probe = active_run_id is None or (now_ts - last_probe_ts >= probe_interval)
             if should_probe:
                 newest = _probe_latest_run(cache_cfg, primary_vars[0] if primary_vars else PRIMARY_VAR_DEFAULT)
                 last_probe_ts = now_ts
                 if newest is None:
+                    latest_missing = True
+                    latest_missing_backoff = min(
+                        BACKOFF_MAX_SECONDS,
+                        max(latest_missing_backoff * 2, BACKOFF_INITIAL_SECONDS),
+                    )
                     if active_run_id is None:
+                        base_sleep, window_label = compute_sleep_seconds(
+                            now_utc,
+                            caught_up=False,
+                            pending=0,
+                            latest_missing=True,
+                            latest_missing_backoff=latest_missing_backoff,
+                        )
+                        sleep_seconds = _apply_sleep_jitter(base_sleep)
+                        policy_key = (window_label, False, 0, True, base_sleep)
+                        if policy_key != last_sleep_policy:
+                            logger.info(
+                                "Sleep policy: window=%s caught_up=%s pending=%s sleep=%.0fs",
+                                window_label,
+                                False,
+                                0,
+                                sleep_seconds,
+                            )
+                            last_sleep_policy = policy_key
                         logger.info("No HRRR runs available yet; sleeping")
-                        time.sleep(30)
+                        time.sleep(sleep_seconds)
                         continue
                 else:
                     newest_run_id, newest_cycle_hour = newest
+                    latest_missing = False
+                    latest_missing_backoff = BACKOFF_INITIAL_SECONDS
             elif newest_run_id is None and active_run_id is not None:
                 newest_run_id = active_run_id
                 newest_cycle_hour = active_cycle_hour
 
             if newest_run_id is None or newest_cycle_hour is None:
+                base_sleep, window_label = compute_sleep_seconds(
+                    now_utc,
+                    caught_up=False,
+                    pending=0,
+                    latest_missing=True,
+                    latest_missing_backoff=latest_missing_backoff,
+                )
+                sleep_seconds = _apply_sleep_jitter(base_sleep)
+                policy_key = (window_label, False, 0, True, base_sleep)
+                if policy_key != last_sleep_policy:
+                    logger.info(
+                        "Sleep policy: window=%s caught_up=%s pending=%s sleep=%.0fs",
+                        window_label,
+                        False,
+                        0,
+                        sleep_seconds,
+                    )
+                    last_sleep_policy = policy_key
                 logger.info("No HRRR runs available yet; sleeping")
-                time.sleep(30)
+                time.sleep(sleep_seconds)
                 continue
 
             if active_run_id is None:
@@ -413,8 +501,26 @@ def run_scheduler(args: argparse.Namespace) -> int:
                         active_cycle_hour = newest_cycle_hour
 
             if active_run_id is None or active_cycle_hour is None:
+                base_sleep, window_label = compute_sleep_seconds(
+                    now_utc,
+                    caught_up=False,
+                    pending=0,
+                    latest_missing=latest_missing,
+                    latest_missing_backoff=latest_missing_backoff,
+                )
+                sleep_seconds = _apply_sleep_jitter(base_sleep)
+                policy_key = (window_label, False, 0, latest_missing, base_sleep)
+                if policy_key != last_sleep_policy:
+                    logger.info(
+                        "Sleep policy: window=%s caught_up=%s pending=%s sleep=%.0fs",
+                        window_label,
+                        False,
+                        0,
+                        sleep_seconds,
+                    )
+                    last_sleep_policy = policy_key
                 logger.info("No active run resolved; sleeping")
-                time.sleep(30)
+                time.sleep(sleep_seconds)
                 continue
 
             fhs = _target_fhs(active_cycle_hour)
@@ -521,25 +627,35 @@ def run_scheduler(args: argparse.Namespace) -> int:
                                 result["stderr"],
                             )
 
-                _enforce_output_retention(
-                    out_root,
-                    args.model,
-                    args.region,
-                    latest_pointer_run,
-                    newest_run_id,
-                    active_run_id,
+            _enforce_output_retention(
+                out_root,
+                args.model,
+                args.region,
+                latest_pointer_run,
+                newest_run_id,
+                active_run_id,
+            )
+
+            caught_up = pending == 0 and completed == total and active_run_id == newest_run_id
+            base_sleep, window_label = compute_sleep_seconds(
+                now_utc,
+                caught_up=caught_up,
+                pending=len(pending),
+                latest_missing=latest_missing,
+                latest_missing_backoff=latest_missing_backoff,
+            )
+            sleep_seconds = _apply_sleep_jitter(base_sleep)
+            policy_key = (window_label, caught_up, len(pending), latest_missing, base_sleep)
+            if policy_key != last_sleep_policy:
+                logger.info(
+                    "Sleep policy: window=%s caught_up=%s pending=%s sleep=%.0fs",
+                    window_label,
+                    caught_up,
+                    len(pending),
+                    sleep_seconds,
                 )
-                time.sleep(5)
-            else:
-                _enforce_output_retention(
-                    out_root,
-                    args.model,
-                    args.region,
-                    latest_pointer_run,
-                    newest_run_id,
-                    active_run_id,
-                )
-                time.sleep(30)
+                last_sleep_policy = policy_key
+            time.sleep(sleep_seconds)
 
 
 def main() -> int:

@@ -292,11 +292,11 @@ Reference:
 
 ### Milestone 6 — HRRR Orchestration + Schedule (MVP)
 - [x] Create `generate_hrrr_frames.py` to loop vars × fh
-- [ ] Schedule on server (cron or systemd timer)
-- [ ] Logging + failure isolation per frame
+- [x] Schedule on server (cron or systemd timer)
+- [x] Logging + failure isolation per frame
 
 ### Milestone 7 — Production Hardening
-- [ ] Nginx proxy_cache for tiles
+- [x] Nginx proxy_cache for tiles
 - [x] Env var config for data root
 - [ ] Resource usage verified under animation
 

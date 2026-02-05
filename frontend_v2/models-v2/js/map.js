@@ -261,7 +261,8 @@ function applySelection(metadata, { userInitiated = false } = {}) {
   state.varKey = asId(metadata.varKey);
   state.frames = metadata.frames ?? [];
   renderLegend(metadata.legendMeta);
-  const nextFh = state.frames.length ? state.frames[0] : DEFAULTS.fhStart;
+  const preferred = Number.isFinite(metadata.preferredFh) ? metadata.preferredFh : null;
+  const nextFh = preferred ?? (state.frames.length ? state.frames[0] : DEFAULTS.fhStart);
   applyFramesToSlider(state.frames, nextFh);
   setForecastHour(nextFh, { userInitiated });
   updateOverlayUrl();
@@ -270,7 +271,7 @@ function applySelection(metadata, { userInitiated = false } = {}) {
 async function bootstrap() {
   const metadata = await initControls({
     onSelectionChange: (next) => {
-      applySelection(next, { userInitiated: true });
+      applySelection(next, { userInitiated: Boolean(next?.userInitiated) });
     },
     onForecastHourChange: (value) => {
       setForecastHour(value, { userInitiated: true });
@@ -284,7 +285,7 @@ async function bootstrap() {
     },
   });
 
-  applySelection(metadata);
+  applySelection(metadata, { userInitiated: Boolean(metadata?.userInitiated) });
 }
 
 bootstrap();

@@ -154,6 +154,35 @@ function pickDefaultValue(items, preferred) {
   return ids[0] ?? preferred ?? "";
 }
 
+function pickNearestFh(available, current) {
+  if (!Array.isArray(available) || !available.length) {
+    return DEFAULTS.fhStart;
+  }
+  if (Number.isFinite(current) && available.includes(current)) {
+    return current;
+  }
+  if (!Number.isFinite(current)) {
+    return available[0];
+  }
+  return available.reduce((nearest, value) => {
+    const nearestDelta = Math.abs(nearest - current);
+    const valueDelta = Math.abs(value - current);
+    if (valueDelta < nearestDelta) {
+      return value;
+    }
+    return nearest;
+  }, available[0]);
+}
+
+function getSliderValue() {
+  const fhSlider = document.getElementById("fh-slider");
+  if (!fhSlider) {
+    return null;
+  }
+  const value = Number(fhSlider.value);
+  return Number.isFinite(value) ? value : null;
+}
+
 async function fetchVars({ model, region, run }) {
   const runKey = run && run !== "latest" ? run : "latest";
   try {
@@ -204,6 +233,8 @@ export async function initControls({
   let selectedRun = DEFAULTS.run;
   let selectedVar = DEFAULTS.variable;
   let legendMeta = null;
+  let currentFh = DEFAULTS.fhStart;
+  let pollTimer = null;
 
   try {
     models = await fetchJson(`${API_BASE}/models`);
@@ -253,17 +284,7 @@ export async function initControls({
     varSelect.value = selectedVar;
   }
 
-  ({ frames, legendMeta } = await fetchFrames({
-    model: selectedModel,
-    region: selectedRegion,
-    run: selectedRun,
-    varKey: selectedVar,
-  }));
-
-  const initialFh = frames.length ? frames[0] : DEFAULTS.fhStart;
-  applyFramesToSlider(frames, initialFh);
-
-  async function notifySelectionChange() {
+  async function notifySelectionChange(extra = {}) {
     if (!onSelectionChange) {
       return;
     }
@@ -278,8 +299,56 @@ export async function initControls({
       regions,
       runs,
       variables,
+      ...extra,
     });
   }
+
+  async function updateFrames({ preserveFh, userInitiated }) {
+    ({ frames, legendMeta } = await fetchFrames({
+      model: selectedModel,
+      region: selectedRegion,
+      run: selectedRun,
+      varKey: selectedVar,
+    }));
+    const normalized = normalizeFrames(frames);
+    const currentValue = getSliderValue();
+    const baselineFh = Number.isFinite(currentValue) ? currentValue : currentFh;
+    const preferredFh = preserveFh
+      ? pickNearestFh(normalized, baselineFh)
+      : (normalized[0] ?? DEFAULTS.fhStart);
+    currentFh = preferredFh;
+    await notifySelectionChange({ preferredFh, userInitiated });
+  }
+
+  function stopFramesPolling() {
+    if (pollTimer) {
+      window.clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  }
+
+  function startFramesPolling() {
+    stopFramesPolling();
+    pollTimer = window.setInterval(() => {
+      if (document.hidden) {
+        return;
+      }
+      updateFrames({ preserveFh: true, userInitiated: false });
+    }, 30000);
+  }
+
+  await updateFrames({ preserveFh: false, userInitiated: false });
+  applyFramesToSlider(frames, currentFh);
+  startFramesPolling();
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      stopFramesPolling();
+      return;
+    }
+    updateFrames({ preserveFh: true, userInitiated: false });
+    startFramesPolling();
+  });
 
   if (modelSelect) {
     modelSelect.addEventListener("change", async (event) => {
@@ -316,14 +385,7 @@ export async function initControls({
         varSelect.value = selectedVar;
       }
 
-      ({ frames, legendMeta } = await fetchFrames({
-        model: selectedModel,
-        region: selectedRegion,
-        run: selectedRun,
-        varKey: selectedVar,
-      }));
-
-      await notifySelectionChange();
+      await updateFrames({ preserveFh: false, userInitiated: true });
     });
   }
 
@@ -350,14 +412,7 @@ export async function initControls({
         varSelect.value = selectedVar;
       }
 
-      ({ frames, legendMeta } = await fetchFrames({
-        model: selectedModel,
-        region: selectedRegion,
-        run: selectedRun,
-        varKey: selectedVar,
-      }));
-
-      await notifySelectionChange();
+      await updateFrames({ preserveFh: false, userInitiated: true });
     });
   }
 
@@ -372,27 +427,14 @@ export async function initControls({
         varSelect.value = selectedVar;
       }
 
-      ({ frames, legendMeta } = await fetchFrames({
-        model: selectedModel,
-        region: selectedRegion,
-        run: selectedRun,
-        varKey: selectedVar,
-      }));
-
-      await notifySelectionChange();
+      await updateFrames({ preserveFh: false, userInitiated: true });
     });
   }
 
   if (varSelect) {
     varSelect.addEventListener("change", async (event) => {
       selectedVar = event.target.value;
-      ({ frames, legendMeta } = await fetchFrames({
-        model: selectedModel,
-        region: selectedRegion,
-        run: selectedRun,
-        varKey: selectedVar,
-      }));
-      await notifySelectionChange();
+      await updateFrames({ preserveFh: false, userInitiated: true });
     });
   }
 
@@ -400,6 +442,7 @@ export async function initControls({
     fhSlider.addEventListener("input", (event) => {
       const value = Number(event.target.value);
       fhDisplay.textContent = `FH: ${value}`;
+      currentFh = value;
       onForecastHourChange(value);
     });
   }
@@ -421,6 +464,8 @@ export async function initControls({
     varKey: selectedVar,
     legendMeta,
     frames,
+    preferredFh: currentFh,
+    userInitiated: false,
     models,
     regions,
     runs,
