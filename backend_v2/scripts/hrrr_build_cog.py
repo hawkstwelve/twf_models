@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import re
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
