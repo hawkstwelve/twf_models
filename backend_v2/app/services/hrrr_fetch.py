@@ -17,6 +17,14 @@ from .variable_registry import herbie_search_for, normalize_api_variable
 
 logger = logging.getLogger(__name__)
 
+ALLOW_FULL_GRIB_FALLBACK = os.environ.get("TWF_ALLOW_FULL_GRIB_FALLBACK", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
+FULL_GRIB_MAX_BYTES = int(os.environ.get("TWF_FULL_GRIB_MAX_BYTES", str(2 * 1024 * 1024 * 1024)))
+FULL_GRIB_MAX_SECONDS = int(os.environ.get("TWF_FULL_GRIB_MAX_SECONDS", "900"))
+
 IDX_FALLBACK_RATE_SECONDS = 300
 IDX_FALLBACK_CACHE_TTL_SECONDS = 7200
 _IDX_FALLBACK_LOG_CACHE: dict[tuple[str, int], float] = {}
@@ -24,6 +32,18 @@ _IDX_FALLBACK_LOG_CACHE: dict[tuple[str, int], float] = {}
 
 class UpstreamNotReady(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class GribFetchResult:
+    path: Path
+    is_full_file: bool = False
+
+    def __fspath__(self) -> str:
+        return str(self.path)
+
+    def __getattr__(self, name: str):
+        return getattr(self.path, name)
 
 
 def is_upstream_not_ready_message(message: str) -> bool:
@@ -91,6 +111,13 @@ def _delete_cfgrib_index_files(grib_path: Path) -> None:
 
 def _wgrib2_available() -> bool:
     return shutil.which("wgrib2") is not None
+
+
+if ALLOW_FULL_GRIB_FALLBACK and not _wgrib2_available():
+    logger.warning(
+        "Full GRIB fallback requested but wgrib2 not found; disabling fallback."
+    )
+    ALLOW_FULL_GRIB_FALLBACK = False
 
 
 def _extract_grib_with_wgrib2(*, src: Path, search: str, dst: Path) -> None:
@@ -195,7 +222,7 @@ def fetch_hrrr_grib(
     model: str = "hrrr",
     variable: str | None = None,
     cache_cfg: HRRRCacheConfig | None = None,
-) -> Path:
+) -> GribFetchResult:
     cfg = cache_cfg or HRRRCacheConfig(base_dir=default_hrrr_cache_dir(), keep_runs=1)
     run_dt = _parse_run_datetime(run)
 
@@ -236,31 +263,31 @@ def fetch_hrrr_grib(
     target_dir = _cache_dir_for_run(cfg.base_dir, run_dt)
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    suffix = normalized_var or "full"
-    expected_filename = f"{model}.t{run_dt:%H}z.wrfsfcf{fh:02d}.{suffix}.grib2"
+    want_subset = bool(search)
+    expected_suffix = normalized_var or "full"
+    expected_filename = f"{model}.t{run_dt:%H}z.wrf{product}f{fh:02d}.{expected_suffix}.grib2"
     expected_path = target_dir / expected_filename
-
-    if expected_path.exists() and expected_path.stat().st_size > 0:
-        _delete_cfgrib_index_files(expected_path)
-        logger.info("Using cached GRIB: %s", expected_path)
-        return expected_path
+    expected_full_filename = f"{model}.t{run_dt:%H}z.wrf{product}f{fh:02d}.full.grib2"
+    expected_full_path = target_dir / expected_full_filename
 
     run_id = _format_run_id(run_dt, run)
     use_full_download = False
-    want_subset = bool(search)
 
     # If we want a subset file but Herbie has no IDX, Herbie can't do a remote subset.
     # In that case, download the full GRIB and (if possible) locally extract the subset
     # so downstream code still receives a single-variable GRIB.
-    if want_subset and not has_idx(herbie):
-        if _wgrib2_available():
-            use_full_download = True
-            _log_idx_fallback(run_id, fh)
+    if expected_path.exists():
+        if expected_path.stat().st_size == 0:
+            try:
+                expected_path.unlink()
+            except OSError:
+                pass
         else:
-            raise UpstreamNotReady(
-                f"Index not ready for requested HRRR GRIB and wgrib2 not installed: run={run_id} fh={fh:02d}"
-            )
+            _delete_cfgrib_index_files(expected_path)
+            logger.info("Using cached GRIB: %s", expected_path)
+            return GribFetchResult(path=expected_path, is_full_file=expected_suffix == "full")
 
+    download_start = time.time()
     try:
         downloaded_full = False
         if search and not use_full_download:
@@ -271,6 +298,8 @@ def fetch_hrrr_grib(
     except Exception as exc:
         message = str(exc)
         if search and is_idx_missing_message(message):
+            if not ALLOW_FULL_GRIB_FALLBACK:
+                raise UpstreamNotReady("Index not ready for requested HRRR GRIB") from exc
             _log_idx_fallback(run_id, fh)
             herbie = Herbie(run_dt, model=model, product=product, fxx=fh)
             downloaded_full = True
@@ -301,21 +330,14 @@ def fetch_hrrr_grib(
         else:
             raise UpstreamNotReady(f"Downloaded GRIB2 not found: {path}")
 
-    # If we downloaded the full GRIB (because IDX was missing) but the caller requested
-    # a specific variable, extract a single-variable GRIB locally so cfgrib/xarray
-    # doesn't choke on multi-field files.
-    if search and 'downloaded_full' in locals() and downloaded_full:
-        if expected_path.exists() and expected_path.stat().st_size > 0:
-            # Another worker may have already produced it.
-            _delete_cfgrib_index_files(expected_path)
-            logger.info("Using cached GRIB: %s", expected_path)
-            return expected_path
-
-        logger.info("Extracting subset GRIB with wgrib2: src=%s -> dst=%s match=%s", path, expected_path, search)
-        _extract_grib_with_wgrib2(src=path, search=search, dst=expected_path)
-        _delete_cfgrib_index_files(expected_path)
-        logger.info("Cached GRIB: %s", expected_path)
-        return expected_path
+    if use_full_download:
+        elapsed = time.time() - download_start
+        if elapsed > FULL_GRIB_MAX_SECONDS:
+            raise RuntimeError(f"Full GRIB download exceeded max time ({elapsed:.0f}s)")
+        if path.stat().st_size > FULL_GRIB_MAX_BYTES:
+            raise RuntimeError(
+                f"Full GRIB download exceeded max size ({path.stat().st_size} bytes)"
+            )
 
     if path.stat().st_size == 0:
         try:
@@ -345,7 +367,7 @@ def fetch_hrrr_grib(
 
     _delete_cfgrib_index_files(expected_path)
     logger.info("Cached GRIB: %s", expected_path)
-    return expected_path
+    return GribFetchResult(path=expected_path, is_full_file=expected_suffix == "full")
 
 
 def ensure_latest_cycles(*, keep_cycles: int, cache_cfg: HRRRCacheConfig | None = None) -> dict[str, int]:

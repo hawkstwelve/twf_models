@@ -36,7 +36,7 @@ from app.services.hrrr_fetch import (
 )
 from app.services.hrrr_runs import HRRRCacheConfig
 from app.services.paths import default_hrrr_cache_dir
-from app.services.variable_registry import normalize_api_variable, select_dataarray
+from app.services.variable_registry import normalize_api_variable, select_dataarray, VARIABLE_SELECTORS
 
 EPS = 1e-9
 logger = logging.getLogger(__name__)
@@ -68,6 +68,34 @@ def _collect_fill_values(da: xr.DataArray) -> list[float]:
                 if np.isfinite(num):
                     candidates.append(num)
     return candidates
+
+
+def _cfgrib_filter_keys(normalized_var: str) -> dict:
+    selector = VARIABLE_SELECTORS.get(normalized_var)
+    if not selector:
+        return {}
+    filter_keys: dict[str, object] = {}
+    if selector.get("typeOfLevel"):
+        filter_keys["typeOfLevel"] = selector["typeOfLevel"]
+    if selector.get("level") is not None:
+        filter_keys["level"] = selector["level"]
+    return filter_keys
+
+
+def _open_cfgrib_dataset(grib_path: Path, normalized_var: str) -> xr.Dataset:
+    try:
+        return xr.open_dataset(grib_path, engine="cfgrib")
+    except Exception as exc:
+        message = str(exc)
+        if "multiple values for key" in message or "typeOfLevel" in message:
+            filter_keys = _cfgrib_filter_keys(normalized_var)
+            if filter_keys:
+                return xr.open_dataset(
+                    grib_path,
+                    engine="cfgrib",
+                    backend_kwargs={"filter_by_keys": filter_keys},
+                )
+        raise
 
 
 def _encode_with_nodata(
@@ -641,8 +669,8 @@ def main() -> int:
                         f"Available: {available}. Errors: {errors}"
                     )
 
-                ds_u = xr.open_dataset(u_path, engine="cfgrib")
-                ds_v = xr.open_dataset(v_path, engine="cfgrib")
+                ds_u = _open_cfgrib_dataset(u_path, "ugrd10m")
+                ds_v = _open_cfgrib_dataset(v_path, "vgrd10m")
                 u_candidates = ["ugrd10m", "u10", "10u"]
                 v_candidates = ["vgrd10m", "v10", "10v"]
                 u_da, u_key = select_first(ds_u, u_candidates, "u wind")
@@ -698,7 +726,7 @@ def main() -> int:
                 ) from exc
         else:
             try:
-                ds = xr.open_dataset(grib_path, engine="cfgrib")
+                ds = _open_cfgrib_dataset(grib_path, normalized_var)
             except Exception as exc:
                 message = str(exc)
                 if is_upstream_not_ready_message(message):
