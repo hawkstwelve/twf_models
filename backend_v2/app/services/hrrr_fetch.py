@@ -11,7 +11,7 @@ from pathlib import Path
 
 from herbie import Herbie
 
-from app.models import MODEL_REGISTRY, VarSelectors
+from app.models.base import VarSelectors
 
 from .hrrr_runs import HRRRCacheConfig, enforce_cycle_retention
 from .paths import default_hrrr_cache_dir
@@ -47,6 +47,8 @@ def _select_herbie_search(selectors: VarSelectors) -> str | None:
 def _resolve_var_selectors(model_id: str, variable: str | None) -> VarSelectors:
     if not variable:
         return VarSelectors()
+    from app.models.registry import MODEL_REGISTRY
+
     model = MODEL_REGISTRY.get(model_id)
     if model is not None:
         try:
