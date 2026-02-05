@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 # Add backend_v2 to path so app module can be found
@@ -20,6 +21,7 @@ from app.services.paths import default_hrrr_cache_dir
 
 logger = logging.getLogger(__name__)
 RUN_RE = re.compile(r"^\d{8}_(\d{2})z$")
+RUN_ID_RE = re.compile(r"^(?P<day>\d{8})_(?P<hour>\d{2})z$")
 
 
 def parse_args() -> argparse.Namespace:
@@ -41,6 +43,24 @@ def resolve_latest_run(cfg: HRRRCacheConfig) -> tuple[str, int]:
     run_id = f"{day_dir.name}_{cycle_dir.name}z"
     cycle_hour = int(cycle_dir.name)
     return run_id, cycle_hour
+
+
+def parse_run_id_datetime(value: str) -> datetime | None:
+    match = RUN_ID_RE.match(value)
+    if not match:
+        return None
+    day = match.group("day")
+    hour_text = match.group("hour")
+    try:
+        year = int(day[0:4])
+        month = int(day[4:6])
+        day_num = int(day[6:8])
+        hour = int(hour_text)
+        if not (0 <= hour <= 23):
+            return None
+        return datetime(year, month, day_num, hour)
+    except ValueError:
+        return None
 
 
 def parse_fh_arg(value: str) -> list[int]:
@@ -116,6 +136,21 @@ def select_mvp_vars() -> list[str]:
     return chosen[:3]
 
 
+def _check_run_complete(run_dir: Path, vars_to_build: list[str], fhs: list[int]) -> tuple[bool, str | None]:
+    for var in vars_to_build:
+        var_dir = run_dir / var
+        if not var_dir.is_dir():
+            return False, f"missing var dir: {var_dir.name}"
+        for fh in fhs:
+            cog_path = var_dir / f"fh{fh:03d}.cog.tif"
+            json_path = var_dir / f"fh{fh:03d}.json"
+            if not cog_path.exists():
+                return False, f"missing cog: {var_dir.name}/fh{fh:03d}.cog.tif"
+            if not json_path.exists():
+                return False, f"missing json: {var_dir.name}/fh{fh:03d}.json"
+    return True, None
+
+
 def build_frames(
     *,
     script_path: Path,
@@ -166,19 +201,78 @@ def build_frames(
                     }
                 )
             else:
-                logger.info("Success: var=%s fh=%s", var, fh)
+                out_dir = Path(args.out_root) / args.model / args.region / run_id / var
+                cog_path = out_dir / f"fh{fh:03d}.cog.tif"
+                json_path = out_dir / f"fh{fh:03d}.json"
+                if not cog_path.exists() or not json_path.exists():
+                    logger.error(
+                        "COG build missing outputs: var=%s fh=%s run=%s cog=%s json=%s",
+                        var,
+                        fh,
+                        run_id,
+                        cog_path,
+                        json_path,
+                    )
+                    failures.append(
+                        {
+                            "var": var,
+                            "fh": fh,
+                            "code": "missing-output",
+                            "stderr": f"Expected outputs not found: {cog_path}, {json_path}",
+                        }
+                    )
+                else:
+                    logger.info("Success: var=%s fh=%s run=%s path=%s", var, fh, run_id, cog_path)
 
     return failures
 
 
-def enforce_latest_run_retention(*, out_root: Path, model: str, region: str, keep_run: str) -> None:
+def enforce_latest_run_retention(
+    *,
+    out_root: Path,
+    model: str,
+    region: str,
+    keep_run: str,
+    expected_vars: list[str],
+    expected_fhs: list[int],
+) -> None:
     root = out_root / model / region
     if not root.exists():
         return
+
+    parsed_runs: list[tuple[datetime, Path]] = []
     for entry in root.iterdir():
         if not entry.is_dir():
             continue
-        if entry.name == keep_run:
+        run_dt = parse_run_id_datetime(entry.name)
+        if run_dt is None:
+            logger.warning("Skipping run dir with invalid name: %s", entry.name)
+            continue
+        complete, reason = _check_run_complete(entry, expected_vars, expected_fhs)
+        if not complete:
+            logger.warning("Skipping incomplete run dir: %s (%s)", entry.name, reason)
+            continue
+        parsed_runs.append((run_dt, entry))
+
+    if not parsed_runs:
+        logger.warning("No complete run dirs found under %s; retention skipped", root)
+        return
+
+    parsed_runs.sort(key=lambda item: item[0], reverse=True)
+    latest_dt, latest_dir = parsed_runs[0]
+    keep_names = {keep_run, latest_dir.name}
+    if keep_run != latest_dir.name:
+        logger.warning(
+            "Latest complete run differs from keep_run; keeping both: keep_run=%s latest=%s",
+            keep_run,
+            latest_dir.name,
+        )
+
+    for run_dt, entry in parsed_runs:
+        if entry.name in keep_names:
+            continue
+        if run_dt > latest_dt:
+            logger.warning("Refusing to delete newer run dir: %s", entry.name)
             continue
         logger.info("Removing old run dir: %s", entry)
         shutil.rmtree(entry, ignore_errors=True)
@@ -238,7 +332,7 @@ def main() -> int:
     logger.info("Run: %s (cycle=%02d) fhs=%s vars=%s", run_id, cycle_hour, fhs[-1], vars_to_build)
 
     try:
-        fetch_run = to_fetch_run(run_id if args.run != "latest" else "latest")
+        fetch_run = to_fetch_run(run_id)
     except ValueError as exc:
         logger.error(str(exc))
         return 1
@@ -260,6 +354,8 @@ def main() -> int:
             model=args.model,
             region=args.region,
             keep_run=run_id,
+            expected_vars=vars_to_build,
+            expected_fhs=fhs,
         )
 
     if failures:
