@@ -53,6 +53,9 @@ venv/
 
 .data/
 
+## Additional ignores for specific directories
 backend_v2/.python-version
 mbtiles/
 venv_v2/
+DocsWeaver/
+v2.code-workspace
