@@ -1,0 +1,22 @@
+[Unit]
+Description=TWF HRRR V2 Scheduler
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=brian
+WorkingDirectory=/opt/twf_models
+Environment=PYTHONUNBUFFERED=1
+Environment=TWF_DATA_V2_ROOT=/opt/twf_models/data/v2
+Environment=TWF_V2_WORKERS=4
+Environment=PYTHONPATH=/opt/twf_models/backend_v2:/opt/twf_models
+ExecStartPre=/usr/bin/test -f /opt/twf_models/backend_v2/app/services/hrrr_scheduler_v2.py
+ExecStart=/opt/twf_models/venv_v2/bin/python /opt/twf_models/backend_v2/app/services/hrrr_scheduler_v2.py --model hrrr --region pnw --vars tmp2m,wspd10m --primary-vars tmp2m
+Restart=on-failure
+RestartSec=4
+TimeoutStopSec=30
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

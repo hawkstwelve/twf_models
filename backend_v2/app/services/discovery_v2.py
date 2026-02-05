@@ -4,11 +4,12 @@ import json
 import logging
 import re
 import time
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import HTTPException
 
-from app.services.run_resolution import RUN_RE, get_data_root
+from app.services.run_resolution import RUN_RE, get_data_root, resolve_run
 
 logger = logging.getLogger(__name__)
 
@@ -94,41 +95,32 @@ def list_runs(model: str, region: str) -> list[str]:
         _cache_set(cache_key, [])
         return []
 
-    names = [p.name for p in run_dirs]
-    if all(is_valid_run_id(name) for name in names):
-        runs = sorted(names, reverse=True)
-    else:
-        run_dirs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-        runs = [p.name for p in run_dirs]
+    matched: list[tuple[datetime, str]] = []
+    for path in run_dirs:
+        if not is_valid_run_id(path.name):
+            continue
+        try:
+            run_dt = datetime.strptime(path.name, "%Y%m%d_%Hz")
+        except ValueError:
+            continue
+        matched.append((run_dt, path.name))
+
+    if not matched:
+        _cache_set(cache_key, [])
+        return []
+
+    matched.sort(key=lambda item: item[0], reverse=True)
+    runs = [name for _, name in matched]
 
     _cache_set(cache_key, runs)
     return list(runs)
 
 
-def resolve_run(model: str, region: str, run: str, *, allow_empty_latest: bool = False) -> str | None:
-    model_root = get_data_root() / model
-    _ensure_dir(model_root, "Unknown model")
-    region_root = model_root / region
-    _ensure_dir(region_root, "Unknown region")
-
-    if run != "latest":
-        run_root = region_root / run
-        _ensure_dir(run_root, "Unknown run")
-        return run
-
-    runs = list_runs(model, region)
-    if not runs:
-        if allow_empty_latest:
-            return None
-        raise HTTPException(status_code=404, detail="No runs found for model/region")
-
-    return runs[0]
-
-
 def list_vars(model: str, region: str, run: str) -> list[str]:
     resolved_run = resolve_run(model, region, run)
-    if resolved_run is None:
-        raise HTTPException(status_code=404, detail="No runs found for model/region")
+    if run != "latest":
+        run_root = get_data_root() / model / region / resolved_run
+        _ensure_dir(run_root, "Unknown run")
 
     cache_key = ("vars", model, region, resolved_run)
     cached = _cache_get(cache_key)
@@ -143,9 +135,18 @@ def list_vars(model: str, region: str, run: str) -> list[str]:
 
 
 def list_frames(model: str, region: str, run: str, var: str) -> list[dict]:
-    resolved_run = resolve_run(model, region, run, allow_empty_latest=True)
-    if resolved_run is None:
-        return []
+    try:
+        resolved_run = resolve_run(model, region, run)
+    except HTTPException as exc:
+        if run == "latest" and exc.status_code == 404:
+            return []
+        raise
+
+    run_root = get_data_root() / model / region / resolved_run
+    if not run_root.exists() or not run_root.is_dir():
+        if run == "latest":
+            return []
+        raise HTTPException(status_code=404, detail="Unknown run")
 
     cache_key = ("frames", model, region, f"{resolved_run}:{var}")
     cached = _cache_get(cache_key)
@@ -153,18 +154,23 @@ def list_frames(model: str, region: str, run: str, var: str) -> list[dict]:
         return [frame.copy() for frame in cached]
 
     var_root = get_data_root() / model / region / resolved_run / var
-    _ensure_dir(var_root, "Unknown variable")
+    if not var_root.exists() or not var_root.is_dir():
+        _cache_set(cache_key, [])
+        return []
 
     frames: list[dict] = []
-    for entry in var_root.iterdir():
+    seen_fhs: set[int] = set()
+    for entry in var_root.glob("fh*.cog.tif"):
         if not entry.is_file():
             continue
         fh = parse_fh_filename(entry.name)
         if fh is None:
             continue
-        meta = _read_json(var_root / f"fh{fh:03d}.json")
-        if meta is None:
-            meta = {"created_utc": None, "var_key": var}
+        if fh in seen_fhs:
+            continue
+        seen_fhs.add(fh)
+        sidecar = _read_json(var_root / f"fh{fh:03d}.json")
+        meta = {"meta": sidecar} if sidecar is not None else None
         frames.append({"fh": fh, "has_cog": True, "meta": meta})
 
     frames.sort(key=lambda item: item["fh"])

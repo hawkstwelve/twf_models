@@ -1,0 +1,561 @@
+from __future__ import annotations
+
+import argparse
+import concurrent.futures
+import json
+import logging
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Iterable
+
+from app.services.hrrr_fetch import fetch_hrrr_grib
+from app.services.hrrr_runs import HRRRCacheConfig
+from app.services.paths import default_hrrr_cache_dir
+
+logger = logging.getLogger(__name__)
+
+RUN_ID_RE = re.compile(r"^(?P<day>\d{8})_(?P<hour>\d{2})z$")
+DEFAULT_DATA_ROOT = Path("/opt/twf_models/data/v2")
+PRIMARY_VAR_DEFAULT = "tmp2m"
+VAR_DEFAULTS = "tmp2m,wspd10m"
+PROBE_INTERVAL_SECONDS = 90
+
+
+class RunResolutionError(RuntimeError):
+    pass
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run the HRRR V2 near-real-time scheduler.")
+    parser.add_argument("--region", type=str, default="pnw")
+    parser.add_argument("--vars", type=str, default=VAR_DEFAULTS)
+    parser.add_argument("--primary-vars", type=str, default=PRIMARY_VAR_DEFAULT)
+    parser.add_argument("--model", type=str, default="hrrr")
+    parser.add_argument("--self-test", action="store_true")
+    return parser.parse_args()
+
+
+def _parse_vars(value: str) -> list[str]:
+    items = [item.strip().lower() for item in value.split(",") if item.strip()]
+    if not items:
+        raise ValueError("--vars cannot be empty")
+    return items
+
+
+def _parse_run_id_datetime(run_id: str) -> datetime | None:
+    match = RUN_ID_RE.match(run_id)
+    if not match:
+        return None
+    day = match.group("day")
+    hour_text = match.group("hour")
+    try:
+        year = int(day[0:4])
+        month = int(day[4:6])
+        day_num = int(day[6:8])
+        hour = int(hour_text)
+        if not (0 <= hour <= 23):
+            return None
+        return datetime(year, month, day_num, hour, tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _derive_run_id_from_grib_path(path: Path) -> tuple[str, int] | None:
+    day = None
+    hour_dir = None
+    hour_file = None
+
+    if re.fullmatch(r"\d{2}", path.parent.name):
+        hour_dir = path.parent.name
+
+    for part in reversed(path.parts):
+        if re.fullmatch(r"\d{8}", part):
+            try:
+                datetime.strptime(part, "%Y%m%d")
+            except ValueError:
+                logger.debug("Invalid day token in GRIB path: %s", path)
+                return None
+            day = part
+            break
+
+    match = re.search(r"\.t(\d{2})z", path.name)
+    if match:
+        hour_file = match.group(1)
+
+    def _validate_hour(value: str | None) -> int | None:
+        if value is None:
+            return None
+        try:
+            hour_val = int(value)
+        except ValueError:
+            return None
+        if 0 <= hour_val <= 23:
+            return hour_val
+        return None
+
+    hour_dir_val = _validate_hour(hour_dir)
+    hour_file_val = _validate_hour(hour_file)
+
+    if hour_dir_val is not None and hour_file_val is not None and hour_dir_val != hour_file_val:
+        logger.warning(
+            "GRIB path hour mismatch (dir=%s file=%s raw_dir=%s raw_file=%s); preferring filename: %s",
+            hour_dir_val,
+            hour_file_val,
+            hour_dir,
+            hour_file,
+            path,
+        )
+
+    hour_val = hour_file_val if hour_file_val is not None else hour_dir_val
+
+    if day and hour_val is not None:
+        return f"{day}_{hour_val:02d}z", hour_val
+
+    logger.debug("Failed to derive run_id from GRIB path: %s", path)
+    return None
+
+
+def _resolve_latest_run(cfg: HRRRCacheConfig, primary_var: str) -> tuple[str, int]:
+    grib_path = fetch_hrrr_grib(run="latest", fh=0, variable=primary_var, cache_cfg=cfg)
+    derived = _derive_run_id_from_grib_path(grib_path)
+    if derived is None:
+        raise RunResolutionError(f"Unable to derive run_id from GRIB path: {grib_path}")
+    return derived
+
+
+def _probe_latest_run(cfg: HRRRCacheConfig, primary_var: str) -> tuple[str, int] | None:
+    try:
+        return _resolve_latest_run(cfg, primary_var)
+    except Exception as exc:
+        logger.error("Latest run discovery failed: %s", exc)
+        return None
+
+
+def _target_fhs(cycle_hour: int) -> list[int]:
+    if cycle_hour in {0, 6, 12, 18}:
+        return list(range(0, 49))
+    return list(range(0, 19))
+
+
+def _data_root() -> Path:
+    return Path(os.getenv("TWF_DATA_V2_ROOT", str(DEFAULT_DATA_ROOT)))
+
+
+def _workers() -> int:
+    raw = os.getenv("TWF_V2_WORKERS", "4").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("Invalid TWF_V2_WORKERS=%s; using default 4", raw)
+        return 4
+    if value < 1:
+        logger.warning("Invalid TWF_V2_WORKERS=%s; using default 4", raw)
+        return 4
+    return value
+
+
+def _build_script_path() -> Path:
+    backend_v2_dir = Path(__file__).resolve().parents[2]
+    return backend_v2_dir / "scripts" / "hrrr_build_cog.py"
+
+
+def _task_output_path(
+    out_root: Path,
+    model: str,
+    region: str,
+    run_id: str,
+    var: str,
+    fh: int,
+) -> Path:
+    return out_root / model / region / run_id / var / f"fh{fh:03d}.cog.tif"
+
+
+def _latest_pointer_path(out_root: Path, model: str, region: str) -> Path:
+    return out_root / model / region / "LATEST.json"
+
+
+def _read_latest_pointer(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("Failed to read LATEST.json: %s", exc)
+        return None
+    run_id = payload.get("run_id")
+    if isinstance(run_id, str):
+        return run_id
+    return None
+
+
+def _write_latest_pointer(path: Path, run_id: str) -> None:
+    run_dt = _parse_run_id_datetime(run_id)
+    if run_dt is None:
+        raise RunResolutionError(f"Invalid run_id for LATEST.json: {run_id}")
+    cycle_utc = run_dt.strftime("%Y-%m-%dT%H:00:00Z")
+    updated_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    payload = {
+        "run_id": run_id,
+        "cycle_utc": cycle_utc,
+        "updated_utc": updated_utc,
+        "source": "scheduler_v2",
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    tmp_path.replace(path)
+
+
+def _should_promote_latest(
+    out_root: Path,
+    model: str,
+    region: str,
+    run_id: str,
+    primary_vars: Iterable[str],
+    fhs: Iterable[int] | None = None,
+) -> bool:
+    targets = list(fhs) if fhs is not None else [0, 1, 2]
+    for var in primary_vars:
+        for fh in targets:
+            path = _task_output_path(out_root, model, region, run_id, var, fh)
+            if path.exists():
+                return True
+    return False
+
+
+def _is_under_root(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _enforce_output_retention(
+    out_root: Path,
+    model: str,
+    region: str,
+    latest_pointer_run: str | None,
+    newest_run: str | None,
+    active_run: str | None,
+) -> None:
+    root = out_root / model / region
+    if not root.exists():
+        return
+
+    runs: list[tuple[datetime, Path]] = []
+    for entry in root.iterdir():
+        if not entry.is_dir():
+            continue
+        run_dt = _parse_run_id_datetime(entry.name)
+        if run_dt is None:
+            continue
+        runs.append((run_dt, entry))
+
+    if not runs:
+        return
+
+    runs.sort(key=lambda item: item[0], reverse=True)
+    keep_names = {entry.name for entry in runs[:2]}
+    if latest_pointer_run:
+        keep_names.add(latest_pointer_run)
+    if newest_run:
+        keep_names.add(newest_run)
+    if active_run:
+        keep_names.add(active_run)
+
+    for run_dt, entry in runs:
+        if entry.name in keep_names:
+            continue
+        if not _is_under_root(entry, root):
+            logger.warning("Skipping retention delete outside root: %s", entry)
+            continue
+        logger.info("Removing old run dir: %s", entry)
+        shutil.rmtree(entry, ignore_errors=True)
+
+
+def _run_build_task(task: dict) -> dict:
+    cmd = [
+        sys.executable,
+        task["script"],
+        "--run",
+        task["run_id"],
+        "--fh",
+        str(task["fh"]),
+        "--var",
+        task["var"],
+        "--model",
+        task["model"],
+        "--region",
+        task["region"],
+        "--out-root",
+        task["out_root"],
+    ]
+    env = os.environ.copy()
+    backend_v2_dir = str(Path(task["script"]).resolve().parents[1])
+    env["PYTHONPATH"] = os.pathsep.join(
+        [backend_v2_dir, env.get("PYTHONPATH", "")]
+    ).strip(os.pathsep)
+
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+    return {
+        "run_id": task["run_id"],
+        "var": task["var"],
+        "fh": task["fh"],
+        "returncode": result.returncode,
+        "stdout": (result.stdout or "").strip(),
+        "stderr": (result.stderr or "").strip(),
+    }
+
+
+def _summarize_loop(
+    run_id: str,
+    completed: int,
+    total: int,
+    pending: int,
+    newest_run: str | None,
+    latest_pointer: str | None,
+) -> None:
+    logger.info(
+        "Loop summary: run=%s completed=%s/%s pending=%s newest=%s latest=%s",
+        run_id,
+        completed,
+        total,
+        pending,
+        newest_run or "none",
+        latest_pointer or "none",
+    )
+
+
+def _should_abandon_run(active_run: str, newest_run: str, now_utc: datetime) -> bool:
+    if active_run == newest_run:
+        return False
+    active_dt = _parse_run_id_datetime(active_run)
+    newest_dt = _parse_run_id_datetime(newest_run)
+    if active_dt is None or newest_dt is None:
+        return True
+    if newest_dt <= active_dt:
+        return False
+    if now_utc - active_dt >= timedelta(hours=2):
+        return True
+    return False
+
+
+def run_scheduler(args: argparse.Namespace) -> int:
+    out_root = _data_root()
+    cache_cfg = HRRRCacheConfig(base_dir=default_hrrr_cache_dir(), keep_runs=1)
+    script_path = _build_script_path()
+    vars_to_build = _parse_vars(args.vars)
+    primary_vars = _parse_vars(args.primary_vars)
+    latest_path = _latest_pointer_path(out_root, args.model, args.region)
+
+    max_workers = _workers()
+    active_run_id: str | None = None
+    active_cycle_hour: int | None = None
+    newest_run_id: str | None = None
+    newest_cycle_hour: int | None = None
+    last_probe_ts = 0.0
+
+    logger.info("Scheduler starting: model=%s region=%s vars=%s", args.model, args.region, vars_to_build)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        while True:
+            now_ts = time.time()
+            now_utc = datetime.now(timezone.utc)
+            should_probe = active_run_id is None or (now_ts - last_probe_ts >= PROBE_INTERVAL_SECONDS)
+            if should_probe:
+                newest = _probe_latest_run(cache_cfg, primary_vars[0] if primary_vars else PRIMARY_VAR_DEFAULT)
+                last_probe_ts = now_ts
+                if newest is None:
+                    if active_run_id is None:
+                        logger.info("No HRRR runs available yet; sleeping")
+                        time.sleep(30)
+                        continue
+                else:
+                    newest_run_id, newest_cycle_hour = newest
+            elif newest_run_id is None and active_run_id is not None:
+                newest_run_id = active_run_id
+                newest_cycle_hour = active_cycle_hour
+
+            if newest_run_id is None or newest_cycle_hour is None:
+                logger.info("No HRRR runs available yet; sleeping")
+                time.sleep(30)
+                continue
+
+            if active_run_id is None:
+                active_run_id = newest_run_id
+                active_cycle_hour = newest_cycle_hour
+            elif newest_run_id != active_run_id:
+                if _should_abandon_run(active_run_id, newest_run_id, now_utc):
+                    logger.info("Switching to newer run: %s -> %s", active_run_id, newest_run_id)
+                    active_run_id = newest_run_id
+                    active_cycle_hour = newest_cycle_hour
+                elif active_cycle_hour is None:
+                    match = RUN_ID_RE.match(active_run_id)
+                    if match:
+                        active_cycle_hour = int(match.group("hour"))
+                    else:
+                        logger.warning("Invalid active run id: %s; switching to newest", active_run_id)
+                        active_run_id = newest_run_id
+                        active_cycle_hour = newest_cycle_hour
+
+            if active_run_id is None or active_cycle_hour is None:
+                logger.info("No active run resolved; sleeping")
+                time.sleep(30)
+                continue
+
+            fhs = _target_fhs(active_cycle_hour)
+            total = len(vars_to_build) * len(fhs)
+            pending: list[tuple[str, int]] = []
+            completed = 0
+
+            for var in vars_to_build:
+                for fh in fhs:
+                    out_path = _task_output_path(out_root, args.model, args.region, active_run_id, var, fh)
+                    if out_path.exists():
+                        completed += 1
+                    else:
+                        pending.append((var, fh))
+
+            if not pending and active_run_id != newest_run_id:
+                active_run_id = newest_run_id
+                active_cycle_hour = newest_cycle_hour
+                fhs = _target_fhs(active_cycle_hour)
+                total = len(vars_to_build) * len(fhs)
+                pending = []
+                completed = 0
+                for var in vars_to_build:
+                    for fh in fhs:
+                        out_path = _task_output_path(out_root, args.model, args.region, active_run_id, var, fh)
+                        if out_path.exists():
+                            completed += 1
+                        else:
+                            pending.append((var, fh))
+
+            latest_pointer_run = _read_latest_pointer(latest_path)
+            if _should_promote_latest(
+                out_root,
+                args.model,
+                args.region,
+                newest_run_id,
+                primary_vars,
+                fhs=[0, 1, 2],
+            ):
+                if latest_pointer_run != newest_run_id:
+                    _write_latest_pointer(latest_path, newest_run_id)
+                    latest_pointer_run = newest_run_id
+            elif _should_promote_latest(
+                out_root,
+                args.model,
+                args.region,
+                active_run_id,
+                primary_vars,
+                fhs=[0, 1, 2],
+            ):
+                if latest_pointer_run != active_run_id:
+                    _write_latest_pointer(latest_path, active_run_id)
+                    latest_pointer_run = active_run_id
+
+            _summarize_loop(active_run_id, completed, total, len(pending), newest_run_id, latest_pointer_run)
+
+            if pending:
+                primary_set = set(primary_vars)
+                pending.sort(key=lambda item: (item[1], 0 if item[0] in primary_set else 1, item[0]))
+                batch_size = min(len(pending), max_workers * 2)
+                batch = pending[:batch_size]
+                tasks = []
+                for var, fh in batch:
+                    tasks.append(
+                        {
+                            "script": str(script_path),
+                            "run_id": active_run_id,
+                            "fh": fh,
+                            "var": var,
+                            "model": args.model,
+                            "region": args.region,
+                            "out_root": str(out_root),
+                        }
+                    )
+                    logger.info("Queue build: run=%s var=%s fh=%s", active_run_id, var, fh)
+
+                futures = [executor.submit(_run_build_task, task) for task in tasks]
+                for future in concurrent.futures.as_completed(futures):
+                    result = future.result()
+                    if result["returncode"] == 0:
+                        logger.info(
+                            "Build success: run=%s var=%s fh=%s",
+                            result["run_id"],
+                            result["var"],
+                            result["fh"],
+                        )
+                    else:
+                        combined = f"{result['stderr']}\n{result['stdout']}".lower()
+                        if "did not find" in combined or "not found" in combined:
+                            logger.warning(
+                                "Upstream not ready: run=%s var=%s fh=%s detail=%s",
+                                result["run_id"],
+                                result["var"],
+                                result["fh"],
+                                result["stderr"] or result["stdout"],
+                            )
+                        else:
+                            logger.error(
+                                "Build failed: run=%s var=%s fh=%s code=%s stderr=%s",
+                                result["run_id"],
+                                result["var"],
+                                result["fh"],
+                                result["returncode"],
+                                result["stderr"],
+                            )
+
+                _enforce_output_retention(
+                    out_root,
+                    args.model,
+                    args.region,
+                    latest_pointer_run,
+                    newest_run_id,
+                    active_run_id,
+                )
+                time.sleep(5)
+            else:
+                _enforce_output_retention(
+                    out_root,
+                    args.model,
+                    args.region,
+                    latest_pointer_run,
+                    newest_run_id,
+                    active_run_id,
+                )
+                time.sleep(30)
+
+
+def main() -> int:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    args = parse_args()
+    if args.self_test:
+        samples = [
+            "/data/hrrr/20250205/21/hrrr.t21z.wrfsfcf00.tmp2m.grib2",
+            "/data/hrrr/20250205/21/hrrr.t22z.wrfsfcf00.tmp2m.grib2",
+            "/data/hrrr/20250230/21/hrrr.t21z.wrfsfcf00.tmp2m.grib2",
+            "/data/hrrr/20250205/99/hrrr.t21z.wrfsfcf00.tmp2m.grib2",
+            "/data/hrrr/20250205/21/hrrr.wrfsfcf00.tmp2m.grib2",
+        ]
+        for sample in samples:
+            path = Path(sample)
+            print(f"{sample} -> {_derive_run_id_from_grib_path(path)}")
+        return 0
+    try:
+        return run_scheduler(args)
+    except KeyboardInterrupt:
+        logger.info("Scheduler shutdown requested")
+        return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
