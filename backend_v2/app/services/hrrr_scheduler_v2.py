@@ -46,7 +46,7 @@ class RunResolutionError(RuntimeError):
     pass
 
 
-_UPSTREAM_LOG_CACHE: dict[tuple[str, int, str], dict[str, object]] = {}
+_UPSTREAM_LOG_CACHE: dict[tuple[str, str], dict[str, object]] = {}
 
 
 def parse_args() -> argparse.Namespace:
@@ -609,7 +609,7 @@ def run_scheduler(args: argparse.Namespace) -> int:
 
             _summarize_loop(active_run_id, completed, total, len(pending), newest_run_id, latest_pointer_run)
 
-            loop_not_ready: dict[tuple[str, int, str], set[str]] = {}
+            loop_not_ready: dict[tuple[str, str], dict[str, set[int] | set[str]]] = {}
 
             if pending:
                 primary_set = set(primary_vars)
@@ -645,8 +645,10 @@ def run_scheduler(args: argparse.Namespace) -> int:
                         combined = f"{result['stderr']}\n{result['stdout']}"
                         if is_upstream_not_ready_message(combined):
                             reason = _normalize_reason(combined)
-                            key = (result["run_id"], result["fh"], reason)
-                            loop_not_ready.setdefault(key, set()).add(result["var"])
+                            key = (result["run_id"], reason)
+                            entry = loop_not_ready.setdefault(key, {"fhs": set(), "vars": set()})
+                            entry["fhs"].add(result["fh"])
+                            entry["vars"].add(result["var"])
                         else:
                             logger.error(
                                 "Build failed: run=%s var=%s fh=%s code=%s stderr=%s",
@@ -659,21 +661,23 @@ def run_scheduler(args: argparse.Namespace) -> int:
 
             now_ts = time.time()
             _prune_upstream_log_cache(now_ts)
-            for (run_id, fh, reason), vars_set in loop_not_ready.items():
-                cache_key = (run_id, fh, reason)
-                entry = _UPSTREAM_LOG_CACHE.get(cache_key)
-                last_logged_ts = entry["last_logged_ts"] if entry else 0.0
+            for (run_id, reason), summary in loop_not_ready.items():
+                cache_key = (run_id, reason)
+                cache_entry = _UPSTREAM_LOG_CACHE.get(cache_key)
+                last_logged_ts = cache_entry["last_logged_ts"] if cache_entry else 0.0
                 if now_ts - last_logged_ts < RATE_LIMIT_SECONDS:
-                    if entry:
-                        entry["last_seen_ts"] = now_ts
+                    if cache_entry:
+                        cache_entry["last_seen_ts"] = now_ts
                     continue
-                vars_list = sorted(vars_set)
+                fhs_list = sorted(summary["fhs"])
+                vars_list = sorted(summary["vars"])
                 logger.info(
-                    "Upstream not ready: run=%s fh=%s vars=%s reason=%s",
+                    "Upstream not ready: run=%s reason=%s fhs=%s vars=%s count_fh=%s",
                     run_id,
-                    fh,
-                    vars_list,
                     reason,
+                    fhs_list,
+                    vars_list,
+                    len(fhs_list),
                 )
                 _UPSTREAM_LOG_CACHE[cache_key] = {
                     "last_logged_ts": now_ts,
