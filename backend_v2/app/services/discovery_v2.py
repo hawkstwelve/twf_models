@@ -9,6 +9,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
+from app.models import MODEL_REGISTRY, get_model
 from app.services.run_resolution import RUN_RE, get_data_root, resolve_run
 
 logger = logging.getLogger(__name__)
@@ -69,17 +70,20 @@ def _read_json(path: Path) -> dict | None:
 
 def list_models() -> list[dict[str, str]]:
     root = get_data_root()
-    models = sorted(p.name for p in _safe_list_dirs(root))
-    return [{"id": model, "name": model.upper()} for model in models]
+    models = [p.name for p in _safe_list_dirs(root)]
+    models = sorted(model for model in models if model in MODEL_REGISTRY)
+    return [{"id": model, "name": MODEL_REGISTRY[model].name} for model in models]
 
 
 def list_regions(model: str) -> list[str]:
+    get_model(model)
     model_root = get_data_root() / model
     _ensure_dir(model_root, "Unknown model")
     return sorted(p.name for p in _safe_list_dirs(model_root))
 
 
 def list_runs(model: str, region: str) -> list[str]:
+    get_model(model)
     model_root = get_data_root() / model
     _ensure_dir(model_root, "Unknown model")
     region_root = model_root / region
@@ -117,6 +121,7 @@ def list_runs(model: str, region: str) -> list[str]:
 
 
 def list_vars(model: str, region: str, run: str) -> list[str]:
+    get_model(model)
     resolved_run = resolve_run(model, region, run)
     if run != "latest":
         run_root = get_data_root() / model / region / resolved_run
@@ -135,6 +140,7 @@ def list_vars(model: str, region: str, run: str) -> list[str]:
 
 
 def list_frames(model: str, region: str, run: str, var: str) -> list[dict]:
+    get_model(model)
     try:
         resolved_run = resolve_run(model, region, run)
     except HTTPException as exc:

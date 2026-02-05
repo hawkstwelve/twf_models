@@ -11,6 +11,8 @@ from pathlib import Path
 
 from herbie import Herbie
 
+from app.models import MODEL_REGISTRY, VarSelectors
+
 from .hrrr_runs import HRRRCacheConfig, enforce_cycle_retention
 from .paths import default_hrrr_cache_dir
 from .variable_registry import herbie_search_for, normalize_api_variable
@@ -32,6 +34,32 @@ _IDX_FALLBACK_LOG_CACHE: dict[tuple[str, int], float] = {}
 
 class UpstreamNotReady(RuntimeError):
     pass
+
+
+def _select_herbie_search(selectors: VarSelectors) -> str | None:
+    if not selectors.search:
+        return None
+    if len(selectors.search) == 1:
+        return selectors.search[0]
+    return "|".join(selectors.search)
+
+
+def _resolve_var_selectors(model_id: str, variable: str | None) -> VarSelectors:
+    if not variable:
+        return VarSelectors()
+    model = MODEL_REGISTRY.get(model_id)
+    if model is not None:
+        try:
+            plugin_var_id = model.normalize_var_id(variable)
+        except Exception:
+            plugin_var_id = normalize_api_variable(variable)
+        var_spec = model.get_var(plugin_var_id)
+        if var_spec is not None:
+            return var_spec.selectors
+    legacy_search = herbie_search_for(variable)
+    if legacy_search:
+        return VarSelectors(search=[legacy_search])
+    return VarSelectors()
 
 
 @dataclass(frozen=True)
@@ -231,6 +259,7 @@ def fetch_hrrr_grib(
     product: str = "sfc",
     model: str = "hrrr",
     variable: str | None = None,
+    search_override: str | None = None,
     cache_cfg: HRRRCacheConfig | None = None,
 ) -> GribFetchResult:
     cfg = cache_cfg or HRRRCacheConfig(base_dir=default_hrrr_cache_dir(), keep_runs=1)
@@ -239,9 +268,8 @@ def fetch_hrrr_grib(
     normalized_var = normalize_api_variable(variable) if variable else None
     if variable == "wspd10m":
         normalized_var = "wspd10m"
-        search = herbie_search_for("wspd10m")
-    else:
-        search = herbie_search_for(variable) if variable else None
+    selectors = _resolve_var_selectors(model, variable)
+    search = search_override if search_override is not None else _select_herbie_search(selectors)
 
     logger.info(
         "Fetching HRRR GRIB: run=%s fh=%02d model=%s product=%s variable=%s search=%s",
