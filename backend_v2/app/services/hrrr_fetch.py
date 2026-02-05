@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -14,6 +15,10 @@ from .variable_registry import herbie_search_for, normalize_api_variable
 
 logger = logging.getLogger(__name__)
 
+IDX_FALLBACK_RATE_SECONDS = 300
+IDX_FALLBACK_CACHE_TTL_SECONDS = 7200
+_IDX_FALLBACK_LOG_CACHE: dict[tuple[str, int], float] = {}
+
 
 class UpstreamNotReady(RuntimeError):
     pass
@@ -25,10 +30,19 @@ def is_upstream_not_ready_message(message: str) -> bool:
         "upstream not ready",
         "grib2 file not found",
         "herbie did not return a grib2 path",
+        "could not resolve latest hrrr cycle",
+    ]
+    return any(pattern in text for pattern in patterns)
+
+
+def is_idx_missing_message(message: str) -> bool:
+    text = message.lower()
+    patterns = [
         "no index file was found",
+        "index_as_dataframe",
         "inventory not found",
         "no inventory",
-        "could not resolve latest hrrr cycle",
+        "download the full file first",
     ]
     return any(pattern in text for pattern in patterns)
 
@@ -54,6 +68,32 @@ def has_idx(herbie: Herbie) -> bool:
     if idx_path is None:
         return False
     return idx_path.exists()
+
+
+def _format_run_id(run_dt: datetime | None, run: str) -> str:
+    if run_dt is None:
+        return run
+    return run_dt.strftime("%Y%m%d_%Hz")
+
+
+def _prune_idx_fallback_cache(now_ts: float) -> None:
+    expired = [
+        key for key, ts in _IDX_FALLBACK_LOG_CACHE.items()
+        if now_ts - ts > IDX_FALLBACK_CACHE_TTL_SECONDS
+    ]
+    for key in expired:
+        _IDX_FALLBACK_LOG_CACHE.pop(key, None)
+
+
+def _log_idx_fallback(run_id: str, fh: int) -> None:
+    now_ts = time.time()
+    _prune_idx_fallback_cache(now_ts)
+    key = (run_id, fh)
+    last_ts = _IDX_FALLBACK_LOG_CACHE.get(key, 0.0)
+    if now_ts - last_ts < IDX_FALLBACK_RATE_SECONDS:
+        return
+    _IDX_FALLBACK_LOG_CACHE[key] = now_ts
+    logger.info("IDX missing; falling back to full download: run=%s fh=%02d", run_id, fh)
 
 
 def _parse_run_datetime(run: str) -> datetime | None:
@@ -130,19 +170,33 @@ def fetch_hrrr_grib(
         logger.info("Using cached GRIB: %s", expected_path)
         return expected_path
 
+    run_id = _format_run_id(run_dt, run)
+    use_full_download = False
     if search and not has_idx(herbie):
-        raise UpstreamNotReady("Index not ready for requested HRRR GRIB")
+        use_full_download = True
+        _log_idx_fallback(run_id, fh)
 
     try:
-        if search:
+        if search and not use_full_download:
             downloaded = herbie.download(save_dir=target_dir, search=search)
         else:
             downloaded = herbie.download(save_dir=target_dir)
     except Exception as exc:
         message = str(exc)
-        if is_upstream_not_ready_message(message):
+        if search and is_idx_missing_message(message):
+            _log_idx_fallback(run_id, fh)
+            herbie = Herbie(run_dt, model=model, product=product, fxx=fh)
+            try:
+                downloaded = herbie.download(save_dir=target_dir)
+            except Exception as inner_exc:
+                inner_message = str(inner_exc)
+                if is_upstream_not_ready_message(inner_message):
+                    raise UpstreamNotReady(inner_message) from inner_exc
+                raise RuntimeError(f"Herbie download failed: {inner_exc}") from inner_exc
+        elif is_upstream_not_ready_message(message):
             raise UpstreamNotReady(message) from exc
-        raise RuntimeError(f"Herbie download failed: {exc}") from exc
+        else:
+            raise RuntimeError(f"Herbie download failed: {exc}") from exc
 
     if isinstance(downloaded, (list, tuple)):
         downloaded = downloaded[0] if downloaded else None
