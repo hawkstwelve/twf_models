@@ -401,10 +401,22 @@ def _apply_sleep_jitter(seconds: int) -> float:
 def _normalize_reason(text: str | None) -> str:
     if not text:
         return "unknown"
-    trimmed = text.strip()
-    if not trimmed:
-        return "unknown"
-    return trimmed.splitlines()[0]
+
+    # Try to stabilize "Upstream not ready" errors by extracting the value after "reason=".
+    # Herbie/our wrappers often embed var/run/fh in the first line; we only want the actual cause.
+    match = re.search(r"reason=([^\n\r]*)", text)
+    if match:
+        candidate = match.group(1).strip()
+        if candidate:
+            return candidate
+
+    # Fall back to the first non-empty line.
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if line:
+            return line
+
+    return "unknown"
 
 
 def _prune_upstream_log_cache(now_ts: float) -> None:
@@ -632,7 +644,7 @@ def run_scheduler(args: argparse.Namespace) -> int:
                     else:
                         combined = f"{result['stderr']}\n{result['stdout']}"
                         if is_upstream_not_ready_message(combined):
-                            reason = _normalize_reason(result["stderr"] or result["stdout"])
+                            reason = _normalize_reason(combined)
                             key = (result["run_id"], result["fh"], reason)
                             loop_not_ready.setdefault(key, set()).add(result["var"])
                         else:
