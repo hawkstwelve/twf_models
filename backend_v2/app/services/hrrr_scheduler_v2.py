@@ -583,6 +583,7 @@ def run_scheduler(args: argparse.Namespace) -> int:
                 batch_size = min(len(pending), max_workers * 2)
                 batch = pending[:batch_size]
                 tasks = []
+                logged_upstream: set[tuple[str, str, int]] = set()
                 for var, fh in batch:
                     tasks.append(
                         {
@@ -610,6 +611,10 @@ def run_scheduler(args: argparse.Namespace) -> int:
                     else:
                         combined = f"{result['stderr']}\n{result['stdout']}"
                         if is_upstream_not_ready_message(combined):
+                            key = (result["run_id"], result["var"], result["fh"])
+                            if key in logged_upstream:
+                                continue
+                            logged_upstream.add(key)
                             logger.warning(
                                 "Upstream not ready: run=%s var=%s fh=%s detail=%s",
                                 result["run_id"],

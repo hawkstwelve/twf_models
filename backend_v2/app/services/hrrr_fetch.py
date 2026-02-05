@@ -39,6 +39,23 @@ def is_upstream_not_ready(exc: BaseException) -> bool:
     return is_upstream_not_ready_message(str(exc))
 
 
+def _idx_path(herbie: Herbie) -> Path | None:
+    try:
+        idx = herbie.idx
+    except Exception:
+        return None
+    if idx is None:
+        return None
+    return Path(idx)
+
+
+def has_idx(herbie: Herbie) -> bool:
+    idx_path = _idx_path(herbie)
+    if idx_path is None:
+        return False
+    return idx_path.exists()
+
+
 def _parse_run_datetime(run: str) -> datetime | None:
     if run.lower() == "latest":
         return None
@@ -112,6 +129,9 @@ def fetch_hrrr_grib(
     if expected_path.exists() and expected_path.stat().st_size > 0:
         logger.info("Using cached GRIB: %s", expected_path)
         return expected_path
+
+    if search and not has_idx(herbie):
+        raise UpstreamNotReady("Index not ready for requested HRRR GRIB")
 
     try:
         if search:
