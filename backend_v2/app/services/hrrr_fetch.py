@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import logging
 import shutil
 import subprocess
@@ -71,6 +72,21 @@ def has_idx(herbie: Herbie) -> bool:
     return idx_path.exists()
 
 
+def _delete_cfgrib_index_files(grib_path: Path) -> None:
+    """Delete cfgrib-generated index files for this GRIB to avoid stale/collision issues."""
+    try:
+        parent = grib_path.parent
+        # cfgrib typically writes: <grib>.{hash}.idx
+        for idx_file in parent.glob(grib_path.name + ".*.idx"):
+            try:
+                idx_file.unlink()
+            except OSError:
+                pass
+    except Exception:
+        # Never fail the pipeline due to cleanup
+        pass
+
+
 # --- wgrib2 helpers ---
 
 def _wgrib2_available() -> bool:
@@ -79,15 +95,19 @@ def _wgrib2_available() -> bool:
 
 def _extract_grib_with_wgrib2(*, src: Path, search: str, dst: Path) -> None:
     """Extract a subset GRIB using wgrib2 -match into dst."""
-    # Ensure parent exists
     dst.parent.mkdir(parents=True, exist_ok=True)
 
-    # Remove any stale/partial output
-    try:
-        if dst.exists():
-            dst.unlink()
-    except OSError:
-        pass
+    # Write to a temp file and atomically replace to avoid readers seeing partial output.
+    tmp_dst = dst.with_name(dst.name + ".tmp")
+
+    # Remove any stale/partial outputs (including stale cfgrib idx files)
+    for p in (dst, tmp_dst):
+        try:
+            if p.exists():
+                p.unlink()
+        except OSError:
+            pass
+        _delete_cfgrib_index_files(p)
 
     cmd = [
         "wgrib2",
@@ -95,17 +115,33 @@ def _extract_grib_with_wgrib2(*, src: Path, search: str, dst: Path) -> None:
         "-match",
         search,
         "-grib",
-        str(dst),
+        str(tmp_dst),
     ]
 
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
+        # Best-effort cleanup
+        try:
+            if tmp_dst.exists():
+                tmp_dst.unlink()
+        except OSError:
+            pass
         raise RuntimeError(
             f"wgrib2 extract failed (code={proc.returncode}): {proc.stderr.strip() or proc.stdout.strip()}"
         )
 
-    if not dst.exists() or dst.stat().st_size == 0:
-        raise RuntimeError(f"wgrib2 extract produced empty output: {dst}")
+    if not tmp_dst.exists() or tmp_dst.stat().st_size == 0:
+        raise RuntimeError(f"wgrib2 extract produced empty output: {tmp_dst}")
+
+    # Optional sanity check: if the subset is unexpectedly huge, the match is too broad.
+    # (A single-field subset should be far smaller than a full HRRR file.)
+    if tmp_dst.stat().st_size > 50 * 1024 * 1024:
+        raise RuntimeError(
+            f"wgrib2 subset appears too large ({tmp_dst.stat().st_size} bytes); match likely too broad: {search}"
+        )
+
+    os.replace(tmp_dst, dst)
+    _delete_cfgrib_index_files(dst)
 
 
 def _format_run_id(run_dt: datetime | None, run: str) -> str:
@@ -205,6 +241,7 @@ def fetch_hrrr_grib(
     expected_path = target_dir / expected_filename
 
     if expected_path.exists() and expected_path.stat().st_size > 0:
+        _delete_cfgrib_index_files(expected_path)
         logger.info("Using cached GRIB: %s", expected_path)
         return expected_path
 
@@ -270,11 +307,13 @@ def fetch_hrrr_grib(
     if search and 'downloaded_full' in locals() and downloaded_full:
         if expected_path.exists() and expected_path.stat().st_size > 0:
             # Another worker may have already produced it.
+            _delete_cfgrib_index_files(expected_path)
             logger.info("Using cached GRIB: %s", expected_path)
             return expected_path
 
         logger.info("Extracting subset GRIB with wgrib2: src=%s -> dst=%s match=%s", path, expected_path, search)
         _extract_grib_with_wgrib2(src=path, search=search, dst=expected_path)
+        _delete_cfgrib_index_files(expected_path)
         logger.info("Cached GRIB: %s", expected_path)
         return expected_path
 
@@ -292,6 +331,8 @@ def fetch_hrrr_grib(
         except OSError:
             shutil.move(str(path), str(expected_path))
 
+        _delete_cfgrib_index_files(expected_path)
+
         parent = path.parent
         while parent != target_dir and parent.exists():
             if any(parent.iterdir()):
@@ -302,6 +343,7 @@ def fetch_hrrr_grib(
     if not expected_path.exists() or expected_path.stat().st_size == 0:
         raise UpstreamNotReady(f"Expected GRIB2 not found after download: {expected_path}")
 
+    _delete_cfgrib_index_files(expected_path)
     logger.info("Cached GRIB: %s", expected_path)
     return expected_path
 
