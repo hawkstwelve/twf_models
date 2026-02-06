@@ -362,6 +362,8 @@ def _encode_radar_ptype_combo(
     breaks: dict[str, dict[str, int]] = {}
     color_offset = 0
 
+    ptype_scale: dict[str, str] = {}
+
     # Match V1 p-type selection: sanitize to [0,1], pick argmax winner, and require
     # a minimum confidence to avoid washed overlays from tiny non-zero values.
     type_thresh = 0.10
@@ -370,6 +372,13 @@ def _encode_radar_ptype_combo(
         comp_key = type_to_component[ptype]
         comp_vals = np.asarray(ptype_values[comp_key], dtype=np.float32)
         comp_vals = np.where(np.isfinite(comp_vals), comp_vals, 0.0)
+        # Some upstream fields can be encoded as percent 0..100 instead of fraction 0..1.
+        max_val = float(np.max(comp_vals)) if comp_vals.size else 0.0
+        if max_val > 1.01 and max_val <= 100.0:
+            comp_vals = comp_vals / 100.0
+            ptype_scale[ptype] = "percent_to_fraction"
+        else:
+            ptype_scale[ptype] = "fraction"
         comp_vals = np.where((comp_vals >= 0.0) & (comp_vals <= 1.0), comp_vals, 0.0)
         stack.append(comp_vals)
     mask_stack = np.stack(stack, axis=0)
@@ -404,6 +413,7 @@ def _encode_radar_ptype_combo(
         "ptype_blend": "winner_argmax_threshold",
         "ptype_threshold": type_thresh,
         "refl_min_dbz": 10.0,
+        "ptype_scale": ptype_scale,
     }
     return byte_band, alpha, meta
 
