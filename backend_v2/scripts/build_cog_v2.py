@@ -33,6 +33,7 @@ from app.services.grid import detect_latlon_names, normalize_latlon_coords
 EPS = 1e-9
 logger = logging.getLogger(__name__)
 TWF_REFC_MAX_DBZ = float(os.environ.get("TWF_REFC_MAX_DBZ", "0"))
+TWF_RADAR_PTYPE_DEBUG = os.environ.get("TWF_RADAR_PTYPE_DEBUG", "0").strip() == "1"
 
 
 def get_plugin_and_var(model_id: str, var_id: str) -> tuple[ModelPlugin, VarSpec]:
@@ -359,58 +360,61 @@ def _encode_radar_ptype_combo(
 
     finite_count = int(np.count_nonzero(finite_refl))
     total_count = int(refl.size)
-    if finite_count > 0:
-        finite_vals = refl[finite_refl]
-        p50, p90, p99 = np.nanpercentile(finite_vals, [50, 90, 99])
-        logger.info(
-            "radar_ptype_combo refl raw stats: min=%.2f p50=%.2f p90=%.2f p99=%.2f max=%.2f finite=%s/%s",
-            float(np.nanmin(finite_vals)),
-            float(p50),
-            float(p90),
-            float(p99),
-            float(np.nanmax(finite_vals)),
-            finite_count,
-            total_count,
-        )
-    else:
-        logger.info(
-            "radar_ptype_combo refl raw stats: min=nan p50=nan p90=nan p99=nan max=nan finite=%s/%s",
-            finite_count,
-            total_count,
-        )
-
-    refl = np.where(refl > 0.0, refl, np.nan)
-    finite_after_clear = np.isfinite(refl)
-    if np.any(finite_after_clear):
-        logger.info(
-            "radar_ptype_combo refl after clear-air mask: min=%.2f max=%.2f finite=%s/%s",
-            float(np.nanmin(refl[finite_after_clear])),
-            float(np.nanmax(refl[finite_after_clear])),
-            int(np.count_nonzero(finite_after_clear)),
-            total_count,
-        )
-    else:
-        logger.info(
-            "radar_ptype_combo refl after clear-air mask: min=nan max=nan finite=0/%s",
-            total_count,
-        )
-
-    if TWF_REFC_MAX_DBZ > 0:
-        refl = np.where(refl <= TWF_REFC_MAX_DBZ, refl, np.nan)
-        finite_after_clamp = np.isfinite(refl)
-        if np.any(finite_after_clamp):
+    if TWF_RADAR_PTYPE_DEBUG:
+        if finite_count > 0:
+            finite_vals = refl[finite_refl]
+            p50, p90, p99 = np.nanpercentile(finite_vals, [50, 90, 99])
             logger.info(
-                "radar_ptype_combo refl after max clamp: min=%.2f max=%.2f finite=%s/%s",
-                float(np.nanmin(refl[finite_after_clamp])),
-                float(np.nanmax(refl[finite_after_clamp])),
-                int(np.count_nonzero(finite_after_clamp)),
+                "radar_ptype_combo refl raw stats: min=%.2f p50=%.2f p90=%.2f p99=%.2f max=%.2f finite=%s/%s",
+                float(np.nanmin(finite_vals)),
+                float(p50),
+                float(p90),
+                float(p99),
+                float(np.nanmax(finite_vals)),
+                finite_count,
                 total_count,
             )
         else:
             logger.info(
-                "radar_ptype_combo refl after max clamp: min=nan max=nan finite=0/%s",
+                "radar_ptype_combo refl raw stats: min=nan p50=nan p90=nan p99=nan max=nan finite=%s/%s",
+                finite_count,
                 total_count,
             )
+
+    refl = np.where(refl > 0.0, refl, np.nan)
+    finite_after_clear = np.isfinite(refl)
+    if TWF_RADAR_PTYPE_DEBUG:
+        if np.any(finite_after_clear):
+            logger.info(
+                "radar_ptype_combo refl after clear-air mask: min=%.2f max=%.2f finite=%s/%s",
+                float(np.nanmin(refl[finite_after_clear])),
+                float(np.nanmax(refl[finite_after_clear])),
+                int(np.count_nonzero(finite_after_clear)),
+                total_count,
+            )
+        else:
+            logger.info(
+                "radar_ptype_combo refl after clear-air mask: min=nan max=nan finite=0/%s",
+                total_count,
+            )
+
+    if TWF_REFC_MAX_DBZ > 0:
+        refl = np.where(refl <= TWF_REFC_MAX_DBZ, refl, np.nan)
+        finite_after_clamp = np.isfinite(refl)
+        if TWF_RADAR_PTYPE_DEBUG:
+            if np.any(finite_after_clamp):
+                logger.info(
+                    "radar_ptype_combo refl after max clamp: min=%.2f max=%.2f finite=%s/%s",
+                    float(np.nanmin(refl[finite_after_clamp])),
+                    float(np.nanmax(refl[finite_after_clamp])),
+                    int(np.count_nonzero(finite_after_clamp)),
+                    total_count,
+                )
+            else:
+                logger.info(
+                    "radar_ptype_combo refl after max clamp: min=nan max=nan finite=0/%s",
+                    total_count,
+                )
 
     flat_colors: list[str] = []
     breaks: dict[str, dict[str, int]] = {}
@@ -446,46 +450,43 @@ def _encode_radar_ptype_combo(
     has_type_info = np.max(mask_stack, axis=0) >= type_thresh
     idx_map = {ptype: idx for idx, ptype in enumerate(type_order)}
 
-    # Keep rain footprint aligned with standalone refc (>={rain min}), then recolor
-    # winter types using their own first non-white dBZ bin to preserve lighter snow/sleet edges.
+    # Paint refc-only base layer first, then recolor by p-type.
     rain_levels = list(RADAR_CONFIG["rain"]["levels"])
-    # Render weaker rain echoes (>=4 dBZ) in the first visible rain color to avoid
-    # apparent "holes" when blending p-type into refc.
-    rain_min_dbz = 4.0
-    refl_visible_rain = np.isfinite(refl) & (refl >= rain_min_dbz)
-    rain_visible_count = int(np.count_nonzero(refl_visible_rain))
-    rain_visible_pct = (rain_visible_count / total_count * 100.0) if total_count else 0.0
-    logger.info(
-        "radar_ptype_combo rain footprint: min_dbz=%.2f visible=%s/%s (%.2f%%)",
-        rain_min_dbz,
-        rain_visible_count,
-        total_count,
-        rain_visible_pct,
-    )
+    base_mask = np.isfinite(refl) & (refl >= -10.0) & (refl <= 80.0)
     rain_colors = list(RADAR_CONFIG["rain"]["colors"])
     rain_offset = int(breaks["rain"]["offset"])
-    if np.any(refl_visible_rain):
+    if np.any(base_mask):
         rain_bins = np.digitize(refl, rain_levels, right=False) - 1
         rain_bins = np.clip(rain_bins, 0, len(rain_colors) - 1).astype(np.uint8)
-        # Rain palette index 0 is white (legacy under-echo color). Promote to index 1
-        # for visible rain so low-end echoes are not visually lost.
-        rain_bins = np.maximum(rain_bins, 1).astype(np.uint8)
-        byte_band[refl_visible_rain] = (rain_offset + rain_bins[refl_visible_rain]).astype(np.uint8)
-        alpha[refl_visible_rain] = 255
+        byte_band[base_mask] = (rain_offset + rain_bins[base_mask]).astype(np.uint8)
+        alpha[base_mask] = 255
+    base_painted_count = int(np.count_nonzero(base_mask))
+    if TWF_RADAR_PTYPE_DEBUG:
+        logger.info(
+            "radar_ptype_combo base refc paint: painted=%s/%s",
+            base_painted_count,
+            total_count,
+        )
+
+    recolor_counts: dict[str, int] = {}
+    skipped_recolor: dict[str, int] = {}
 
     for ptype in ("snow", "sleet", "frzr"):
         cfg = RADAR_CONFIG[ptype]
         levels = list(cfg["levels"])
         colors = list(cfg["colors"])
         offset = int(breaks[ptype]["offset"])
-        ptype_min_dbz = float(levels[1] if len(levels) > 1 else levels[0])
+        ptype_min_dbz = float(levels[0] if len(levels) > 0 else 0.0)
         type_mask = has_type_info & (winner_idx == idx_map[ptype])
         visible = np.isfinite(refl) & type_mask & (refl >= ptype_min_dbz)
+        skipped = np.isfinite(refl) & type_mask & (refl < ptype_min_dbz)
+        skipped_recolor[ptype] = int(np.count_nonzero(skipped))
         if np.any(visible):
             bins = np.digitize(refl, levels, right=False) - 1
             bins = np.clip(bins, 0, len(colors) - 1).astype(np.uint8)
             byte_band[visible] = (offset + bins[visible]).astype(np.uint8)
             alpha[visible] = 255
+        recolor_counts[ptype] = int(np.count_nonzero(visible))
 
     meta = {
         "var_key": requested_var,
@@ -509,6 +510,10 @@ def _encode_radar_ptype_combo(
         "ptype_noinfo_fallback": "rain",
         "ptype_scale": ptype_scale,
     }
+    if TWF_RADAR_PTYPE_DEBUG:
+        meta["base_painted_count"] = base_painted_count
+        meta["recolor_counts"] = recolor_counts
+        meta["skipped_recolor_due_to_gate"] = skipped_recolor
     return byte_band, alpha, meta
 
 
