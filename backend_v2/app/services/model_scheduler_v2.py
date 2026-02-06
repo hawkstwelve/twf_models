@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import concurrent.futures
 import json
 import logging
@@ -188,6 +189,27 @@ def _workers() -> int:
 def _build_script_path() -> Path:
     backend_v2_dir = Path(__file__).resolve().parents[2]
     return backend_v2_dir / "scripts" / "build_cog_v2.py"
+
+
+def _resolve_regions_for_cli(model_id: str, out_root: Path, region: str | None) -> list[str]:
+    model_root = out_root / model_id
+    if not model_root.exists() or not model_root.is_dir():
+        raise ConfigError(f"--region is required. Model data root not found: {model_root}")
+    regions = sorted(p.name for p in model_root.iterdir() if p.is_dir())
+    if region:
+        if region not in regions:
+            raise ConfigError(f"Unknown region: {region}")
+        return [region]
+    if not regions:
+        raise ConfigError(f"--region is required. Found regions: (none)")
+    return [
+        _raise_region_required(regions)
+    ]
+
+
+def _raise_region_required(regions: list[str]) -> str:
+    joined = ",".join(regions)
+    raise ConfigError(f"--region is required. Found regions: {joined}")
 
 
 def _task_output_path(
@@ -429,8 +451,16 @@ def _prune_upstream_log_cache(now_ts: float) -> None:
         _UPSTREAM_LOG_CACHE.pop(key, None)
 
 
-def run_scheduler(*, model: str, region: str, vars: list[str], primary_vars: list[str]) -> int:
-    out_root = _data_root()
+def run_scheduler(
+    *,
+    model: str,
+    region: str,
+    vars: list[str],
+    primary_vars: list[str],
+    out_root: Path | None = None,
+    workers: int | None = None,
+) -> int:
+    out_root = out_root or _data_root()
     try:
         plugin = get_model(model)
     except Exception as exc:
@@ -443,7 +473,7 @@ def run_scheduler(*, model: str, region: str, vars: list[str], primary_vars: lis
     probe_var = primary_vars[0] if primary_vars else plugin.normalize_var_id(PRIMARY_VAR_DEFAULT)
     latest_path = _latest_pointer_path(out_root, model, region)
 
-    max_workers = _workers()
+    max_workers = workers if workers is not None else _workers()
     active_run_id: str | None = None
     active_cycle_hour: int | None = None
     newest_run_id: str | None = None
@@ -703,7 +733,7 @@ def run_scheduler(*, model: str, region: str, vars: list[str], primary_vars: lis
                 active_run_id,
             )
 
-            caught_up = pending == 0 and completed == total and active_run_id == newest_run_id
+            caught_up = len(pending) == 0 and completed == total and active_run_id == newest_run_id
             base_sleep, window_label = compute_sleep_seconds(
                 now_utc,
                 caught_up=caught_up,
@@ -737,3 +767,54 @@ def run_self_test() -> int:
         path = Path(sample)
         print(f"{sample} -> {_derive_run_id_from_grib_path(path)}")
     return 0
+
+
+def _parse_args(argv: list[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run the V2 model scheduler.")
+    parser.add_argument("--model", type=str, required=True)
+    parser.add_argument("--region", type=str, default=None)
+    parser.add_argument("--vars", type=str, default=VAR_DEFAULTS)
+    parser.add_argument("--primary-vars", type=str, default=PRIMARY_VAR_DEFAULT)
+    parser.add_argument("--data-root", type=str, default=None)
+    parser.add_argument("--workers", type=int, default=None)
+    parser.add_argument("--self-test", action="store_true")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    args = _parse_args(argv)
+    if args.self_test:
+        return run_self_test()
+
+    out_root = Path(args.data_root).resolve() if args.data_root else _data_root()
+
+    try:
+        region_list = _resolve_regions_for_cli(args.model, out_root, args.region)
+    except (ConfigError, RunResolutionError) as exc:
+        logger.error("Scheduler configuration error: %s", exc)
+        return 1
+
+    vars_list = parse_vars(args.vars)
+    primary_list = parse_vars(args.primary_vars)
+
+    region = region_list[0]
+    try:
+        return run_scheduler(
+            model=args.model,
+            region=region,
+            vars=vars_list,
+            primary_vars=primary_list,
+            out_root=out_root,
+            workers=args.workers,
+        )
+    except (ConfigError, RunResolutionError) as exc:
+        logger.error("Scheduler failed for region=%s: %s", region, exc)
+        return 1
+    except KeyboardInterrupt:
+        logger.info("Scheduler shutdown requested")
+        return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
