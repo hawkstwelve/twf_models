@@ -48,5 +48,5 @@ GFS_MODEL = GFSPlugin(
     name="GFS",
     regions=GFS_REGIONS,
     vars=GFS_VARS,
-    product="sfc",
+    product="pgrb2.0p25",
 )
