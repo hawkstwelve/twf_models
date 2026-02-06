@@ -452,6 +452,7 @@ def _encode_radar_ptype_combo(
 
     # Paint refc-only base layer first, then recolor by p-type.
     rain_levels = list(RADAR_CONFIG["rain"]["levels"])
+    rain_min_dbz = float(rain_levels[0] if len(rain_levels) > 0 else 0.0)
     base_mask = np.isfinite(refl) & (refl >= -10.0) & (refl <= 80.0)
     rain_colors = list(RADAR_CONFIG["rain"]["colors"])
     rain_offset = int(breaks["rain"]["offset"])
@@ -503,9 +504,9 @@ def _encode_radar_ptype_combo(
         "refl_min_dbz": rain_min_dbz,
         "ptype_min_dbz": {
             "rain": rain_min_dbz,
-            "snow": float(RADAR_CONFIG["snow"]["levels"][1]),
-            "sleet": float(RADAR_CONFIG["sleet"]["levels"][1]),
-            "frzr": float(RADAR_CONFIG["frzr"]["levels"][1]),
+            "snow": float(RADAR_CONFIG["snow"]["levels"][0]),
+            "sleet": float(RADAR_CONFIG["sleet"]["levels"][0]),
+            "frzr": float(RADAR_CONFIG["frzr"]["levels"][0]),
         },
         "ptype_noinfo_fallback": "rain",
         "ptype_scale": ptype_scale,
