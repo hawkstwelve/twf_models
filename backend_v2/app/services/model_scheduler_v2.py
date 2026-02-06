@@ -186,20 +186,21 @@ def _workers() -> int:
     return value
 
 
-def _build_script_path() -> Path:
+def _build_script_path_for_model(model_id: str) -> Path:
     backend_v2_dir = Path(__file__).resolve().parents[2]
+    if model_id == "gfs":
+        return backend_v2_dir / "scripts" / "gfs_build_cog.py"
     return backend_v2_dir / "scripts" / "build_cog_v2.py"
 
 
 def _resolve_regions_for_cli(model_id: str, out_root: Path, region: str | None) -> list[str]:
+    if region:
+        return [region]
+
     model_root = out_root / model_id
     if not model_root.exists() or not model_root.is_dir():
         raise ConfigError(f"--region is required. Model data root not found: {model_root}")
     regions = sorted(p.name for p in model_root.iterdir() if p.is_dir())
-    if region:
-        if region not in regions:
-            raise ConfigError(f"Unknown region: {region}")
-        return [region]
     if not regions:
         raise ConfigError(f"--region is required. Found regions: (none)")
     return [
@@ -274,6 +275,18 @@ def _should_promote_latest(
             if path.exists():
                 return True
     return False
+
+
+def _promotion_fhs_for_cycle(plugin, cycle_hour: int | None) -> list[int]:
+    if cycle_hour is None:
+        return [0, 1, 2]
+    try:
+        fhs = list(plugin.target_fhs(cycle_hour))
+    except Exception:
+        return [0, 1, 2]
+    if not fhs:
+        return [0, 1, 2]
+    return fhs[: min(3, len(fhs))]
 
 
 def _is_under_root(path: Path, root: Path) -> bool:
@@ -467,7 +480,9 @@ def run_scheduler(
         raise ConfigError(f"Unknown model: {model}") from exc
     if plugin.get_region(region) is None:
         raise ConfigError(f"Unknown region: {region}")
-    script_path = _build_script_path()
+    script_path = _build_script_path_for_model(model)
+    if not script_path.exists():
+        raise ConfigError(f"Build script not found for model={model}: {script_path}")
     vars_to_build = _dedupe_preserve_order([plugin.normalize_var_id(v) for v in vars])
     primary_vars = _dedupe_preserve_order([plugin.normalize_var_id(v) for v in primary_vars])
     probe_var = primary_vars[0] if primary_vars else plugin.normalize_var_id(PRIMARY_VAR_DEFAULT)
@@ -624,13 +639,16 @@ def run_scheduler(
                             pending.append((var, fh))
 
             latest_pointer_run = _read_latest_pointer(latest_path)
+            newest_promotion_fhs = _promotion_fhs_for_cycle(plugin, newest_cycle_hour)
+            active_promotion_fhs = _promotion_fhs_for_cycle(plugin, active_cycle_hour)
+
             if _should_promote_latest(
                 out_root,
                 model,
                 region,
                 newest_run_id,
                 primary_vars,
-                fhs=[0, 1, 2],
+                fhs=newest_promotion_fhs,
             ):
                 if latest_pointer_run != newest_run_id:
                     _write_latest_pointer(latest_path, newest_run_id)
@@ -641,7 +659,7 @@ def run_scheduler(
                 region,
                 active_run_id,
                 primary_vars,
-                fhs=[0, 1, 2],
+                fhs=active_promotion_fhs,
             ):
                 if latest_pointer_run != active_run_id:
                     _write_latest_pointer(latest_path, active_run_id)
