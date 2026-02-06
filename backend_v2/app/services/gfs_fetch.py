@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import shutil
 import time
@@ -15,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 IDX_FALLBACK_RATE_SECONDS = 300
 _IDX_FALLBACK_LOG_CACHE: dict[tuple[str, int], float] = {}
+PROBE_TIMEOUT_SECONDS = 10
 
 
 class UpstreamNotReady(RuntimeError):
@@ -88,6 +90,63 @@ def _log_idx_missing(run_id: str, fh: int) -> None:
     logger.info("IDX missing; deferring subset: run=%s fh=%02d", run_id, fh)
 
 
+def _select_herbie_search(selectors: object) -> str | None:
+    try:
+        values = list(getattr(selectors, "search", []))
+    except AttributeError:
+        return None
+    if not values:
+        return None
+    if len(values) == 1:
+        return values[0]
+    return "|".join(values)
+
+
+def _resolve_var_selectors(model_id: str, variable: str | None) -> object:
+    if not variable:
+        from app.models.base import VarSelectors
+
+        return VarSelectors()
+
+    from app.models.base import VarSelectors
+    from app.models.registry import MODEL_REGISTRY
+    from app.services.variable_registry import herbie_search_for, normalize_api_variable
+
+    model = MODEL_REGISTRY.get(model_id)
+    if model is not None:
+        var_spec = model.get_var(normalize_api_variable(variable))
+        if var_spec is not None:
+            return var_spec.selectors
+
+    fallback_search = herbie_search_for(variable)
+    if fallback_search:
+        return VarSelectors(search=[fallback_search])
+    return VarSelectors()
+
+
+def _probe_candidate(
+    candidate: datetime,
+    *,
+    model: str,
+    product: str,
+    fh: int,
+    timeout_seconds: int,
+) -> Herbie | None:
+    def _build() -> Herbie:
+        return Herbie(candidate, model=model, product=product, fxx=fh)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(_build)
+        try:
+            H = future.result(timeout=timeout_seconds)
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            return None
+        if H.grib:
+            return H
+    return None
+
+
 def fetch_gfs_grib(
     *,
     run: str,
@@ -98,10 +157,14 @@ def fetch_gfs_grib(
     search_override: str | None = None,
     cache_dir: Path | None = None,
 ) -> GribFetchResult:
+    """Example: fetch_grib(model="gfs", region="conus", run="latest", fh=0, var="tmp2m")."""
     base_dir = cache_dir or default_gfs_cache_dir()
     run_dt = _parse_run_datetime(run)
 
     search = search_override
+    if not search:
+        selectors = _resolve_var_selectors(model, variable)
+        search = _select_herbie_search(selectors)
     if not search:
         raise UpstreamNotReady("Subset search required for GFS fetch")
 
@@ -110,8 +173,14 @@ def fetch_gfs_grib(
         herbie = None
         for i in range(0, 12):
             candidate = now - timedelta(hours=i)
-            H = Herbie(candidate, model=model, product=product, fxx=fh)
-            if H.grib:
+            H = _probe_candidate(
+                candidate,
+                model=model,
+                product=product,
+                fh=fh,
+                timeout_seconds=PROBE_TIMEOUT_SECONDS,
+            )
+            if H is not None:
                 herbie = H
                 run_dt = H.date
                 break
