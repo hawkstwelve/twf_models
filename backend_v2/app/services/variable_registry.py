@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 VARIABLE_ALIASES: dict[str, str] = {
     "tmp2m": "t2m",
     "2t": "t2m",
+    "cref": "refc",
     "ugrd10m": "10u",
     "vgrd10m": "10v",
 }
@@ -38,6 +39,10 @@ VARIABLE_SELECTORS: dict[str, dict[str, Any]] = {
         "typeOfLevel": "heightAboveGround",
         "level": 10,
     },
+    "refc": {
+        "cfVarName": "refc",
+        "shortName": "refc",
+    },
 }
 
 HERBIE_SEARCH: dict[str, str] = {
@@ -45,6 +50,7 @@ HERBIE_SEARCH: dict[str, str] = {
     "prate": ":PRATE:surface:",
     "10u": ":UGRD:10 m above ground:",
     "10v": ":VGRD:10 m above ground:",
+    "refc": ":REFC:",
     "wspd10m": ":UGRD:10 m above ground:|:VGRD:10 m above ground:",
 }
 
@@ -52,6 +58,7 @@ GFS_HERBIE_SEARCH: dict[str, str] = {
     "t2m": ":TMP:2 m above ground:",
     "10u": ":UGRD:10 m above ground:",
     "10v": ":VGRD:10 m above ground:",
+    "refc": ":REFC:",
     "wspd10m": ":UGRD:10 m above ground:|:VGRD:10 m above ground:",
 }
 

@@ -38,7 +38,7 @@ def test_wspd10m_is_continuous_type() -> None:
 
 def test_display_metadata_present() -> None:
     """Verify display_name and legend_title are present for key vars."""
-    for var_key in ["tmp2m", "wspd10m"]:
+    for var_key in ["tmp2m", "wspd10m", "refc"]:
         spec = VAR_SPECS[var_key]
         assert "display_name" in spec, f"{var_key} missing display_name"
         assert "legend_title" in spec, f"{var_key} missing legend_title"
@@ -76,3 +76,12 @@ def test_encode_tmp2m_metadata() -> None:
     
     # tmp2m should not have legend_stops (continuous smooth legend)
     assert "legend_stops" not in meta
+
+
+def test_encode_refc_metadata() -> None:
+    """Verify refc encoding includes reflectivity display metadata."""
+    values = np.array([[10.0, 20.0], [30.0, 40.0]])
+    _, _, meta = encode_to_byte_and_alpha(values, "refc")
+
+    assert meta["display_name"] == "Sim Composite Reflectivity"
+    assert meta["legend_title"] == "Reflectivity (dBZ)"

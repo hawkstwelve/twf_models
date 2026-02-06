@@ -26,9 +26,11 @@ export const DEFAULTS = {
 export const VARIABLE_LABELS = {
   tmp2m: "Surface Temperature",
   wspd10m: "Wind Speed",
+  refc: "Sim Composite Reflectivity",
 };
 
 export const VARIABLES = [
   { id: "tmp2m", label: "Surface Temperature" },
   { id: "wspd10m", label: "Wind Speed" },
+  { id: "refc", label: "Sim Composite Reflectivity" },
 ];

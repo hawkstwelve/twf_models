@@ -166,8 +166,8 @@ def fetch_grib(
 
     product = plugin.product
 
-    if var_spec.id == "tmp2m":
-        fetch_var = _resolve_upstream_var(var_spec, "t2m")
+    if var_spec.id != "wspd10m":
+        fetch_var = _resolve_upstream_var(var_spec, var_spec.id)
         search = _select_search(var_spec.selectors)
         if model == "gfs":
             try:
@@ -269,5 +269,3 @@ def fetch_grib(
             grib_path=None,
             component_paths=component_paths,
         )
-
-    raise HTTPException(status_code=501, detail=f"Fetch not implemented for var: {var}")

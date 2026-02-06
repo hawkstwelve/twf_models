@@ -57,6 +57,7 @@ function applyVariableLabels(items) {
   const fallbackLabels = {
     "tmp2m": "Surface Temperature",
     "wspd10m": "Wind Speed",
+    "refc": "Sim Composite Reflectivity",
     "precip_rain": "Rain",
     "precip_snow": "Snow",
     "precip_sleet": "Sleet",
@@ -129,6 +130,8 @@ export function applyFramesToSlider(frames, currentValue) {
   }
   const normalized = normalizeFrames(frames);
   if (!normalized.length) {
+    delete fhSlider.dataset.mode;
+    delete fhSlider.dataset.frames;
     fhSlider.min = DEFAULTS.fhStart.toString();
     fhSlider.max = DEFAULTS.fhEnd.toString();
     fhSlider.step = DEFAULTS.fhStep.toString();
@@ -136,14 +139,15 @@ export function applyFramesToSlider(frames, currentValue) {
     fhDisplay.textContent = `FH: ${DEFAULTS.fhStart}`;
     return;
   }
-  const min = normalized[0];
-  const max = normalized[normalized.length - 1];
-  fhSlider.min = min.toString();
-  fhSlider.max = max.toString();
-  fhSlider.step = DEFAULTS.fhStep.toString();
-  const value = Number.isFinite(currentValue) ? currentValue : min;
-  fhSlider.value = value.toString();
-  fhDisplay.textContent = `FH: ${value}`;
+  const selectedFh = pickNearestFh(normalized, Number.isFinite(currentValue) ? currentValue : normalized[0]);
+  const selectedIndex = Math.max(0, normalized.indexOf(selectedFh));
+  fhSlider.dataset.mode = "index";
+  fhSlider.dataset.frames = JSON.stringify(normalized);
+  fhSlider.min = "0";
+  fhSlider.max = Math.max(0, normalized.length - 1).toString();
+  fhSlider.step = "1";
+  fhSlider.value = selectedIndex.toString();
+  fhDisplay.textContent = `FH: ${selectedFh}`;
 }
 
 function pickDefaultValue(items, preferred) {
@@ -178,6 +182,19 @@ function getSliderValue() {
   const fhSlider = document.getElementById("fh-slider");
   if (!fhSlider) {
     return null;
+  }
+  if (fhSlider.dataset.mode === "index") {
+    try {
+      const frames = JSON.parse(fhSlider.dataset.frames || "[]");
+      const index = Number(fhSlider.value);
+      if (!Number.isInteger(index) || index < 0 || index >= frames.length) {
+        return null;
+      }
+      const fh = Number(frames[index]);
+      return Number.isFinite(fh) ? fh : null;
+    } catch (_) {
+      return null;
+    }
   }
   const value = Number(fhSlider.value);
   return Number.isFinite(value) ? value : null;
@@ -440,10 +457,24 @@ export async function initControls({
 
   if (fhSlider && fhDisplay) {
     fhSlider.addEventListener("input", (event) => {
-      const value = Number(event.target.value);
-      fhDisplay.textContent = `FH: ${value}`;
-      currentFh = value;
-      onForecastHourChange(value);
+      let nextFh = Number(event.target.value);
+      if (fhSlider.dataset.mode === "index") {
+        try {
+          const frames = JSON.parse(fhSlider.dataset.frames || "[]");
+          const index = Number(event.target.value);
+          if (Number.isInteger(index) && index >= 0 && index < frames.length) {
+            nextFh = Number(frames[index]);
+          }
+        } catch (_) {
+          nextFh = Number(event.target.value);
+        }
+      }
+      if (!Number.isFinite(nextFh)) {
+        return;
+      }
+      fhDisplay.textContent = `FH: ${nextFh}`;
+      currentFh = nextFh;
+      onForecastHourChange(nextFh);
     });
   }
 

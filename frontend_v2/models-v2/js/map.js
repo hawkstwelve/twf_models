@@ -1,6 +1,6 @@
-import { API_BASE, DEFAULTS } from "./config.js?v=20260204-2115";
-import { applyFramesToSlider, initControls } from "./controls.js?v=20260204-2115";
-import { buildTileUrl, createBaseLayer, createLabelLayer, createOverlayLayer } from "./layers.js?v=20260204-2115";
+import { API_BASE, DEFAULTS } from "./config.js?v=20260206-1735";
+import { applyFramesToSlider, initControls } from "./controls.js?v=20260206-1735";
+import { buildTileUrl, createBaseLayer, createLabelLayer, createOverlayLayer } from "./layers.js?v=20260206-1735";
 
 console.debug("modules loaded ok");
 
@@ -121,7 +121,16 @@ function updateSlider(value) {
   if (!slider || !display) {
     return;
   }
-  slider.value = value.toString();
+  if (slider.dataset.mode === "index" && Array.isArray(state.frames) && state.frames.length) {
+    const idx = state.frames.indexOf(value);
+    if (idx >= 0) {
+      slider.value = idx.toString();
+    } else {
+      slider.value = "0";
+    }
+  } else {
+    slider.value = value.toString();
+  }
   display.textContent = `FH: ${value}`;
 }
 

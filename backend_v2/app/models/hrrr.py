@@ -19,6 +19,8 @@ class HRRRPlugin(BaseModelPlugin):
         normalized = normalize_api_variable(var_id)
         if normalized in {"t2m", "tmp2m", "2t"}:
             return "tmp2m"
+        if normalized in {"refc", "cref"}:
+            return "refc"
         if normalized == "wspd10m":
             return "wspd10m"
         return normalized
@@ -70,6 +72,16 @@ HRRR_VARS: dict[str, VarSpec] = {
         ),
         derived=True,
         derive="wspd10m",
+    ),
+    "refc": VarSpec(
+        id="refc",
+        name="Sim Composite Reflectivity",
+        selectors=VarSelectors(
+            search=[":REFC:"],
+            hints={
+                "upstream_var": "refc",
+            },
+        ),
     ),
 }
 

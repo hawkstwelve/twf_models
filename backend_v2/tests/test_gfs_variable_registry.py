@@ -32,6 +32,7 @@ def _make_da(
 def test_herbie_search_for_model_gfs() -> None:
     assert herbie_search_for("tmp2m", model="gfs") == ":TMP:2 m above ground:"
     assert herbie_search_for("10u", model="gfs") == ":UGRD:10 m above ground:"
+    assert herbie_search_for("refc", model="gfs") == ":REFC:"
     assert herbie_search_for("prate", model="gfs") is None
 
 
@@ -45,6 +46,8 @@ def test_gfs_plugin_normalize_var_id() -> None:
     assert GFS_MODEL.normalize_var_id("t2m") == "tmp2m"
     assert GFS_MODEL.normalize_var_id("2t") == "tmp2m"
     assert GFS_MODEL.normalize_var_id("wspd10m") == "wspd10m"
+    assert GFS_MODEL.normalize_var_id("cref") == "refc"
+    assert GFS_MODEL.normalize_var_id("refc") == "refc"
     assert GFS_MODEL.normalize_var_id("ugrd10m") == "10u"
 
 

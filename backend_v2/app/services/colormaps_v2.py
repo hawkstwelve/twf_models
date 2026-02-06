@@ -297,6 +297,14 @@ VAR_SPECS = {
         "legend_title": "Wind Speed (mph)",
         "legend_stops": WSPD10M_LEGEND_STOPS,
     },
+    "refc": {
+        "type": "discrete",
+        "units": "dBZ",
+        "levels": RADAR_CONFIG["rain"]["levels"],
+        "colors": RADAR_CONFIG["rain"]["colors"],
+        "display_name": "Sim Composite Reflectivity",
+        "legend_title": "Reflectivity (dBZ)",
+    },
 }
 
 _LUT_CACHE: dict[str, np.ndarray] = {}
