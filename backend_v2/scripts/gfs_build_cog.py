@@ -254,9 +254,16 @@ def build_gfs_cog(
                 raise RuntimeError(
                     f"wspd10m component shape mismatch: u_shape={u_da.shape} v_shape={v_da.shape}"
                 )
-            speed = np.hypot(u_da, v_da) * 2.23694
-            da = speed.copy()
-            da.name = "wspd10m"
+            u_vals = np.asarray(u_da.values, dtype=np.float32)
+            v_vals = np.asarray(v_da.values, dtype=np.float32)
+            speed_vals = np.hypot(u_vals, v_vals) * 2.23694
+            coords = {dim: u_da.coords[dim] for dim in u_da.dims if dim in u_da.coords}
+            da = xr.DataArray(
+                speed_vals.astype(np.float32),
+                dims=u_da.dims,
+                coords=coords,
+                name="wspd10m",
+            )
             da.attrs = dict(u_da.attrs)
             da.attrs["GRIB_units"] = "mph"
         else:

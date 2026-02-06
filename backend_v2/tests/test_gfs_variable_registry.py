@@ -96,3 +96,27 @@ def test_gfs_plugin_select_wspd10m_derivation() -> None:
     assert speed.name == "wspd10m"
     assert speed.attrs.get("GRIB_units") == "mph"
     assert np.allclose(speed.values, expected)
+
+
+def test_gfs_plugin_select_wspd10m_ignores_nondim_coord_merge() -> None:
+    u = _make_da(
+        "u_component",
+        3.0,
+        cf_var="u10",
+        short_name="10u",
+        type_of_level="heightAboveGround",
+        level=10,
+    ).assign_coords(step=np.timedelta64(0, "h"))
+    v = _make_da(
+        "v_component",
+        4.0,
+        cf_var="v10",
+        short_name="10v",
+        type_of_level="heightAboveGround",
+        level=10,
+    ).assign_coords(step=np.timedelta64(0, "h"))
+    ds = xr.Dataset({"u_component": u, "v_component": v})
+
+    speed = GFS_MODEL.select_dataarray(ds, "wspd10m")
+    assert speed.name == "wspd10m"
+    assert np.allclose(speed.values, 5.0 * 2.23694)

@@ -112,8 +112,27 @@ class GFSPlugin(BaseModelPlugin):
         if normalized == "wspd10m":
             u_da = self._select_from_spec(ds, "10u")
             v_da = self._select_from_spec(ds, "10v")
-            speed = np.hypot(u_da, v_da) * 2.23694
-            speed_mph = speed.copy()
+            if "time" in u_da.dims:
+                u_da = u_da.isel(time=0)
+            if "time" in v_da.dims:
+                v_da = v_da.isel(time=0)
+            u_da = u_da.squeeze()
+            v_da = v_da.squeeze()
+            if u_da.shape != v_da.shape:
+                raise ValueError(
+                    f"wspd10m component shape mismatch: u_shape={u_da.shape} v_shape={v_da.shape}"
+                )
+
+            u_vals = np.asarray(u_da.values, dtype=np.float32)
+            v_vals = np.asarray(v_da.values, dtype=np.float32)
+            speed_vals = np.hypot(u_vals, v_vals) * 2.23694
+            coords = {dim: u_da.coords[dim] for dim in u_da.dims if dim in u_da.coords}
+            speed_mph = xr.DataArray(
+                speed_vals.astype(np.float32),
+                dims=u_da.dims,
+                coords=coords,
+                name="wspd10m",
+            )
             speed_mph.name = "wspd10m"
             speed_mph.attrs = dict(u_da.attrs)
             speed_mph.attrs["GRIB_units"] = "mph"
