@@ -92,10 +92,7 @@ def _cfgrib_filter_keys(var_spec: VarSpec | None) -> dict:
     if not selectors.filter_by_keys:
         return {}
     filter_keys: dict[str, object] = {}
-    for key in ("typeOfLevel", "level"):
-        if key not in selectors.filter_by_keys:
-            continue
-        value = selectors.filter_by_keys[key]
+    for key, value in selectors.filter_by_keys.items():
         if key == "level":
             try:
                 filter_keys[key] = int(value)
@@ -192,14 +189,28 @@ def _open_cfgrib_dataset(grib_path: object, var_spec: VarSpec | None) -> xr.Data
         return xr.open_dataset(path, engine="cfgrib")
     except Exception as exc:
         message = str(exc)
-        if "multiple values for key" in message or "typeOfLevel" in message:
-            filter_keys = _cfgrib_filter_keys(var_spec)
-            if filter_keys:
-                return xr.open_dataset(
-                    path,
-                    engine="cfgrib",
-                    backend_kwargs={"filter_by_keys": filter_keys},
-                )
+        retry_on_multi_key = "multiple values for key" in message or "multiple values for unique key" in message
+        retry_on_type_hint = "typeOfLevel" in message
+        if retry_on_multi_key or retry_on_type_hint:
+            base_filter_keys = _cfgrib_filter_keys(var_spec)
+            retry_filters: list[dict[str, object]] = []
+            if base_filter_keys:
+                retry_filters.append(dict(base_filter_keys))
+            if retry_on_multi_key and "stepType" not in base_filter_keys:
+                # Categorical p-type fields can contain both instant and avg in one GRIB.
+                for step_type in ("instant", "avg"):
+                    merged = dict(base_filter_keys)
+                    merged["stepType"] = step_type
+                    retry_filters.append(merged)
+            for filter_keys in retry_filters:
+                try:
+                    return xr.open_dataset(
+                        path,
+                        engine="cfgrib",
+                        backend_kwargs={"filter_by_keys": filter_keys},
+                    )
+                except Exception:
+                    continue
         raise
 
 
