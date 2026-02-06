@@ -316,12 +316,7 @@ def fetch_gfs_grib(
 
     try:
         with _requests_guard(timeout_seconds, blocked_hosts):
-            downloaded = herbie.download(
-                search,
-                save_dir=target_dir,
-                subset=True,
-                save_idx=True,
-            )
+            downloaded = herbie.download(search, save_dir=target_dir)
     except Exception as exc:
         message = str(exc)
         if _is_idx_missing_message(message):
