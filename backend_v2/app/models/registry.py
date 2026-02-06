@@ -5,11 +5,13 @@ from typing import Mapping
 from fastapi import HTTPException
 
 from .base import ModelPlugin
+from .gfs import GFS_MODEL
 from .hrrr import HRRR_MODEL
 
 
 MODEL_REGISTRY: dict[str, ModelPlugin] = {
     HRRR_MODEL.id: HRRR_MODEL,
+    GFS_MODEL.id: GFS_MODEL,
 }
 
 
