@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 import logging
+import re
 
 from fastapi import HTTPException
 
@@ -83,6 +84,16 @@ def _not_ready(run: str, reason: Exception | str, path: Path | None = None) -> F
         grib_path=None,
         component_paths=None,
     )
+
+
+RUN_ID_RE = re.compile(r"^(?P<day>\d{8})_(?P<hour>\d{2})z$")
+
+
+def _fetch_run_arg_from_run_id(run_id: str) -> str:
+    match = RUN_ID_RE.match(run_id)
+    if not match:
+        return run_id
+    return f"{match.group('day')}_{match.group('hour')}"
 
 
 def _hint_value(selectors: object, key: str) -> str | None:
@@ -207,13 +218,14 @@ def fetch_grib(
         component_paths: dict[str, Path] = {}
         any_full = False
         components = _resolve_component_vars(var_spec, ("10u", "10v"))
+        gfs_component_run = run
         for component_var in components:
             component_spec = plugin.get_var(component_var)
             search = _select_search(component_spec.selectors) if component_spec else None
             if model == "gfs":
                 try:
                     result = fetch_gfs_grib(
-                        run=run,
+                        run=gfs_component_run,
                         fh=fh,
                         model=model,
                         product=product,
@@ -225,10 +237,13 @@ def fetch_grib(
                 except Exception as exc:
                     if is_gfs_not_ready(exc):
                         known_path = next(iter(component_paths.values()), None)
-                        return _not_ready(run, exc, known_path)
+                        return _not_ready(gfs_component_run, exc, known_path)
                     raise
                 component_paths[component_var] = result.path
                 any_full = any_full or result.is_full_file
+                if run.lower() == "latest":
+                    resolved_run = _normalize_run_id(run, result.path)
+                    gfs_component_run = _fetch_run_arg_from_run_id(resolved_run)
                 continue
             try:
                 result = fetch_hrrr_grib(
