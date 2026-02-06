@@ -156,9 +156,15 @@ def fetch_gfs_grib(
     variable: str | None = None,
     search_override: str | None = None,
     cache_dir: Path | None = None,
+    **kwargs: object,
 ) -> GribFetchResult:
     """Example: fetch_grib(model="gfs", region="conus", run="latest", fh=0, var="tmp2m")."""
     base_dir = cache_dir or default_gfs_cache_dir()
+    timeout_seconds = kwargs.get("timeout", PROBE_TIMEOUT_SECONDS)
+    try:
+        timeout_seconds = int(timeout_seconds) if timeout_seconds is not None else PROBE_TIMEOUT_SECONDS
+    except (TypeError, ValueError):
+        timeout_seconds = PROBE_TIMEOUT_SECONDS
     run_dt = _parse_run_datetime(run)
 
     search = search_override
@@ -178,7 +184,7 @@ def fetch_gfs_grib(
                 model=model,
                 product=product,
                 fh=fh,
-                timeout_seconds=PROBE_TIMEOUT_SECONDS,
+                timeout_seconds=timeout_seconds,
             )
             if H is not None:
                 herbie = H
