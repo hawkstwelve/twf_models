@@ -135,7 +135,7 @@ def test_encode_radar_ptype_combo_prefers_dominant_component() -> None:
 
 def test_encode_radar_ptype_combo_uses_argmax_threshold() -> None:
     refl = np.array([[30.0]], dtype=np.float32)
-    # All masks below threshold should be transparent.
+    # All masks below threshold should fall back to rain colorization.
     rain = np.array([[0.05]], dtype=np.float32)
     snow = np.array([[0.06]], dtype=np.float32)
     sleet = np.array([[0.07]], dtype=np.float32)
@@ -153,11 +153,12 @@ def test_encode_radar_ptype_combo_uses_argmax_threshold() -> None:
         },
     )
 
-    assert int(alpha[0, 0]) == 0
-    assert int(byte_band[0, 0]) == 255
+    assert int(alpha[0, 0]) == 255
+    assert int(byte_band[0, 0]) != 255
     assert meta["ptype_blend"] == "winner_argmax_threshold"
     assert float(meta["ptype_threshold"]) == 0.10
     assert float(meta["refl_min_dbz"]) == 10.0
+    assert meta["ptype_noinfo_fallback"] == "rain"
 
 
 def test_encode_radar_ptype_combo_auto_scales_percent_inputs() -> None:

@@ -332,19 +332,6 @@ def _encode_radar_ptype_combo(
     refl_values: np.ndarray,
     ptype_values: dict[str, np.ndarray],
 ) -> tuple[np.ndarray, np.ndarray, dict]:
-    def _binary_dilate(mask: np.ndarray, iterations: int = 1) -> np.ndarray:
-        result = np.asarray(mask, dtype=bool)
-        for _ in range(max(0, int(iterations))):
-            h, w = result.shape
-            padded = np.pad(result, 1, mode="constant", constant_values=False)
-            neighbors = [
-                padded[1 + dy: 1 + dy + h, 1 + dx: 1 + dx + w]
-                for dy in (-1, 0, 1)
-                for dx in (-1, 0, 1)
-            ]
-            result = np.logical_or.reduce(neighbors)
-        return result
-
     if refl_values.ndim != 2:
         raise RuntimeError(f"Expected 2D reflectivity array, got shape={refl_values.shape}")
     for key, values in ptype_values.items():
@@ -403,26 +390,30 @@ def _encode_radar_ptype_combo(
     mask_stack = np.stack(stack, axis=0)
     winner_idx = np.argmax(mask_stack, axis=0)
     has_type_info = np.max(mask_stack, axis=0) >= type_thresh
-    footprint = np.isfinite(refl) & (refl >= 15.0)
     idx_map = {ptype: idx for idx, ptype in enumerate(type_order)}
-    base_masks = {
-        ptype: has_type_info & (winner_idx == idx_map[ptype]) & footprint
-        for ptype in type_order
-    }
 
-    plot_order = ("frzr", "sleet", "snow", "rain")
-    for ptype in plot_order:
+    # Keep reflectivity footprint complete (as refc did), then recolor by p-type where available.
+    refl_visible = np.isfinite(refl) & (refl >= 10.0)
+    rain_levels = list(RADAR_CONFIG["rain"]["levels"])
+    rain_colors = list(RADAR_CONFIG["rain"]["colors"])
+    rain_offset = int(breaks["rain"]["offset"])
+    if np.any(refl_visible):
+        rain_bins = np.digitize(refl, rain_levels, right=False) - 1
+        rain_bins = np.clip(rain_bins, 0, len(rain_colors) - 1).astype(np.uint8)
+        byte_band[refl_visible] = (rain_offset + rain_bins[refl_visible]).astype(np.uint8)
+        alpha[refl_visible] = 255
+
+    for ptype in ("snow", "sleet", "frzr"):
         cfg = RADAR_CONFIG[ptype]
         levels = list(cfg["levels"])
         colors = list(cfg["colors"])
         offset = int(breaks[ptype]["offset"])
-        type_mask = _binary_dilate(base_masks[ptype], iterations=1) & footprint
-        visible = np.isfinite(refl) & type_mask & (refl >= 10.0) & (refl >= levels[0])
+        type_mask = has_type_info & (winner_idx == idx_map[ptype])
+        visible = refl_visible & type_mask & (refl >= levels[0])
         if np.any(visible):
             bins = np.digitize(refl, levels, right=False) - 1
             bins = np.clip(bins, 0, len(colors) - 1).astype(np.uint8)
             byte_band[visible] = (offset + bins[visible]).astype(np.uint8)
-            alpha[visible] = 255
 
     meta = {
         "var_key": requested_var,
@@ -437,9 +428,7 @@ def _encode_radar_ptype_combo(
         "ptype_blend": "winner_argmax_threshold",
         "ptype_threshold": type_thresh,
         "refl_min_dbz": 10.0,
-        "ptype_footprint_min_dbz": 15.0,
-        "ptype_mask_dilation": {"iterations": 1, "kernel": "3x3"},
-        "ptype_plot_order": list(plot_order),
+        "ptype_noinfo_fallback": "rain",
         "ptype_scale": ptype_scale,
     }
     return byte_band, alpha, meta
