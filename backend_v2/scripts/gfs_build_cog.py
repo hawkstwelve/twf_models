@@ -4,6 +4,7 @@ import argparse
 import re
 import sys
 import tempfile
+import traceback
 from pathlib import Path
 
 # Add backend_v2 to path so app module can be found
@@ -222,20 +223,57 @@ def build_gfs_cog(
                 )
             u_spec = plugin.get_var(u_key)
             v_spec = plugin.get_var(v_key)
-            ds_u = _open_cfgrib_dataset(u_path, u_spec)
-            ds_v = _open_cfgrib_dataset(v_path, v_spec)
-            ds = xr.merge([ds_u, ds_v], compat="override")
+            try:
+                ds_u = _open_cfgrib_dataset(u_path, u_spec)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Failed opening U-component GRIB with cfgrib: path={u_path} type={type(exc).__name__} repr={exc!r}"
+                ) from exc
+            try:
+                ds_v = _open_cfgrib_dataset(v_path, v_spec)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Failed opening V-component GRIB with cfgrib: path={v_path} type={type(exc).__name__} repr={exc!r}"
+                ) from exc
             source_path = u_path
+            try:
+                u_da = plugin.select_dataarray(ds_u, u_key)
+                v_da = plugin.select_dataarray(ds_v, v_key)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Failed selecting wspd10m components: type={type(exc).__name__} repr={exc!r}"
+                ) from exc
+
+            if "time" in u_da.dims:
+                u_da = u_da.isel(time=0)
+            if "time" in v_da.dims:
+                v_da = v_da.isel(time=0)
+            u_da = u_da.squeeze()
+            v_da = v_da.squeeze()
+            if u_da.shape != v_da.shape:
+                raise RuntimeError(
+                    f"wspd10m component shape mismatch: u_shape={u_da.shape} v_shape={v_da.shape}"
+                )
+            speed = np.hypot(u_da, v_da) * 2.23694
+            da = speed.copy()
+            da.name = "wspd10m"
+            da.attrs = dict(u_da.attrs)
+            da.attrs["GRIB_units"] = "mph"
         else:
             if fetch_result.grib_path is None:
                 raise RuntimeError("Missing GRIB path from fetch result")
             source_path = fetch_result.grib_path
-            ds = _open_cfgrib_dataset(source_path, var_spec)
+            try:
+                ds = _open_cfgrib_dataset(source_path, var_spec)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Failed opening GRIB with cfgrib: path={source_path} type={type(exc).__name__} repr={exc!r}"
+                ) from exc
 
-        da = plugin.select_dataarray(ds, normalized_var)
-        if "time" in da.dims:
-            da = da.isel(time=0)
-        da = da.squeeze()
+            da = plugin.select_dataarray(ds, normalized_var)
+            if "time" in da.dims:
+                da = da.isel(time=0)
+            da = da.squeeze()
         if da.ndim != 2:
             raise RuntimeError(f"Expected 2D DataArray after squeeze, got dims={da.dims}")
 
@@ -332,6 +370,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bbox", type=str, default=None)
     parser.add_argument("--no-clip", action="store_true")
     parser.add_argument("--allow-range-fallback", action="store_true")
+    parser.add_argument("--debug", action="store_true")
     return parser.parse_args()
 
 
@@ -374,7 +413,12 @@ def main() -> int:
         if "upstream not ready" in text or "index not ready" in text:
             print(f"UPSTREAM_NOT_READY: {exc}", file=sys.stderr)
             return 2
-        print(f"ERROR: {exc}", file=sys.stderr)
+        message = str(exc).strip()
+        if not message:
+            message = f"{type(exc).__name__}: {exc!r}"
+        print(f"ERROR: {message}", file=sys.stderr)
+        if args.debug:
+            traceback.print_exc()
         return 1
 
     print(f"COG built: {cog_path}")
