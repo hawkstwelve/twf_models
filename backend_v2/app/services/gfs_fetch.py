@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 from herbie import Herbie
 import requests
 
-from app.services.paths import repo_root
+from app.services.paths import default_gfs_cache_dir
 
 logger = logging.getLogger(__name__)
 
@@ -39,10 +39,6 @@ class GribFetchResult:
 
     def __getattr__(self, name: str):
         return getattr(self.path, name)
-
-
-def default_gfs_cache_dir() -> Path:
-    return repo_root() / "herbie_cache" / "gfs" / "gfs"
 
 
 def _is_readable_grib(path: Path) -> bool:
@@ -186,33 +182,10 @@ def _resolve_var_selectors(model_id: str, variable: str | None) -> object:
         if var_spec is not None:
             return var_spec.selectors
 
-    fallback_search = herbie_search_for(variable)
+    fallback_search = herbie_search_for(variable, model=model_id)
     if fallback_search:
         return VarSelectors(search=[fallback_search])
     return VarSelectors()
-
-
-def _probe_candidate(
-    candidate: datetime,
-    *,
-    model: str,
-    product: str,
-    fh: int,
-    timeout_seconds: int,
-) -> Herbie | None:
-    def _build() -> Herbie:
-        return Herbie(candidate, model=model, product=product, fxx=fh)
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_build)
-        try:
-            H = future.result(timeout=timeout_seconds)
-        except concurrent.futures.TimeoutError:
-            future.cancel()
-            return None
-        if H.grib:
-            return H
-    return None
 
 
 def fetch_gfs_grib(
@@ -310,9 +283,14 @@ def fetch_gfs_grib(
     expected_filename = f"{model}.t{run_dt:%H}z.{product}f{fh:02d}.{expected_suffix}.grib2"
     expected_path = target_dir / expected_filename
 
-    if expected_path.exists() and _is_readable_grib(expected_path):
-        logger.info("Using cached GFS GRIB: %s", expected_path)
-        return GribFetchResult(path=expected_path, is_full_file=False)
+    if expected_path.exists():
+        if _is_readable_grib(expected_path):
+            logger.info("Using cached GFS GRIB: %s", expected_path)
+            return GribFetchResult(path=expected_path, is_full_file=False)
+        raise RuntimeError(
+            "Immutable cache conflict: target GFS GRIB exists but is unreadable; "
+            f"refusing overwrite at {expected_path}"
+        )
 
     try:
         with _requests_guard(timeout_seconds, blocked_hosts):
@@ -344,13 +322,14 @@ def fetch_gfs_grib(
             raise UpstreamNotReady(f"Downloaded GRIB2 not found: {path}")
 
     if path.stat().st_size == 0:
-        try:
-            path.unlink()
-        except OSError:
-            pass
         raise UpstreamNotReady(f"Downloaded GRIB2 is empty: {path}")
 
     if path.resolve() != expected_path.resolve():
+        if expected_path.exists():
+            raise RuntimeError(
+                "Immutable cache conflict: expected deterministic path already exists; "
+                f"refusing overwrite at {expected_path}"
+            )
         logger.info("Moving GRIB into cache layout: %s -> %s", path, expected_path)
         try:
             path.replace(expected_path)

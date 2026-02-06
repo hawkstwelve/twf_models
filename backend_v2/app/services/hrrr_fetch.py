@@ -58,7 +58,7 @@ def _resolve_var_selectors(model_id: str, variable: str | None) -> VarSelectors:
         var_spec = model.get_var(plugin_var_id)
         if var_spec is not None:
             return var_spec.selectors
-    legacy_search = herbie_search_for(variable)
+    legacy_search = herbie_search_for(variable, model=model_id)
     if legacy_search:
         return VarSelectors(search=[legacy_search])
     return VarSelectors()

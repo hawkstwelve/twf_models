@@ -48,14 +48,23 @@ HERBIE_SEARCH: dict[str, str] = {
     "wspd10m": ":UGRD:10 m above ground:|:VGRD:10 m above ground:",
 }
 
+GFS_HERBIE_SEARCH: dict[str, str] = {
+    "t2m": ":TMP:2 m above ground:",
+    "10u": ":UGRD:10 m above ground:",
+    "10v": ":VGRD:10 m above ground:",
+    "wspd10m": ":UGRD:10 m above ground:|:VGRD:10 m above ground:",
+}
+
 
 def normalize_api_variable(var: str) -> str:
     value = var.strip().lower()
     return VARIABLE_ALIASES.get(value, value)
 
 
-def herbie_search_for(api_var: str) -> str | None:
+def herbie_search_for(api_var: str, *, model: str | None = None) -> str | None:
     normalized = normalize_api_variable(api_var)
+    if model == "gfs":
+        return GFS_HERBIE_SEARCH.get(normalized)
     return HERBIE_SEARCH.get(normalized)
 
 

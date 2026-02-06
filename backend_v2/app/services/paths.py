@@ -13,3 +13,7 @@ def repo_root() -> Path:
 
 def default_hrrr_cache_dir() -> Path:
     return repo_root() / "herbie_cache" / "hrrr" / "hrrr"
+
+
+def default_gfs_cache_dir() -> Path:
+    return repo_root() / "herbie_cache" / "gfs" / "gfs"

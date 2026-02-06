@@ -1,13 +1,143 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import numpy as np
+import xarray as xr
+
+from app.services.gfs_runs import GFSCacheConfig, enforce_cycle_retention
+from app.services.variable_registry import normalize_api_variable
+
 from .base import BaseModelPlugin, RegionSpec, VarSelectors, VarSpec
 
 
 class GFSPlugin(BaseModelPlugin):
-    pass
+    def target_fhs(self, cycle_hour: int) -> list[int]:
+        del cycle_hour
+        return list(GFS_INITIAL_FHS)
 
+    def normalize_var_id(self, var_id: str) -> str:
+        normalized = normalize_api_variable(var_id)
+        if normalized in {"t2m", "tmp2m", "2t"}:
+            return "tmp2m"
+        if normalized == "wspd10m":
+            return "wspd10m"
+        if normalized == "10u":
+            return "10u"
+        if normalized == "10v":
+            return "10v"
+        return normalized
+
+    def _score_candidate(self, da: xr.DataArray, var_spec: VarSpec) -> int:
+        selectors = var_spec.selectors
+        hints = selectors.hints
+        filter_keys = selectors.filter_by_keys
+
+        score = 0
+
+        expected_cf = hints.get("cf_var")
+        if expected_cf and da.attrs.get("GRIB_cfVarName") == expected_cf:
+            score += 10
+
+        expected_short = hints.get("short_name")
+        if expected_short and da.attrs.get("GRIB_shortName") == expected_short:
+            score += 8
+
+        expected_tol = filter_keys.get("typeOfLevel")
+        if expected_tol and da.attrs.get("GRIB_typeOfLevel") == expected_tol:
+            score += 4
+
+        expected_level = filter_keys.get("level")
+        if expected_level is not None:
+            actual_level = da.attrs.get("GRIB_level")
+            try:
+                expected_level_i = int(expected_level)
+                actual_level_i = int(actual_level) if actual_level is not None else None
+            except (TypeError, ValueError):
+                expected_level_i = None
+                actual_level_i = None
+            if expected_level_i is not None and actual_level_i == expected_level_i:
+                score += 2
+
+        expected_upstream = hints.get("upstream_var")
+        if expected_upstream:
+            if da.attrs.get("GRIB_cfVarName") == expected_upstream:
+                score += 8
+            elif da.name == expected_upstream:
+                score += 6
+
+        return score
+
+    def _select_from_spec(self, ds: xr.Dataset, var_id: str) -> xr.DataArray:
+        var_spec = self.get_var(var_id)
+        if var_spec is None:
+            raise ValueError(f"Unknown GFS variable: {var_id}")
+
+        scored: list[tuple[int, str, xr.DataArray]] = []
+        for name in sorted(ds.data_vars):
+            da = ds[name]
+            score = self._score_candidate(da, var_spec)
+            if score > 0:
+                scored.append((score, name, da))
+
+        scored.sort(key=lambda item: item[0], reverse=True)
+
+        if scored:
+            top_score = scored[0][0]
+            top = [row for row in scored if row[0] == top_score]
+            if len(top) == 1:
+                return top[0][2]
+
+        if var_id in ds.data_vars:
+            return ds[var_id]
+
+        upstream = var_spec.selectors.hints.get("upstream_var")
+        if upstream and upstream in ds.data_vars:
+            return ds[upstream]
+
+        if len(ds.data_vars) == 1:
+            only_name = next(iter(ds.data_vars))
+            return ds[only_name]
+
+        available = ", ".join(sorted(ds.data_vars))
+        raise ValueError(
+            f"GFS variable selection failed for {var_id}; available={available}"
+        )
+
+    def select_dataarray(self, ds: object, var_id: str) -> object:
+        if not isinstance(ds, xr.Dataset):
+            raise TypeError("Expected xarray.Dataset for GFS selection")
+
+        normalized = self.normalize_var_id(var_id)
+        if normalized == "wspd10m":
+            u_da = self._select_from_spec(ds, "10u")
+            v_da = self._select_from_spec(ds, "10v")
+            speed = np.hypot(u_da, v_da) * 2.23694
+            speed_mph = speed.copy()
+            speed_mph.name = "wspd10m"
+            speed_mph.attrs = dict(u_da.attrs)
+            speed_mph.attrs["GRIB_units"] = "mph"
+            return speed_mph
+        return self._select_from_spec(ds, normalized)
+
+    def ensure_latest_cycles(self, keep_cycles: int, *, cache_dir: Path | None = None) -> dict[str, int]:
+        cfg = GFSCacheConfig(base_dir=cache_dir or GFSCacheConfig().base_dir, keep_runs=keep_cycles)
+        return enforce_cycle_retention(cfg)
+
+
+PNW_BBOX_WGS84 = (-125.5, 41.5, -111.0, 49.5)
+
+# Initial rollout scope (M0): keep CONUS configured, but build/schedule only PNW.
+GFS_INITIAL_ROLLOUT_REGIONS: tuple[str, ...] = ("pnw",)
+GFS_INITIAL_FHS: tuple[int, ...] = tuple(range(0, 121, 6))
 
 GFS_REGIONS: dict[str, RegionSpec] = {
+    "pnw": RegionSpec(
+        id="pnw",
+        name="Pacific Northwest",
+        bbox_wgs84=PNW_BBOX_WGS84,
+        clip=True,
+    ),
     "conus": RegionSpec(
         id="conus",
         name="CONUS",
@@ -22,11 +152,49 @@ GFS_VARS: dict[str, VarSpec] = {
         name="2m Temp",
         selectors=VarSelectors(
             search=[":TMP:2 m above ground:"],
+            filter_by_keys={
+                "typeOfLevel": "heightAboveGround",
+                "level": "2",
+            },
             hints={
                 "upstream_var": "t2m",
+                "cf_var": "t2m",
+                "short_name": "2t",
             },
         ),
         primary=True,
+    ),
+    "10u": VarSpec(
+        id="10u",
+        name="10m U Wind",
+        selectors=VarSelectors(
+            search=[":UGRD:10 m above ground:"],
+            filter_by_keys={
+                "typeOfLevel": "heightAboveGround",
+                "level": "10",
+            },
+            hints={
+                "upstream_var": "10u",
+                "cf_var": "u10",
+                "short_name": "10u",
+            },
+        ),
+    ),
+    "10v": VarSpec(
+        id="10v",
+        name="10m V Wind",
+        selectors=VarSelectors(
+            search=[":VGRD:10 m above ground:"],
+            filter_by_keys={
+                "typeOfLevel": "heightAboveGround",
+                "level": "10",
+            },
+            hints={
+                "upstream_var": "10v",
+                "cf_var": "v10",
+                "short_name": "10v",
+            },
+        ),
     ),
     "wspd10m": VarSpec(
         id="wspd10m",
