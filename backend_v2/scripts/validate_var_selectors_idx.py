@@ -115,9 +115,16 @@ def _validate_non_derived_var(model_id: str, requested_var: str, checked_var: st
 
 def _component_vars_for_derived(var_spec) -> tuple[str, ...]:
     hints = var_spec.selectors.hints
-    u_var = hints.get("u_component")
-    v_var = hints.get("v_component")
-    values = tuple(item for item in (u_var, v_var) if item)
+    values = tuple(
+        item
+        for item in (
+            hints.get("u_component"),
+            hints.get("v_component"),
+            hints.get("refl_component"),
+            hints.get("ptype_component"),
+        )
+        if item
+    )
     return values
 
 

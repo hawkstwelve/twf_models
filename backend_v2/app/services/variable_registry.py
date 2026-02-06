@@ -43,6 +43,22 @@ VARIABLE_SELECTORS: dict[str, dict[str, Any]] = {
         "cfVarName": "refc",
         "shortName": "refc",
     },
+    "crain": {
+        "shortName": "crain",
+        "typeOfLevel": "surface",
+    },
+    "csnow": {
+        "shortName": "csnow",
+        "typeOfLevel": "surface",
+    },
+    "cicep": {
+        "shortName": "cicep",
+        "typeOfLevel": "surface",
+    },
+    "cfrzr": {
+        "shortName": "cfrzr",
+        "typeOfLevel": "surface",
+    },
 }
 
 HERBIE_SEARCH: dict[str, str] = {
@@ -51,6 +67,10 @@ HERBIE_SEARCH: dict[str, str] = {
     "10u": ":UGRD:10 m above ground:",
     "10v": ":VGRD:10 m above ground:",
     "refc": ":REFC:",
+    "crain": ":CRAIN:surface:",
+    "csnow": ":CSNOW:surface:",
+    "cicep": ":CICEP:surface:",
+    "cfrzr": ":CFRZR:surface:",
     "wspd10m": ":UGRD:10 m above ground:|:VGRD:10 m above ground:",
 }
 
@@ -59,6 +79,10 @@ GFS_HERBIE_SEARCH: dict[str, str] = {
     "10u": ":UGRD:10 m above ground:",
     "10v": ":VGRD:10 m above ground:",
     "refc": ":REFC:",
+    "crain": ":CRAIN:surface:",
+    "csnow": ":CSNOW:surface:",
+    "cicep": ":CICEP:surface:",
+    "cfrzr": ":CFRZR:surface:",
     "wspd10m": ":UGRD:10 m above ground:|:VGRD:10 m above ground:",
 }
 

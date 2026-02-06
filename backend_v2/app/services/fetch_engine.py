@@ -137,6 +137,17 @@ def _resolve_component_vars(var_spec: object, fallback: tuple[str, str]) -> tupl
     return fallback
 
 
+def _resolve_radar_component_vars(var_spec: object, fallback: tuple[str, str]) -> tuple[str, str]:
+    selectors = getattr(var_spec, "selectors", None)
+    if selectors is None:
+        return fallback
+    refl_hint = _hint_value(selectors, "refl_component")
+    ptype_hint = _hint_value(selectors, "ptype_component")
+    if refl_hint and ptype_hint:
+        return refl_hint, ptype_hint
+    return fallback
+
+
 def fetch_grib(
     model: str,
     run: str,
@@ -166,7 +177,7 @@ def fetch_grib(
 
     product = plugin.product
 
-    if var_spec.id != "wspd10m":
+    if not var_spec.derived:
         fetch_var = _resolve_upstream_var(var_spec, var_spec.id)
         search = _select_search(var_spec.selectors)
         if model == "gfs":
@@ -214,58 +225,67 @@ def fetch_grib(
             component_paths=None,
         )
 
-    if var_spec.id == "wspd10m":
-        component_paths: dict[str, Path] = {}
-        any_full = False
+    derive_kind = str(getattr(var_spec, "derive", "") or "")
+    if derive_kind == "wspd10m":
         components = _resolve_component_vars(var_spec, ("10u", "10v"))
-        gfs_component_run = run
-        for component_var in components:
-            component_spec = plugin.get_var(component_var)
-            search = _select_search(component_spec.selectors) if component_spec else None
-            if model == "gfs":
-                try:
-                    result = fetch_gfs_grib(
-                        run=gfs_component_run,
-                        fh=fh,
-                        model=model,
-                        product=product,
-                        variable=component_var,
-                        search_override=search,
-                        cache_dir=cache_dir,
-                        **kwargs,
-                    )
-                except Exception as exc:
-                    if is_gfs_not_ready(exc):
-                        known_path = next(iter(component_paths.values()), None)
-                        return _not_ready(gfs_component_run, exc, known_path)
-                    raise
-                component_paths[component_var] = result.path
-                any_full = any_full or result.is_full_file
-                if run.lower() == "latest":
-                    resolved_run = _normalize_run_id(run, result.path)
-                    gfs_component_run = _fetch_run_arg_from_run_id(resolved_run)
-                continue
+    elif derive_kind == "radar_ptype":
+        components = _resolve_radar_component_vars(var_spec, ("refc", "crain"))
+    else:
+        raise HTTPException(
+            status_code=501,
+            detail=f"Derived variable fetch not implemented: {var_spec.id} ({derive_kind})",
+        )
+
+    component_paths: dict[str, Path] = {}
+    any_full = False
+    gfs_component_run = run
+    for component_var in components:
+        component_spec = plugin.get_var(component_var)
+        search = _select_search(component_spec.selectors) if component_spec else None
+        if model == "gfs":
             try:
-                result = fetch_hrrr_grib(
-                    run=run,
+                result = fetch_gfs_grib(
+                    run=gfs_component_run,
                     fh=fh,
                     model=model,
                     product=product,
                     variable=component_var,
                     search_override=search,
-                    cache_cfg=HRRRCacheConfig(base_dir=cache_dir, keep_runs=1) if cache_dir else None,
+                    cache_dir=cache_dir,
+                    **kwargs,
                 )
             except Exception as exc:
-                if is_upstream_not_ready(exc):
+                if is_gfs_not_ready(exc):
                     known_path = next(iter(component_paths.values()), None)
-                    return _not_ready(run, exc, known_path)
+                    return _not_ready(gfs_component_run, exc, known_path)
                 raise
             component_paths[component_var] = result.path
             any_full = any_full or result.is_full_file
-        run_id = _normalize_run_id(run, next(iter(component_paths.values())))
-        return FetchResult(
-            upstream_run_id=run_id,
-            is_full_download=any_full,
-            grib_path=None,
-            component_paths=component_paths,
-        )
+            if run.lower() == "latest":
+                resolved_run = _normalize_run_id(run, result.path)
+                gfs_component_run = _fetch_run_arg_from_run_id(resolved_run)
+            continue
+        try:
+            result = fetch_hrrr_grib(
+                run=run,
+                fh=fh,
+                model=model,
+                product=product,
+                variable=component_var,
+                search_override=search,
+                cache_cfg=HRRRCacheConfig(base_dir=cache_dir, keep_runs=1) if cache_dir else None,
+            )
+        except Exception as exc:
+            if is_upstream_not_ready(exc):
+                known_path = next(iter(component_paths.values()), None)
+                return _not_ready(run, exc, known_path)
+            raise
+        component_paths[component_var] = result.path
+        any_full = any_full or result.is_full_file
+    run_id = _normalize_run_id(run, next(iter(component_paths.values())))
+    return FetchResult(
+        upstream_run_id=run_id,
+        is_full_download=any_full,
+        grib_path=None,
+        component_paths=component_paths,
+    )

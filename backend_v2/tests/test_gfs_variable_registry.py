@@ -33,6 +33,7 @@ def test_herbie_search_for_model_gfs() -> None:
     assert herbie_search_for("tmp2m", model="gfs") == ":TMP:2 m above ground:"
     assert herbie_search_for("10u", model="gfs") == ":UGRD:10 m above ground:"
     assert herbie_search_for("refc", model="gfs") == ":REFC:"
+    assert herbie_search_for("crain", model="gfs") == ":CRAIN:surface:"
     assert herbie_search_for("prate", model="gfs") is None
 
 
@@ -49,6 +50,16 @@ def test_gfs_plugin_normalize_var_id() -> None:
     assert GFS_MODEL.normalize_var_id("cref") == "refc"
     assert GFS_MODEL.normalize_var_id("refc") == "refc"
     assert GFS_MODEL.normalize_var_id("ugrd10m") == "10u"
+    assert GFS_MODEL.normalize_var_id("radar_rain") == "radar_rain"
+
+
+def test_gfs_plugin_contains_radar_ptype_specs() -> None:
+    rain = GFS_MODEL.get_var("radar_rain")
+    snow = GFS_MODEL.get_var("radar_snow")
+    assert rain is not None
+    assert snow is not None
+    assert rain.derived is True
+    assert rain.derive == "radar_ptype"
 
 
 def test_gfs_plugin_select_tmp2m_from_selector_attrs() -> None:

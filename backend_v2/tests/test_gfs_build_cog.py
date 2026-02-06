@@ -5,7 +5,12 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
-from scripts.gfs_build_cog import _coerce_run_id, _infer_spacing, _normalize_latlon_dataarray
+from scripts.gfs_build_cog import (
+    _coerce_run_id,
+    _infer_spacing,
+    _normalize_latlon_dataarray,
+    _resolve_radar_component_paths,
+)
 
 
 def test_infer_spacing() -> None:
@@ -45,3 +50,13 @@ def test_coerce_run_id_prefers_explicit() -> None:
     fake_path = Path("/tmp/herbie_cache/gfs/gfs/20260206/06/file.grib2")
     assert _coerce_run_id("20260206_06z", fake_path) == "20260206_06z"
     assert _coerce_run_id(None, fake_path) == "20260206_06z"
+
+
+def test_resolve_radar_component_paths() -> None:
+    comp = {
+        "refc": Path("/tmp/refc.grib2"),
+        "crain": Path("/tmp/crain.grib2"),
+    }
+    refl, ptype = _resolve_radar_component_paths(comp, refl_key="refc", ptype_key="crain")
+    assert refl.name == "refc.grib2"
+    assert ptype.name == "crain.grib2"

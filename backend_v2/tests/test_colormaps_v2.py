@@ -83,7 +83,7 @@ def test_encode_refc_metadata() -> None:
     values = np.array([[10.0, 20.0], [30.0, 40.0]])
     _, _, meta = encode_to_byte_and_alpha(values, "refc")
 
-    assert meta["display_name"] == "Sim Composite Reflectivity"
+    assert meta["display_name"] == "Composite Reflectivity"
     assert meta["legend_title"] == "Reflectivity (dBZ)"
 
 

@@ -304,7 +304,7 @@ VAR_SPECS = {
         # Keep visible echoes starting at the first non-white radar color.
         "levels": RADAR_CONFIG["rain"]["levels"][1:],
         "colors": RADAR_CONFIG["rain"]["colors"][1:],
-        "display_name": "Sim Composite Reflectivity",
+        "display_name": "Composite Reflectivity",
         "legend_title": "Reflectivity (dBZ)",
     },
 }

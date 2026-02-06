@@ -57,7 +57,7 @@ function applyVariableLabels(items) {
   const fallbackLabels = {
     "tmp2m": "Surface Temperature",
     "wspd10m": "Wind Speed",
-    "refc": "Sim Composite Reflectivity",
+    "refc": "Composite Reflectivity",
     "precip_rain": "Rain",
     "precip_snow": "Snow",
     "precip_sleet": "Sleet",

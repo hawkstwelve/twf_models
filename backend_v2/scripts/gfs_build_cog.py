@@ -168,6 +168,22 @@ def _coerce_run_id(run_id: str | None, path: Path) -> str:
     return _derive_run_id(path)
 
 
+def _resolve_radar_component_paths(
+    component_paths: dict[str, Path],
+    *,
+    refl_key: str,
+    ptype_key: str,
+) -> tuple[Path, Path]:
+    refl_path = component_paths.get(refl_key)
+    ptype_path = component_paths.get(ptype_key)
+    if refl_path is None or ptype_path is None:
+        available = sorted(component_paths.keys())
+        raise RuntimeError(
+            f"Missing radar_ptype component files; expected=({refl_key},{ptype_key}) have={available}"
+        )
+    return refl_path, ptype_path
+
+
 def build_gfs_cog(
     *,
     run: str,
@@ -208,9 +224,12 @@ def build_gfs_cog(
 
     ds_u: xr.Dataset | None = None
     ds_v: xr.Dataset | None = None
+    ds_refl: xr.Dataset | None = None
+    ds_ptype: xr.Dataset | None = None
     ds: xr.Dataset | None = None
     try:
-        if normalized_var == "wspd10m":
+        derive_kind = str(var_spec.derive or "") if var_spec.derived else ""
+        if derive_kind == "wspd10m":
             if not fetch_result.component_paths:
                 raise RuntimeError("Missing component paths for wspd10m")
             u_key = var_spec.selectors.hints.get("u_component", "10u")
@@ -266,6 +285,47 @@ def build_gfs_cog(
             )
             da.attrs = dict(u_da.attrs)
             da.attrs["GRIB_units"] = "mph"
+        elif derive_kind == "radar_ptype":
+            if not fetch_result.component_paths:
+                raise RuntimeError("Missing component paths for radar_ptype")
+            refl_component = str(var_spec.selectors.hints.get("refl_component", "refc"))
+            ptype_component = str(var_spec.selectors.hints.get("ptype_component", "crain"))
+            refl_path, ptype_path = _resolve_radar_component_paths(
+                fetch_result.component_paths,
+                refl_key=refl_component,
+                ptype_key=ptype_component,
+            )
+            refl_spec = plugin.get_var(refl_component)
+            ptype_spec = plugin.get_var(ptype_component)
+            ds_refl = _open_cfgrib_dataset(refl_path, refl_spec)
+            ds_ptype = _open_cfgrib_dataset(ptype_path, ptype_spec)
+            source_path = refl_path
+
+            refl_da = plugin.select_dataarray(ds_refl, refl_component)
+            ptype_da = plugin.select_dataarray(ds_ptype, ptype_component)
+            if "time" in refl_da.dims:
+                refl_da = refl_da.isel(time=0)
+            if "time" in ptype_da.dims:
+                ptype_da = ptype_da.isel(time=0)
+            refl_da = refl_da.squeeze()
+            ptype_da = ptype_da.squeeze()
+            if refl_da.shape != ptype_da.shape:
+                raise RuntimeError(
+                    "radar_ptype component shape mismatch: "
+                    f"refl_shape={refl_da.shape} ptype_shape={ptype_da.shape}"
+                )
+            refl_vals = np.asarray(refl_da.values, dtype=np.float32)
+            ptype_vals = np.asarray(ptype_da.values, dtype=np.float32)
+            mask = np.isfinite(ptype_vals) & (ptype_vals > 0.0)
+            derived_vals = np.where(mask, refl_vals, np.nan).astype(np.float32)
+            da = xr.DataArray(
+                derived_vals,
+                dims=refl_da.dims,
+                coords={dim: refl_da.coords[dim] for dim in refl_da.dims if dim in refl_da.coords},
+                name=normalized_var,
+            )
+            da.attrs = dict(refl_da.attrs)
+            da.attrs["GRIB_units"] = da.attrs.get("GRIB_units", "dBZ")
         else:
             if fetch_result.grib_path is None:
                 raise RuntimeError("Missing GRIB path from fetch result")
@@ -362,6 +422,10 @@ def build_gfs_cog(
             ds_u.close()
         if ds_v is not None:
             ds_v.close()
+        if ds_refl is not None:
+            ds_refl.close()
+        if ds_ptype is not None:
+            ds_ptype.close()
 
 
 def parse_args() -> argparse.Namespace:

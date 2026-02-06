@@ -75,13 +75,93 @@ HRRR_VARS: dict[str, VarSpec] = {
     ),
     "refc": VarSpec(
         id="refc",
-        name="Sim Composite Reflectivity",
+        name="Composite Reflectivity",
         selectors=VarSelectors(
             search=[":REFC:"],
             hints={
                 "upstream_var": "refc",
             },
         ),
+    ),
+    "crain": VarSpec(
+        id="crain",
+        name="Categorical Rain",
+        selectors=VarSelectors(
+            search=[":CRAIN:surface:"],
+            hints={"upstream_var": "crain"},
+        ),
+    ),
+    "csnow": VarSpec(
+        id="csnow",
+        name="Categorical Snow",
+        selectors=VarSelectors(
+            search=[":CSNOW:surface:"],
+            hints={"upstream_var": "csnow"},
+        ),
+    ),
+    "cicep": VarSpec(
+        id="cicep",
+        name="Categorical Sleet",
+        selectors=VarSelectors(
+            search=[":CICEP:surface:"],
+            hints={"upstream_var": "cicep"},
+        ),
+    ),
+    "cfrzr": VarSpec(
+        id="cfrzr",
+        name="Categorical Freezing Rain",
+        selectors=VarSelectors(
+            search=[":CFRZR:surface:"],
+            hints={"upstream_var": "cfrzr"},
+        ),
+    ),
+    "radar_rain": VarSpec(
+        id="radar_rain",
+        name="Radar (Rain)",
+        selectors=VarSelectors(
+            hints={
+                "refl_component": "refc",
+                "ptype_component": "crain",
+            }
+        ),
+        derived=True,
+        derive="radar_ptype",
+    ),
+    "radar_snow": VarSpec(
+        id="radar_snow",
+        name="Radar (Snow)",
+        selectors=VarSelectors(
+            hints={
+                "refl_component": "refc",
+                "ptype_component": "csnow",
+            }
+        ),
+        derived=True,
+        derive="radar_ptype",
+    ),
+    "radar_sleet": VarSpec(
+        id="radar_sleet",
+        name="Radar (Sleet)",
+        selectors=VarSelectors(
+            hints={
+                "refl_component": "refc",
+                "ptype_component": "cicep",
+            }
+        ),
+        derived=True,
+        derive="radar_ptype",
+    ),
+    "radar_frzr": VarSpec(
+        id="radar_frzr",
+        name="Radar (Freezing Rain)",
+        selectors=VarSelectors(
+            hints={
+                "refl_component": "refc",
+                "ptype_component": "cfrzr",
+            }
+        ),
+        derived=True,
+        derive="radar_ptype",
     ),
 }
 

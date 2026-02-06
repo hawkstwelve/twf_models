@@ -36,6 +36,13 @@ def test_component_vars_for_derived_wspd10m() -> None:
     assert validator._component_vars_for_derived(spec) == ("10u", "10v")
 
 
+def test_component_vars_for_derived_radar_ptype() -> None:
+    plugin = get_model("hrrr")
+    spec = plugin.get_var("radar_rain")
+    assert spec is not None
+    assert validator._component_vars_for_derived(spec) == ("refc", "crain")
+
+
 def test_filter_inventory_df_applies_level_and_type_hint() -> None:
     df = pd.DataFrame(
         [

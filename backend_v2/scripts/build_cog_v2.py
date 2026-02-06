@@ -148,11 +148,36 @@ def _resolve_uv_paths(component_paths: dict[str, Path]) -> tuple[Path, Path]:
 
 def _component_ids(var_spec: VarSpec) -> tuple[str, str]:
     selectors = var_spec.selectors
-    u_key = selectors.filter_by_keys.get("u_component") or selectors.filter_by_keys.get("u_var")
-    v_key = selectors.filter_by_keys.get("v_component") or selectors.filter_by_keys.get("v_var")
+    u_key = selectors.hints.get("u_component") or selectors.hints.get("u_var")
+    v_key = selectors.hints.get("v_component") or selectors.hints.get("v_var")
     if u_key and v_key:
         return u_key, v_key
     return "10u", "10v"
+
+
+def _radar_component_ids(var_spec: VarSpec) -> tuple[str, str]:
+    selectors = var_spec.selectors
+    refl_key = selectors.hints.get("refl_component")
+    ptype_key = selectors.hints.get("ptype_component")
+    if refl_key and ptype_key:
+        return str(refl_key), str(ptype_key)
+    return "refc", "crain"
+
+
+def _resolve_radar_component_paths(
+    component_paths: dict[str, Path],
+    *,
+    refl_key: str,
+    ptype_key: str,
+) -> tuple[Path, Path]:
+    refl_path = component_paths.get(refl_key)
+    ptype_path = component_paths.get(ptype_key)
+    if refl_path is None or ptype_path is None:
+        available = sorted(component_paths.keys())
+        raise RuntimeError(
+            f"Missing radar_ptype component files; expected=({refl_key},{ptype_key}) have={available}"
+        )
+    return refl_path, ptype_path
 
 
 def _coerce_grib_path(grib_path: object) -> Path:
@@ -681,10 +706,19 @@ def main() -> int:
     grib_path: Path | None = None
     u_path: Path | None = None
     v_path: Path | None = None
+    refl_path: Path | None = None
+    ptype_path: Path | None = None
 
-    if normalized_var == "wspd10m":
+    try:
+        _, var_spec = get_plugin_and_var(args.model, normalized_var)
+    except Exception:
+        logger.exception("Failed to resolve plugin var spec")
+        return 2
+
+    derive_kind = str(var_spec.derive or "") if var_spec.derived else ""
+
+    if derive_kind == "wspd10m":
         try:
-            _, var_spec = get_plugin_and_var(args.model, normalized_var)
             fetch_result = fetch_grib(
                 model=args.model,
                 run=args.run,
@@ -709,9 +743,38 @@ def main() -> int:
 
         print(f"GRIB path (u10): {u_path}")
         print(f"GRIB path (v10): {v_path}")
+    elif derive_kind == "radar_ptype":
+        try:
+            fetch_result = fetch_grib(
+                model=args.model,
+                run=args.run,
+                fh=args.fh,
+                var=normalized_var,
+                region=args.region,
+                cache_dir=cache_dir,
+            )
+            if fetch_result.not_ready_reason:
+                _log_upstream_not_ready(args, fetch_result.not_ready_reason)
+                return 2
+            if not fetch_result.component_paths:
+                raise RuntimeError("Missing component paths for radar_ptype")
+            refl_component, ptype_component = _radar_component_ids(var_spec)
+            refl_path, ptype_path = _resolve_radar_component_paths(
+                fetch_result.component_paths,
+                refl_key=refl_component,
+                ptype_key=ptype_component,
+            )
+            grib_path = refl_path
+        except Exception as exc:
+            if is_upstream_not_ready(exc):
+                _log_upstream_not_ready(args, str(exc))
+                return 2
+            logger.exception("Failed to fetch GRIB components for radar_ptype")
+            return 2
+        print(f"GRIB path (reflectivity): {refl_path}")
+        print(f"GRIB path (ptype): {ptype_path}")
     else:
         try:
-            _, var_spec = get_plugin_and_var(args.model, normalized_var)
             fetch_result = fetch_grib(
                 model=args.model,
                 run=args.run,
@@ -738,8 +801,10 @@ def main() -> int:
     ds: xr.Dataset | None = None
     ds_u: xr.Dataset | None = None
     ds_v: xr.Dataset | None = None
+    ds_refl: xr.Dataset | None = None
+    ds_ptype: xr.Dataset | None = None
     try:
-        if normalized_var == "wspd10m":
+        if derive_kind == "wspd10m":
             try:
                 u_da: xr.DataArray | None = None
                 v_da: xr.DataArray | None = None
@@ -828,6 +893,44 @@ def main() -> int:
                 logger.exception("wspd10m derivation failed")
                 raise RuntimeError(
                     f"Failed to derive wspd10m: {type(exc).__name__}: {exc}"
+                ) from exc
+        elif derive_kind == "radar_ptype":
+            try:
+                refl_component, ptype_component = _radar_component_ids(var_spec)
+                refl_spec = plugin.get_var(refl_component)
+                ptype_spec = plugin.get_var(ptype_component)
+                ds_refl = _open_cfgrib_dataset(refl_path, refl_spec)
+                ds_ptype = _open_cfgrib_dataset(ptype_path, ptype_spec)
+                refl_da = plugin.select_dataarray(ds_refl, refl_component)
+                ptype_da = plugin.select_dataarray(ds_ptype, ptype_component)
+
+                if "time" in refl_da.dims:
+                    refl_da = refl_da.isel(time=0)
+                if "time" in ptype_da.dims:
+                    ptype_da = ptype_da.isel(time=0)
+                refl_da = refl_da.squeeze()
+                ptype_da = ptype_da.squeeze()
+                if refl_da.shape != ptype_da.shape:
+                    raise RuntimeError(
+                        "radar_ptype component shape mismatch: "
+                        f"refl_shape={refl_da.shape} ptype_shape={ptype_da.shape}"
+                    )
+                refl_vals = np.asarray(refl_da.values, dtype=np.float32)
+                ptype_vals = np.asarray(ptype_da.values, dtype=np.float32)
+                mask = np.isfinite(ptype_vals) & (ptype_vals > 0.0)
+                derived_vals = np.where(mask, refl_vals, np.nan).astype(np.float32)
+                da = xr.DataArray(
+                    derived_vals,
+                    dims=refl_da.dims,
+                    coords={dim: refl_da.coords[dim] for dim in refl_da.dims if dim in refl_da.coords},
+                    name=normalized_var,
+                )
+                da.attrs = dict(refl_da.attrs)
+                da.attrs["GRIB_units"] = da.attrs.get("GRIB_units", "dBZ")
+            except Exception as exc:
+                logger.exception("radar_ptype derivation failed")
+                raise RuntimeError(
+                    f"Failed to derive radar_ptype: {type(exc).__name__}: {exc}"
                 ) from exc
         else:
             try:
@@ -1043,6 +1146,10 @@ def main() -> int:
             ds_u.close()
         if ds_v is not None:
             ds_v.close()
+        if ds_refl is not None:
+            ds_refl.close()
+        if ds_ptype is not None:
+            ds_ptype.close()
 
     if args.keep_cycles:
         try:
