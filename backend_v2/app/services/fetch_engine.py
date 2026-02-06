@@ -8,6 +8,7 @@ import logging
 from fastapi import HTTPException
 
 from app.models import get_model
+from app.services.gfs_fetch import fetch_gfs_grib, is_upstream_not_ready as is_gfs_not_ready
 from app.services.hrrr_fetch import fetch_hrrr_grib, is_upstream_not_ready
 from app.services.hrrr_runs import HRRRCacheConfig
 
@@ -148,13 +149,36 @@ def fetch_grib(
         )
 
     if model != "hrrr":
-        raise HTTPException(status_code=501, detail="Fetch not implemented for model")
+        if model != "gfs":
+            raise HTTPException(status_code=501, detail="Fetch not implemented for model")
 
     product = plugin.product
 
     if var_spec.id == "tmp2m":
         fetch_var = _resolve_upstream_var(var_spec, "t2m")
         search = _select_search(var_spec.selectors)
+        if model == "gfs":
+            try:
+                result = fetch_gfs_grib(
+                    run=run,
+                    fh=fh,
+                    model=model,
+                    product=product,
+                    variable=fetch_var,
+                    search_override=search,
+                    cache_dir=cache_dir,
+                )
+            except Exception as exc:
+                if is_gfs_not_ready(exc):
+                    return _not_ready(run, exc)
+                raise
+            run_id = _normalize_run_id(run, result.path)
+            return FetchResult(
+                upstream_run_id=run_id,
+                is_full_download=result.is_full_file,
+                grib_path=result.path,
+                component_paths=None,
+            )
         try:
             result = fetch_hrrr_grib(
                 run=run,
@@ -184,6 +208,25 @@ def fetch_grib(
         for component_var in components:
             component_spec = plugin.get_var(component_var)
             search = _select_search(component_spec.selectors) if component_spec else None
+            if model == "gfs":
+                try:
+                    result = fetch_gfs_grib(
+                        run=run,
+                        fh=fh,
+                        model=model,
+                        product=product,
+                        variable=component_var,
+                        search_override=search,
+                        cache_dir=cache_dir,
+                    )
+                except Exception as exc:
+                    if is_gfs_not_ready(exc):
+                        known_path = next(iter(component_paths.values()), None)
+                        return _not_ready(run, exc, known_path)
+                    raise
+                component_paths[component_var] = result.path
+                any_full = any_full or result.is_full_file
+                continue
             try:
                 result = fetch_hrrr_grib(
                     run=run,
