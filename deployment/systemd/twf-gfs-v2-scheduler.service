@@ -1,5 +1,5 @@
 [Unit]
-Description=TWF V2 Scheduler (HRRR)
+Description=TWF V2 Scheduler (GFS)
 After=network-online.target
 Wants=network-online.target
 
@@ -12,7 +12,7 @@ Environment=TWF_DATA_V2_ROOT=/opt/twf_models/data/v2
 Environment=TWF_V2_WORKERS=4
 Environment=PYTHONPATH=/opt/twf_models/backend_v2:/opt/twf_models
 ExecStartPre=/usr/bin/test -f /opt/twf_models/backend_v2/app/services/model_scheduler_v2.py
-ExecStart=/opt/twf_models/venv_v2/bin/python -m app.services.model_scheduler_v2 --model hrrr --region pnw --vars tmp2m,wspd10m --primary-vars tmp2m --data-root /opt/twf_models/data/v2
+ExecStart=/opt/twf_models/venv_v2/bin/python -m app.services.model_scheduler_v2 --model gfs --region pnw --vars tmp2m,wspd10m --primary-vars tmp2m --data-root /opt/twf_models/data/v2
 Restart=on-failure
 RestartSec=4
 TimeoutStopSec=30
