@@ -300,8 +300,10 @@ VAR_SPECS = {
     "refc": {
         "type": "discrete",
         "units": "dBZ",
-        "levels": RADAR_CONFIG["rain"]["levels"],
-        "colors": RADAR_CONFIG["rain"]["colors"],
+        # Hide "no precip" / near-noise returns by making <10 dBZ transparent.
+        # Keep visible echoes starting at the first non-white radar color.
+        "levels": RADAR_CONFIG["rain"]["levels"][1:],
+        "colors": RADAR_CONFIG["rain"]["colors"][1:],
         "display_name": "Sim Composite Reflectivity",
         "legend_title": "Reflectivity (dBZ)",
     },

@@ -85,3 +85,16 @@ def test_encode_refc_metadata() -> None:
 
     assert meta["display_name"] == "Sim Composite Reflectivity"
     assert meta["legend_title"] == "Reflectivity (dBZ)"
+
+
+def test_encode_refc_masks_sub_10dbz() -> None:
+    """Verify refc <10 dBZ values are transparent (no precip/noise)."""
+    values = np.array([[0.0, 5.0], [10.0, 20.0]], dtype=np.float32)
+    byte_band, alpha, _ = encode_to_byte_and_alpha(values, "refc")
+
+    assert int(alpha[0, 0]) == 0
+    assert int(alpha[0, 1]) == 0
+    assert int(alpha[1, 0]) == 255
+    assert int(alpha[1, 1]) == 255
+    # 10 dBZ should map to first visible color bin, not white/no-data.
+    assert int(byte_band[1, 0]) == 0
