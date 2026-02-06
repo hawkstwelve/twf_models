@@ -1,0 +1,39 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from app.services import discovery_v2
+
+
+def _touch(path: Path, content: bytes = b"") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+
+
+def test_gfs_discovery_lists_runs_vars_and_frames(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    newer = root / "gfs" / "pnw" / "20260206_06z"
+    older = root / "gfs" / "pnw" / "20260206_00z"
+
+    _touch(newer / "tmp2m" / "fh000.cog.tif", b"COG")
+    _touch(newer / "tmp2m" / "fh006.cog.tif", b"COG")
+    _touch(newer / "wspd10m" / "fh000.cog.tif", b"COG")
+    _touch(older / "tmp2m" / "fh000.cog.tif", b"COG")
+    (root / "gfs" / "pnw" / "LATEST.json").write_text(
+        json.dumps({"run_id": "20260206_06z"})
+    )
+
+    monkeypatch.setenv("TWF_DATA_V2_ROOT", str(root))
+    discovery_v2._CACHE.clear()
+
+    runs = discovery_v2.list_runs("gfs", "pnw")
+    assert runs == ["20260206_06z", "20260206_00z"]
+
+    vars_latest = discovery_v2.list_vars("gfs", "pnw", "latest")
+    assert vars_latest == ["tmp2m", "wspd10m"]
+
+    frames = discovery_v2.list_frames("gfs", "pnw", "latest", "tmp2m")
+    assert [row["fh"] for row in frames] == [0, 6]
