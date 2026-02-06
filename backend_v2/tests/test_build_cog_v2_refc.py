@@ -157,7 +157,7 @@ def test_encode_radar_ptype_combo_uses_argmax_threshold() -> None:
     assert int(byte_band[0, 0]) != 255
     assert meta["ptype_blend"] == "winner_argmax_threshold"
     assert float(meta["ptype_threshold"]) == 0.10
-    assert float(meta["refl_min_dbz"]) == 4.0
+    assert float(meta["refl_min_dbz"]) == 10.0
     assert meta["ptype_noinfo_fallback"] == "rain"
 
 
