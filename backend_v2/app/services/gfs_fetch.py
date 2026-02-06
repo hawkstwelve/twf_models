@@ -1,14 +1,16 @@
 from __future__ import annotations
 
-import concurrent.futures
 import logging
+import os
 import shutil
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlparse
 
 from herbie import Herbie
+import requests
 
 from app.services.paths import repo_root
 
@@ -16,7 +18,11 @@ logger = logging.getLogger(__name__)
 
 IDX_FALLBACK_RATE_SECONDS = 300
 _IDX_FALLBACK_LOG_CACHE: dict[tuple[str, int], float] = {}
-PROBE_TIMEOUT_SECONDS = 10
+TWF_GFS_PRIORITY = os.environ.get("TWF_GFS_PRIORITY", "aws")
+TWF_GFS_HTTP_TIMEOUT_SECONDS = int(os.environ.get("TWF_GFS_HTTP_TIMEOUT_SECONDS", "5"))
+TWF_GFS_PROBE_LOOKBACK_HOURS = int(os.environ.get("TWF_GFS_PROBE_LOOKBACK_HOURS", "12"))
+TWF_GFS_MAX_PROBE_SECONDS = int(os.environ.get("TWF_GFS_MAX_PROBE_SECONDS", "10"))
+TWF_GFS_SKIP_SOURCES = os.environ.get("TWF_GFS_SKIP_SOURCES", "ftpprd.ncep.noaa.gov")
 
 
 class UpstreamNotReady(RuntimeError):
@@ -90,6 +96,68 @@ def _log_idx_missing(run_id: str, fh: int) -> None:
     logger.info("IDX missing; deferring subset: run=%s fh=%02d", run_id, fh)
 
 
+def _parse_priority(value: str | None) -> list[str]:
+    raw = (value or "").strip()
+    if not raw:
+        return []
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _parse_blocked_hosts(value: str | None) -> set[str]:
+    raw = (value or "").strip()
+    if not raw:
+        return set()
+    return {item.strip().lower() for item in raw.split(",") if item.strip()}
+
+
+class _RequestsGuard:
+    def __init__(self, timeout_seconds: int, blocked_hosts: set[str]) -> None:
+        self._timeout_seconds = timeout_seconds
+        self._blocked_hosts = blocked_hosts
+        self._orig_head = requests.head
+        self._orig_get = requests.get
+        self._orig_session_request = requests.sessions.Session.request
+
+    def _wrap(self, fn):
+        def _inner(url, *args, **kwargs):
+            host = urlparse(url).hostname or ""
+            if host.lower() in self._blocked_hosts:
+                raise requests.exceptions.ConnectTimeout(
+                    f"Blocked GFS source: {host}"
+                )
+            kwargs.setdefault("timeout", self._timeout_seconds)
+            return fn(url, *args, **kwargs)
+
+        return _inner
+
+    def _wrap_session_request(self, fn):
+        def _inner(session, method, url, *args, **kwargs):
+            host = urlparse(url).hostname or ""
+            if host.lower() in self._blocked_hosts:
+                raise requests.exceptions.ConnectTimeout(
+                    f"Blocked GFS source: {host}"
+                )
+            kwargs.setdefault("timeout", self._timeout_seconds)
+            return fn(session, method, url, *args, **kwargs)
+
+        return _inner
+
+    def __enter__(self):
+        requests.head = self._wrap(self._orig_head)
+        requests.get = self._wrap(self._orig_get)
+        requests.sessions.Session.request = self._wrap_session_request(self._orig_session_request)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        requests.head = self._orig_head
+        requests.get = self._orig_get
+        requests.sessions.Session.request = self._orig_session_request
+
+
+def _requests_guard(timeout_seconds: int, blocked_hosts: set[str]) -> _RequestsGuard:
+    return _RequestsGuard(timeout_seconds, blocked_hosts)
+
+
 def _select_herbie_search(selectors: object) -> str | None:
     try:
         values = list(getattr(selectors, "search", []))
@@ -160,11 +228,28 @@ def fetch_gfs_grib(
 ) -> GribFetchResult:
     """Example: fetch_grib(model="gfs", region="conus", run="latest", fh=0, var="tmp2m")."""
     base_dir = cache_dir or default_gfs_cache_dir()
-    timeout_seconds = kwargs.get("timeout", PROBE_TIMEOUT_SECONDS)
+    timeout_seconds = kwargs.get("timeout", TWF_GFS_HTTP_TIMEOUT_SECONDS)
     try:
-        timeout_seconds = int(timeout_seconds) if timeout_seconds is not None else PROBE_TIMEOUT_SECONDS
+        timeout_seconds = int(timeout_seconds) if timeout_seconds is not None else TWF_GFS_HTTP_TIMEOUT_SECONDS
     except (TypeError, ValueError):
-        timeout_seconds = PROBE_TIMEOUT_SECONDS
+        timeout_seconds = TWF_GFS_HTTP_TIMEOUT_SECONDS
+    priority_value = kwargs.get("priority", TWF_GFS_PRIORITY)
+    priority = _parse_priority(str(priority_value) if priority_value is not None else None)
+    priority_arg = priority if priority else None
+    lookback_hours = kwargs.get("lookback_hours", TWF_GFS_PROBE_LOOKBACK_HOURS)
+    try:
+        lookback_hours = int(lookback_hours)
+    except (TypeError, ValueError):
+        lookback_hours = TWF_GFS_PROBE_LOOKBACK_HOURS
+    max_probe_seconds = kwargs.get("max_probe_seconds", TWF_GFS_MAX_PROBE_SECONDS)
+    try:
+        max_probe_seconds = int(max_probe_seconds)
+    except (TypeError, ValueError):
+        max_probe_seconds = TWF_GFS_MAX_PROBE_SECONDS
+    skip_sources_value = kwargs.get("skip_sources", TWF_GFS_SKIP_SOURCES)
+    blocked_hosts = _parse_blocked_hosts(
+        str(skip_sources_value) if skip_sources_value is not None else None
+    )
     run_dt = _parse_run_datetime(run)
 
     search = search_override
@@ -174,26 +259,49 @@ def fetch_gfs_grib(
     if not search:
         raise UpstreamNotReady("Subset search required for GFS fetch")
 
+    logger.info(
+        "Fetching GFS GRIB: run=%s fh=%02d model=%s product=%s variable=%s search=%s priority=%s timeout=%ss",
+        run,
+        fh,
+        model,
+        product,
+        variable or "subset",
+        search,
+        ",".join(priority) if priority else "default",
+        timeout_seconds,
+    )
+
     if run_dt is None:
         now = datetime.utcnow().replace(minute=0, second=0, microsecond=0)
         herbie = None
-        for i in range(0, 12):
-            candidate = now - timedelta(hours=i)
-            H = _probe_candidate(
-                candidate,
-                model=model,
-                product=product,
-                fh=fh,
-                timeout_seconds=timeout_seconds,
-            )
-            if H is not None:
-                herbie = H
-                run_dt = H.date
-                break
+        start_ts = time.time()
+        with _requests_guard(timeout_seconds, blocked_hosts):
+            for i in range(0, max(1, lookback_hours)):
+                if time.time() - start_ts > max_probe_seconds:
+                    raise UpstreamNotReady("Could not resolve latest GFS cycle (probe timeout)")
+                candidate = now - timedelta(hours=i)
+                try:
+                    H = Herbie(candidate, model=model, product=product, fxx=fh, priority=priority_arg)
+                except (requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout) as exc:
+                    raise UpstreamNotReady(
+                        f"Upstream timeout while probing GFS source: {exc}"
+                    ) from exc
+                if H.grib:
+                    herbie = H
+                    run_dt = H.date
+                    break
         if herbie is None or run_dt is None:
-            raise UpstreamNotReady("Could not resolve latest GFS cycle in the last 12 hours")
+            raise UpstreamNotReady(
+                f"Could not resolve latest GFS cycle in the last {lookback_hours} hours"
+            )
     else:
-        herbie = Herbie(run_dt, model=model, product=product, fxx=fh)
+        with _requests_guard(timeout_seconds, blocked_hosts):
+            try:
+                herbie = Herbie(run_dt, model=model, product=product, fxx=fh, priority=priority_arg)
+            except (requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout) as exc:
+                raise UpstreamNotReady(
+                    f"Upstream timeout while probing GFS source: {exc}"
+                ) from exc
 
     target_dir = _cache_dir_for_run(base_dir, run_dt)
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -206,23 +314,23 @@ def fetch_gfs_grib(
         logger.info("Using cached GFS GRIB: %s", expected_path)
         return GribFetchResult(path=expected_path, is_full_file=False)
 
-    logger.info(
-        "Fetching GFS GRIB: run=%s fh=%02d model=%s product=%s variable=%s search=%s",
-        run,
-        fh,
-        model,
-        product,
-        variable or "subset",
-        search,
-    )
-
     try:
-        downloaded = herbie.download(search, save_dir=target_dir)
+        with _requests_guard(timeout_seconds, blocked_hosts):
+            downloaded = herbie.download(
+                search,
+                save_dir=target_dir,
+                subset=True,
+                save_idx=True,
+            )
     except Exception as exc:
         message = str(exc)
         if _is_idx_missing_message(message):
             _log_idx_missing(run_dt.strftime("%Y%m%d_%Hz"), fh)
             raise UpstreamNotReady("Index not ready for requested GFS GRIB") from exc
+        if isinstance(exc, (requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout)):
+            raise UpstreamNotReady(
+                f"Upstream timeout while probing GFS source: {exc}"
+            ) from exc
         raise RuntimeError(f"Herbie download failed: {exc}") from exc
 
     if isinstance(downloaded, (list, tuple)):

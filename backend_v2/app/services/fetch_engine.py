@@ -134,6 +134,7 @@ def fetch_grib(
     region: str,
     *,
     cache_dir: Path | None = None,
+    **kwargs: object,
 ) -> FetchResult:
     plugin = get_model(model)
     var_norm = plugin.normalize_var_id(var)
@@ -167,6 +168,7 @@ def fetch_grib(
                     variable=fetch_var,
                     search_override=search,
                     cache_dir=cache_dir,
+                    **kwargs,
                 )
             except Exception as exc:
                 if is_gfs_not_ready(exc):
@@ -218,6 +220,7 @@ def fetch_grib(
                         variable=component_var,
                         search_override=search,
                         cache_dir=cache_dir,
+                        **kwargs,
                     )
                 except Exception as exc:
                     if is_gfs_not_ready(exc):
