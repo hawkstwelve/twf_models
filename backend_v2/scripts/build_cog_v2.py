@@ -209,10 +209,11 @@ def _encode_with_nodata(
         colors = spec.get("colors") or []
         if not levels or not colors:
             raise RuntimeError(f"Discrete spec missing levels/colors for {requested_var}")
-        bins = np.digitize(np.where(valid_mask, values, levels[0]), levels, right=False) - 1
+        visible_mask = valid_mask & (values >= levels[0])
+        bins = np.digitize(np.where(visible_mask, values, levels[0]), levels, right=False) - 1
         bins = np.clip(bins, 0, len(colors) - 1).astype(np.uint8)
         byte_band = bins.astype(np.uint8)
-        byte_band[~valid_mask] = 255
+        byte_band[~visible_mask] = 255
         alpha = np.where(byte_band == 255, 0, 255).astype(np.uint8)
         meta = {
             "var_key": requested_var,
