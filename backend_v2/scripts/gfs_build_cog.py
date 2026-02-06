@@ -391,7 +391,13 @@ def build_gfs_cog(
                 out_tif=src_tif,
             )
 
-            warp_to_3857(src_tif, warped_tif, clip_bounds_3857=clip_bounds_3857)
+            warp_resampling = "near" if meta.get("kind") == "discrete" else "bilinear"
+            warp_to_3857(
+                src_tif,
+                warped_tif,
+                clip_bounds_3857=clip_bounds_3857,
+                resampling=warp_resampling,
+            )
             info = gdalinfo_json(warped_tif)
             assert_alpha_present(info)
             log_warped_info(warped_tif, info)

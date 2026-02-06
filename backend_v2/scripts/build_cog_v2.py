@@ -640,16 +640,24 @@ def write_byte_geotiff_from_arrays(
     return out_tif
 
 
-def warp_to_3857(src_tif: Path, dst_tif: Path, clip_bounds_3857: tuple[float, float, float, float] | None = None) -> None:
+def warp_to_3857(
+    src_tif: Path,
+    dst_tif: Path,
+    clip_bounds_3857: tuple[float, float, float, float] | None = None,
+    *,
+    resampling: str = "bilinear",
+) -> None:
     require_gdal("gdalwarp")
     dst_tif.parent.mkdir(parents=True, exist_ok=True)
+    if resampling not in {"near", "bilinear"}:
+        raise ValueError(f"Unsupported warp resampling: {resampling}")
 
     cmd = [
         "gdalwarp",
         "-t_srs",
         "EPSG:3857",
         "-r",
-        "bilinear",
+        resampling,
         "-srcnodata",
         "255",
         "-dstnodata",
@@ -1234,8 +1242,14 @@ def main() -> int:
             print(f"Writing byte GeoTIFF: {byte_tif}")
             write_byte_geotiff_from_arrays(da, byte_band, alpha_band, byte_tif)
 
-            print(f"Warping to EPSG:3857: {warped_tif}")
-            warp_to_3857(byte_tif, warped_tif, clip_bounds_3857=clip_bounds_3857)
+            warp_resampling = "near" if meta.get("kind") == "discrete" else "bilinear"
+            print(f"Warping to EPSG:3857 ({warp_resampling}): {warped_tif}")
+            warp_to_3857(
+                byte_tif,
+                warped_tif,
+                clip_bounds_3857=clip_bounds_3857,
+                resampling=warp_resampling,
+            )
 
             info = gdalinfo_json(warped_tif)
             assert_alpha_present(info)
