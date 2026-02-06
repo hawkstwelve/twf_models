@@ -74,3 +74,9 @@ def test_fetch_moves_download_into_deterministic_path(
     assert result.path == expected
     assert expected.exists()
     assert not source.exists()
+
+
+def test_parse_run_datetime_accepts_scheduler_run_id() -> None:
+    parsed = gfs_fetch._parse_run_datetime("20260206_06z")
+    assert parsed is not None
+    assert parsed.strftime("%Y%m%d%H") == "2026020606"

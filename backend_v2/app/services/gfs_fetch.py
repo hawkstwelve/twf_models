@@ -54,14 +54,14 @@ def _is_readable_grib(path: Path) -> bool:
 def _parse_run_datetime(run: str) -> datetime | None:
     if run.lower() == "latest":
         return None
-    for fmt in ("%Y%m%d%H", "%Y%m%d_%H", "%Y%m%dT%H"):
+    for fmt in ("%Y%m%d%H", "%Y%m%d_%H", "%Y%m%d_%Hz", "%Y%m%dT%H"):
         try:
             return datetime.strptime(run, fmt)
         except ValueError:
             continue
     if len(run) == 8 and run.isdigit():
         return datetime.strptime(run + "00", "%Y%m%d%H")
-    raise ValueError("Run format must be 'latest' or YYYYMMDD or YYYYMMDDhh")
+    raise ValueError("Run format must be 'latest' or YYYYMMDD or YYYYMMDDhh or YYYYMMDD_hh[z]")
 
 
 def _cache_dir_for_run(base_dir: Path, run_dt: datetime) -> Path:
