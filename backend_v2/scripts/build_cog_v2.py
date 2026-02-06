@@ -350,32 +350,40 @@ def _encode_radar_ptype_combo(
 
     byte_band = np.full(refl_values.shape, 255, dtype=np.uint8)
     alpha = np.zeros(refl_values.shape, dtype=np.uint8)
-    finite_refl = np.isfinite(refl_values)
+
+    # Match V1 data gates: remove missing/clear-air and keep plausible dBZ range.
+    refl = np.asarray(refl_values, dtype=np.float32)
+    finite_refl = np.isfinite(refl)
+    refl = np.where(finite_refl, refl, np.nan)
+    refl = np.where(refl > 0.0, refl, np.nan)
+    refl = np.where((refl >= -10.0) & (refl <= 80.0), refl, np.nan)
 
     flat_colors: list[str] = []
     breaks: dict[str, dict[str, int]] = {}
     color_offset = 0
 
-    component_stack = np.stack(
-        [
-            np.where(np.isfinite(ptype_values[type_to_component[ptype]]), ptype_values[type_to_component[ptype]], 0.0)
-            for ptype in type_order
-        ],
-        axis=0,
-    ).astype(np.float32)
-    component_stack = np.where(component_stack > 0.0, component_stack, 0.0)
-    dominant_idx = np.argmax(component_stack, axis=0)
-    dominant_val = np.max(component_stack, axis=0)
-    has_ptype = dominant_val > 0.0
+    # Match V1 p-type selection: sanitize to [0,1], pick argmax winner, and require
+    # a minimum confidence to avoid washed overlays from tiny non-zero values.
+    type_thresh = 0.10
+    stack = []
+    for ptype in type_order:
+        comp_key = type_to_component[ptype]
+        comp_vals = np.asarray(ptype_values[comp_key], dtype=np.float32)
+        comp_vals = np.where(np.isfinite(comp_vals), comp_vals, 0.0)
+        comp_vals = np.where((comp_vals >= 0.0) & (comp_vals <= 1.0), comp_vals, 0.0)
+        stack.append(comp_vals)
+    mask_stack = np.stack(stack, axis=0)
+    winner_idx = np.argmax(mask_stack, axis=0)
+    has_type_info = np.max(mask_stack, axis=0) >= type_thresh
 
     for idx, ptype in enumerate(type_order):
         cfg = RADAR_CONFIG[ptype]
         levels = list(cfg["levels"])
         colors = list(cfg["colors"])
-        type_mask = has_ptype & (dominant_idx == idx)
-        visible = finite_refl & type_mask & (refl_values >= levels[0])
+        type_mask = has_type_info & (winner_idx == idx)
+        visible = np.isfinite(refl) & type_mask & (refl >= 10.0) & (refl >= levels[0])
         if np.any(visible):
-            bins = np.digitize(refl_values, levels, right=False) - 1
+            bins = np.digitize(refl, levels, right=False) - 1
             bins = np.clip(bins, 0, len(colors) - 1).astype(np.uint8)
             byte_band[visible] = (color_offset + bins[visible]).astype(np.uint8)
             alpha[visible] = 255
@@ -393,7 +401,9 @@ def _encode_radar_ptype_combo(
         "ptype_order": list(type_order),
         "ptype_breaks": breaks,
         "ptype_levels": {key: list(RADAR_CONFIG[key]["levels"]) for key in type_order},
-        "ptype_blend": "dominant_component",
+        "ptype_blend": "winner_argmax_threshold",
+        "ptype_threshold": type_thresh,
+        "refl_min_dbz": 10.0,
     }
     return byte_band, alpha, meta
 
