@@ -111,7 +111,7 @@ def select_mvp_vars() -> list[str]:
     if wind_like is None:
         logger.warning("No wind-like variable found in VAR_SPECS; selecting fallback")
 
-    discrete_var = "radar_rain" if "radar_rain" in VAR_SPECS else None
+    discrete_var = "radar_ptype" if "radar_ptype" in VAR_SPECS else None
     if discrete_var is None:
         discrete_var = next(
             (key for key, spec in VAR_SPECS.items() if spec.get("type") == "discrete"),

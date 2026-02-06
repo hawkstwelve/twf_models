@@ -70,7 +70,7 @@ def test_wspd10m_explicit_run_is_reused_for_both_components(
     assert calls == ["20260206_06", "20260206_06"]
 
 
-def test_radar_rain_latest_reuses_resolved_run_for_second_component(
+def test_radar_ptype_combo_latest_reuses_resolved_run_for_all_components(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -93,10 +93,16 @@ def test_radar_rain_latest_reuses_resolved_run_for_second_component(
         model="gfs",
         run="latest",
         fh=0,
-        var="radar_rain",
+        var="radar_ptype",
         region="pnw",
     )
 
     assert result.not_ready_reason is None
     assert result.component_paths is not None
-    assert calls == [("latest", "refc"), ("20260206_06", "crain")]
+    assert calls == [
+        ("latest", "refc"),
+        ("20260206_06", "crain"),
+        ("20260206_06", "csnow"),
+        ("20260206_06", "cicep"),
+        ("20260206_06", "cfrzr"),
+    ]

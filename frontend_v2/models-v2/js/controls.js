@@ -62,10 +62,7 @@ function applyVariableLabels(items) {
     "precip_snow": "Snow",
     "precip_sleet": "Sleet",
     "precip_frzr": "Freezing Rain",
-    "radar_rain": "Radar (Rain)",
-    "radar_snow": "Radar (Snow)",
-    "radar_sleet": "Radar (Sleet)",
-    "radar_frzr": "Radar (Freezing Rain)",
+    "radar_ptype": "Composite Reflectivity + P-Type",
   };
   
   return items.map((item) => {

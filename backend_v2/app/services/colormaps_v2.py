@@ -82,6 +82,30 @@ RADAR_CONFIG = {
     },
 }
 
+RADAR_PTYPE_ORDER = ("rain", "snow", "sleet", "frzr")
+
+
+def _build_radar_ptype_flat_palette() -> tuple[list[float], list[str], dict[str, dict[str, int]]]:
+    levels: list[float] = []
+    colors: list[str] = []
+    breaks: dict[str, dict[str, int]] = {}
+    offset = 0
+    for key in RADAR_PTYPE_ORDER:
+        cfg = RADAR_CONFIG[key]
+        type_levels = list(cfg["levels"])
+        type_colors = list(cfg["colors"])
+        levels.extend(type_levels)
+        colors.extend(type_colors)
+        breaks[key] = {
+            "offset": offset,
+            "count": len(type_colors),
+        }
+        offset += len(type_colors)
+    return levels, colors, breaks
+
+
+RADAR_PTYPE_LEVELS, RADAR_PTYPE_COLORS, RADAR_PTYPE_BREAKS = _build_radar_ptype_flat_palette()
+
 # 2m temperature (°F) palette
 temp_colors = [
     "#e8d0d8", "#d8b0c8", "#c080b0", "#9050a0", "#703090",
@@ -244,29 +268,15 @@ VAR_SPECS = {
         "levels": PRECIP_CONFIG["snow"]["levels"],
         "colors": PRECIP_CONFIG["snow"]["colors"],
     },
-    "radar_rain": {
+    "radar_ptype": {
         "type": "discrete",
         "units": "dBZ",
-        "levels": RADAR_CONFIG["rain"]["levels"],
-        "colors": RADAR_CONFIG["rain"]["colors"],
-    },
-    "radar_frzr": {
-        "type": "discrete",
-        "units": "dBZ",
-        "levels": RADAR_CONFIG["frzr"]["levels"],
-        "colors": RADAR_CONFIG["frzr"]["colors"],
-    },
-    "radar_sleet": {
-        "type": "discrete",
-        "units": "dBZ",
-        "levels": RADAR_CONFIG["sleet"]["levels"],
-        "colors": RADAR_CONFIG["sleet"]["colors"],
-    },
-    "radar_snow": {
-        "type": "discrete",
-        "units": "dBZ",
-        "levels": RADAR_CONFIG["snow"]["levels"],
-        "colors": RADAR_CONFIG["snow"]["colors"],
+        "levels": RADAR_PTYPE_LEVELS,
+        "colors": RADAR_PTYPE_COLORS,
+        "display_name": "Composite Reflectivity + P-Type",
+        "legend_title": "Composite Reflectivity + P-Type (dBZ)",
+        "ptype_order": list(RADAR_PTYPE_ORDER),
+        "ptype_breaks": RADAR_PTYPE_BREAKS,
     },
     "precip_total": {
         "type": "discrete",

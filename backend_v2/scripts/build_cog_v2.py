@@ -26,7 +26,7 @@ import xarray as xr
 from pyproj import CRS, Transformer
 
 from app.models import ModelPlugin, VarSpec, get_model
-from app.services.colormaps_v2 import VAR_SPECS
+from app.services.colormaps_v2 import RADAR_CONFIG, VAR_SPECS
 from app.services.fetch_engine import fetch_grib
 from app.services.grid import detect_latlon_names, normalize_latlon_coords
 
@@ -152,29 +152,42 @@ def _component_ids(var_spec: VarSpec) -> tuple[str, str]:
     return "10u", "10v"
 
 
-def _radar_component_ids(var_spec: VarSpec) -> tuple[str, str]:
+def _radar_blend_component_ids(var_spec: VarSpec) -> tuple[str, str, str, str, str]:
     selectors = var_spec.selectors
-    refl_key = selectors.hints.get("refl_component")
-    ptype_key = selectors.hints.get("ptype_component")
-    if refl_key and ptype_key:
-        return str(refl_key), str(ptype_key)
-    return "refc", "crain"
+    refl_key = selectors.hints.get("refl_component") or "refc"
+    rain_key = selectors.hints.get("rain_component") or "crain"
+    snow_key = selectors.hints.get("snow_component") or "csnow"
+    sleet_key = selectors.hints.get("sleet_component") or "cicep"
+    frzr_key = selectors.hints.get("frzr_component") or "cfrzr"
+    return (
+        str(refl_key),
+        str(rain_key),
+        str(snow_key),
+        str(sleet_key),
+        str(frzr_key),
+    )
 
 
-def _resolve_radar_component_paths(
+def _resolve_radar_blend_component_paths(
     component_paths: dict[str, Path],
     *,
     refl_key: str,
-    ptype_key: str,
-) -> tuple[Path, Path]:
-    refl_path = component_paths.get(refl_key)
-    ptype_path = component_paths.get(ptype_key)
-    if refl_path is None or ptype_path is None:
-        available = sorted(component_paths.keys())
-        raise RuntimeError(
-            f"Missing radar_ptype component files; expected=({refl_key},{ptype_key}) have={available}"
-        )
-    return refl_path, ptype_path
+    rain_key: str,
+    snow_key: str,
+    sleet_key: str,
+    frzr_key: str,
+) -> tuple[Path, Path, Path, Path, Path]:
+    resolved: list[Path] = []
+    expected = [refl_key, rain_key, snow_key, sleet_key, frzr_key]
+    for key in expected:
+        path = component_paths.get(key)
+        if path is None:
+            available = sorted(component_paths.keys())
+            raise RuntimeError(
+                f"Missing radar_ptype_combo component file: expected={key} have={available}"
+            )
+        resolved.append(path)
+    return tuple(resolved)  # type: ignore[return-value]
 
 
 def _coerce_grib_path(grib_path: object) -> Path:
@@ -310,6 +323,69 @@ def _encode_with_nodata(
         "scale_max": float(vmax),
     }
     return byte_band, alpha, meta, valid_mask, stats, spec_key
+
+
+def _encode_radar_ptype_combo(
+    *,
+    requested_var: str,
+    normalized_var: str,
+    refl_values: np.ndarray,
+    ptype_values: dict[str, np.ndarray],
+) -> tuple[np.ndarray, np.ndarray, dict]:
+    if refl_values.ndim != 2:
+        raise RuntimeError(f"Expected 2D reflectivity array, got shape={refl_values.shape}")
+    for key, values in ptype_values.items():
+        if values.shape != refl_values.shape:
+            raise RuntimeError(
+                f"P-type component shape mismatch for {key}: refl={refl_values.shape} ptype={values.shape}"
+            )
+
+    # Precedence from least to most restrictive; later masks overwrite earlier ones if overlap occurs.
+    type_order = ("rain", "snow", "sleet", "frzr")
+    type_to_component = {
+        "rain": "crain",
+        "snow": "csnow",
+        "sleet": "cicep",
+        "frzr": "cfrzr",
+    }
+
+    byte_band = np.full(refl_values.shape, 255, dtype=np.uint8)
+    alpha = np.zeros(refl_values.shape, dtype=np.uint8)
+    finite_refl = np.isfinite(refl_values)
+
+    flat_colors: list[str] = []
+    breaks: dict[str, dict[str, int]] = {}
+    color_offset = 0
+
+    for ptype in type_order:
+        cfg = RADAR_CONFIG[ptype]
+        levels = list(cfg["levels"])
+        colors = list(cfg["colors"])
+        comp_key = type_to_component[ptype]
+        comp_vals = ptype_values[comp_key]
+        ptype_mask = np.isfinite(comp_vals) & (comp_vals > 0.0)
+        visible = finite_refl & ptype_mask & (refl_values >= levels[0])
+        if np.any(visible):
+            bins = np.digitize(refl_values, levels, right=False) - 1
+            bins = np.clip(bins, 0, len(colors) - 1).astype(np.uint8)
+            byte_band[visible] = (color_offset + bins[visible]).astype(np.uint8)
+            alpha[visible] = 255
+        breaks[ptype] = {"offset": color_offset, "count": len(colors)}
+        flat_colors.extend(colors)
+        color_offset += len(colors)
+
+    meta = {
+        "var_key": requested_var,
+        "source_var": normalized_var,
+        "spec_key": "radar_ptype",
+        "kind": "discrete",
+        "units": "dBZ",
+        "colors": flat_colors,
+        "ptype_order": list(type_order),
+        "ptype_breaks": breaks,
+        "ptype_levels": {key: list(RADAR_CONFIG[key]["levels"]) for key in type_order},
+    }
+    return byte_band, alpha, meta
 
 
 def require_gdal(cmd_name: str) -> None:
@@ -718,7 +794,10 @@ def main() -> int:
     u_path: Path | None = None
     v_path: Path | None = None
     refl_path: Path | None = None
-    ptype_path: Path | None = None
+    rain_path: Path | None = None
+    snow_path: Path | None = None
+    sleet_path: Path | None = None
+    frzr_path: Path | None = None
 
     try:
         _, var_spec = get_plugin_and_var(args.model, normalized_var)
@@ -754,7 +833,7 @@ def main() -> int:
 
         print(f"GRIB path (u10): {u_path}")
         print(f"GRIB path (v10): {v_path}")
-    elif derive_kind == "radar_ptype":
+    elif derive_kind == "radar_ptype_combo":
         try:
             fetch_result = fetch_grib(
                 model=args.model,
@@ -768,22 +847,30 @@ def main() -> int:
                 _log_upstream_not_ready(args, fetch_result.not_ready_reason)
                 return 2
             if not fetch_result.component_paths:
-                raise RuntimeError("Missing component paths for radar_ptype")
-            refl_component, ptype_component = _radar_component_ids(var_spec)
-            refl_path, ptype_path = _resolve_radar_component_paths(
+                raise RuntimeError("Missing component paths for radar_ptype_combo")
+            refl_component, rain_component, snow_component, sleet_component, frzr_component = (
+                _radar_blend_component_ids(var_spec)
+            )
+            refl_path, rain_path, snow_path, sleet_path, frzr_path = _resolve_radar_blend_component_paths(
                 fetch_result.component_paths,
                 refl_key=refl_component,
-                ptype_key=ptype_component,
+                rain_key=rain_component,
+                snow_key=snow_component,
+                sleet_key=sleet_component,
+                frzr_key=frzr_component,
             )
             grib_path = refl_path
         except Exception as exc:
             if is_upstream_not_ready(exc):
                 _log_upstream_not_ready(args, str(exc))
                 return 2
-            logger.exception("Failed to fetch GRIB components for radar_ptype")
+            logger.exception("Failed to fetch GRIB components for radar_ptype_combo")
             return 2
         print(f"GRIB path (reflectivity): {refl_path}")
-        print(f"GRIB path (ptype): {ptype_path}")
+        print(f"GRIB path (rain mask): {rain_path}")
+        print(f"GRIB path (snow mask): {snow_path}")
+        print(f"GRIB path (sleet mask): {sleet_path}")
+        print(f"GRIB path (frzr mask): {frzr_path}")
     else:
         try:
             fetch_result = fetch_grib(
@@ -813,7 +900,11 @@ def main() -> int:
     ds_u: xr.Dataset | None = None
     ds_v: xr.Dataset | None = None
     ds_refl: xr.Dataset | None = None
-    ds_ptype: xr.Dataset | None = None
+    ds_rain: xr.Dataset | None = None
+    ds_snow: xr.Dataset | None = None
+    ds_sleet: xr.Dataset | None = None
+    ds_frzr: xr.Dataset | None = None
+    pre_encoded: tuple[np.ndarray, np.ndarray, dict] | None = None
     try:
         if derive_kind == "wspd10m":
             try:
@@ -905,43 +996,43 @@ def main() -> int:
                 raise RuntimeError(
                     f"Failed to derive wspd10m: {type(exc).__name__}: {exc}"
                 ) from exc
-        elif derive_kind == "radar_ptype":
+        elif derive_kind == "radar_ptype_combo":
             try:
-                refl_component, ptype_component = _radar_component_ids(var_spec)
-                refl_spec = plugin.get_var(refl_component)
-                ptype_spec = plugin.get_var(ptype_component)
-                ds_refl = _open_cfgrib_dataset(refl_path, refl_spec)
-                ds_ptype = _open_cfgrib_dataset(ptype_path, ptype_spec)
-                refl_da = plugin.select_dataarray(ds_refl, refl_component)
-                ptype_da = plugin.select_dataarray(ds_ptype, ptype_component)
-
-                if "time" in refl_da.dims:
-                    refl_da = refl_da.isel(time=0)
-                if "time" in ptype_da.dims:
-                    ptype_da = ptype_da.isel(time=0)
-                refl_da = refl_da.squeeze()
-                ptype_da = ptype_da.squeeze()
-                if refl_da.shape != ptype_da.shape:
-                    raise RuntimeError(
-                        "radar_ptype component shape mismatch: "
-                        f"refl_shape={refl_da.shape} ptype_shape={ptype_da.shape}"
-                    )
-                refl_vals = np.asarray(refl_da.values, dtype=np.float32)
-                ptype_vals = np.asarray(ptype_da.values, dtype=np.float32)
-                mask = np.isfinite(ptype_vals) & (ptype_vals > 0.0)
-                derived_vals = np.where(mask, refl_vals, np.nan).astype(np.float32)
-                da = xr.DataArray(
-                    derived_vals,
-                    dims=refl_da.dims,
-                    coords={dim: refl_da.coords[dim] for dim in refl_da.dims if dim in refl_da.coords},
-                    name=normalized_var,
+                refl_component, rain_component, snow_component, sleet_component, frzr_component = (
+                    _radar_blend_component_ids(var_spec)
                 )
-                da.attrs = dict(refl_da.attrs)
-                da.attrs["GRIB_units"] = da.attrs.get("GRIB_units", "dBZ")
+                ds_refl = _open_cfgrib_dataset(refl_path, plugin.get_var(refl_component))
+                ds_rain = _open_cfgrib_dataset(rain_path, plugin.get_var(rain_component))
+                ds_snow = _open_cfgrib_dataset(snow_path, plugin.get_var(snow_component))
+                ds_sleet = _open_cfgrib_dataset(sleet_path, plugin.get_var(sleet_component))
+                ds_frzr = _open_cfgrib_dataset(frzr_path, plugin.get_var(frzr_component))
+
+                refl_da = plugin.select_dataarray(ds_refl, refl_component)
+                rain_da = plugin.select_dataarray(ds_rain, rain_component)
+                snow_da = plugin.select_dataarray(ds_snow, snow_component)
+                sleet_da = plugin.select_dataarray(ds_sleet, sleet_component)
+                frzr_da = plugin.select_dataarray(ds_frzr, frzr_component)
+
+                arrays = [refl_da, rain_da, snow_da, sleet_da, frzr_da]
+                arrays = [arr.isel(time=0) if "time" in arr.dims else arr for arr in arrays]
+                refl_da, rain_da, snow_da, sleet_da, frzr_da = [arr.squeeze() for arr in arrays]
+                da = refl_da
+
+                pre_encoded = _encode_radar_ptype_combo(
+                    requested_var=args.var,
+                    normalized_var=normalized_var,
+                    refl_values=np.asarray(refl_da.values, dtype=np.float32),
+                    ptype_values={
+                        "crain": np.asarray(rain_da.values, dtype=np.float32),
+                        "csnow": np.asarray(snow_da.values, dtype=np.float32),
+                        "cicep": np.asarray(sleet_da.values, dtype=np.float32),
+                        "cfrzr": np.asarray(frzr_da.values, dtype=np.float32),
+                    },
+                )
             except Exception as exc:
-                logger.exception("radar_ptype derivation failed")
+                logger.exception("radar_ptype_combo derivation failed")
                 raise RuntimeError(
-                    f"Failed to derive radar_ptype: {type(exc).__name__}: {exc}"
+                    f"Failed to derive radar_ptype_combo: {type(exc).__name__}: {exc}"
                 ) from exc
         else:
             try:
@@ -1030,13 +1121,22 @@ def main() -> int:
 
     try:
         start_time = time.time()
-        byte_band, alpha_band, meta, valid_mask, stats, spec_key_used = _encode_with_nodata(
-            values,
-            requested_var=args.var,
-            normalized_var=normalized_var,
-            da=da,
-            allow_range_fallback=allow_range_fallback,
-        )
+        if pre_encoded is None:
+            byte_band, alpha_band, meta, valid_mask, stats, spec_key_used = _encode_with_nodata(
+                values,
+                requested_var=args.var,
+                normalized_var=normalized_var,
+                da=da,
+                allow_range_fallback=allow_range_fallback,
+            )
+        else:
+            byte_band, alpha_band, meta = pre_encoded
+            valid_mask = np.isfinite(values)
+            stats = {
+                "vmin": float(np.nanmin(values[valid_mask])) if np.any(valid_mask) else float("nan"),
+                "vmax": float(np.nanmax(values[valid_mask])) if np.any(valid_mask) else float("nan"),
+            }
+            spec_key_used = "radar_ptype"
 
         if args.var == "tmp2m":
             valid_count = int(np.count_nonzero(valid_mask))
@@ -1159,8 +1259,14 @@ def main() -> int:
             ds_v.close()
         if ds_refl is not None:
             ds_refl.close()
-        if ds_ptype is not None:
-            ds_ptype.close()
+        if ds_rain is not None:
+            ds_rain.close()
+        if ds_snow is not None:
+            ds_snow.close()
+        if ds_sleet is not None:
+            ds_sleet.close()
+        if ds_frzr is not None:
+            ds_frzr.close()
 
     if args.keep_cycles:
         try:

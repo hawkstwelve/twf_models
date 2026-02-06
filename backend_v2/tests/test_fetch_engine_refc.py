@@ -62,7 +62,7 @@ def test_fetch_grib_hrrr_refc_generic_path(monkeypatch, tmp_path: Path) -> None:
     assert result.grib_path.name.endswith(".refc.grib2")
 
 
-def test_fetch_grib_hrrr_radar_rain_derived_components(monkeypatch, tmp_path: Path) -> None:
+def test_fetch_grib_hrrr_radar_ptype_combo_components(monkeypatch, tmp_path: Path) -> None:
     day_dir = tmp_path / "20260206" / "15"
     day_dir.mkdir(parents=True, exist_ok=True)
     calls: list[tuple[str, str | None]] = []
@@ -82,11 +82,16 @@ def test_fetch_grib_hrrr_radar_rain_derived_components(monkeypatch, tmp_path: Pa
         model="hrrr",
         run="latest",
         fh=0,
-        var="radar_rain",
+        var="radar_ptype",
         region="pnw",
     )
 
     assert result.not_ready_reason is None
     assert result.component_paths is not None
-    assert result.grib_path is None
-    assert calls == [("latest", "refc"), ("latest", "crain")]
+    assert calls == [
+        ("latest", "refc"),
+        ("latest", "crain"),
+        ("latest", "csnow"),
+        ("latest", "cicep"),
+        ("latest", "cfrzr"),
+    ]

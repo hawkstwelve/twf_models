@@ -122,6 +122,10 @@ def _component_vars_for_derived(var_spec) -> tuple[str, ...]:
             hints.get("v_component"),
             hints.get("refl_component"),
             hints.get("ptype_component"),
+            hints.get("rain_component"),
+            hints.get("snow_component"),
+            hints.get("sleet_component"),
+            hints.get("frzr_component"),
         )
         if item
     )

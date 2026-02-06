@@ -137,14 +137,21 @@ def _resolve_component_vars(var_spec: object, fallback: tuple[str, str]) -> tupl
     return fallback
 
 
-def _resolve_radar_component_vars(var_spec: object, fallback: tuple[str, str]) -> tuple[str, str]:
+def _resolve_radar_blend_component_vars(
+    var_spec: object,
+    fallback: tuple[str, str, str, str, str],
+) -> tuple[str, str, str, str, str]:
     selectors = getattr(var_spec, "selectors", None)
     if selectors is None:
         return fallback
-    refl_hint = _hint_value(selectors, "refl_component")
-    ptype_hint = _hint_value(selectors, "ptype_component")
-    if refl_hint and ptype_hint:
-        return refl_hint, ptype_hint
+    refl = _hint_value(selectors, "refl_component")
+    rain = _hint_value(selectors, "rain_component")
+    snow = _hint_value(selectors, "snow_component")
+    sleet = _hint_value(selectors, "sleet_component")
+    frzr = _hint_value(selectors, "frzr_component")
+    values = (refl, rain, snow, sleet, frzr)
+    if all(values):
+        return values  # type: ignore[return-value]
     return fallback
 
 
@@ -228,8 +235,11 @@ def fetch_grib(
     derive_kind = str(getattr(var_spec, "derive", "") or "")
     if derive_kind == "wspd10m":
         components = _resolve_component_vars(var_spec, ("10u", "10v"))
-    elif derive_kind == "radar_ptype":
-        components = _resolve_radar_component_vars(var_spec, ("refc", "crain"))
+    elif derive_kind == "radar_ptype_combo":
+        components = _resolve_radar_blend_component_vars(
+            var_spec,
+            ("refc", "crain", "csnow", "cicep", "cfrzr"),
+        )
     else:
         raise HTTPException(
             status_code=501,

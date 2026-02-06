@@ -9,7 +9,7 @@ from scripts.gfs_build_cog import (
     _coerce_run_id,
     _infer_spacing,
     _normalize_latlon_dataarray,
-    _resolve_radar_component_paths,
+    _resolve_radar_blend_component_paths,
 )
 
 
@@ -52,11 +52,24 @@ def test_coerce_run_id_prefers_explicit() -> None:
     assert _coerce_run_id(None, fake_path) == "20260206_06z"
 
 
-def test_resolve_radar_component_paths() -> None:
+def test_resolve_radar_blend_component_paths() -> None:
     comp = {
         "refc": Path("/tmp/refc.grib2"),
         "crain": Path("/tmp/crain.grib2"),
+        "csnow": Path("/tmp/csnow.grib2"),
+        "cicep": Path("/tmp/cicep.grib2"),
+        "cfrzr": Path("/tmp/cfrzr.grib2"),
     }
-    refl, ptype = _resolve_radar_component_paths(comp, refl_key="refc", ptype_key="crain")
+    refl, rain, snow, sleet, frzr = _resolve_radar_blend_component_paths(
+        comp,
+        refl_key="refc",
+        rain_key="crain",
+        snow_key="csnow",
+        sleet_key="cicep",
+        frzr_key="cfrzr",
+    )
     assert refl.name == "refc.grib2"
-    assert ptype.name == "crain.grib2"
+    assert rain.name == "crain.grib2"
+    assert snow.name == "csnow.grib2"
+    assert sleet.name == "cicep.grib2"
+    assert frzr.name == "cfrzr.grib2"

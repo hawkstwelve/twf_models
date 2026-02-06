@@ -4,7 +4,7 @@ import numpy as np
 import xarray as xr
 
 from app.models.base import VarSelectors, VarSpec
-from scripts.build_cog_v2 import _encode_with_nodata
+from scripts.build_cog_v2 import _encode_radar_ptype_combo, _encode_with_nodata
 from scripts import build_cog_v2
 
 
@@ -78,3 +78,30 @@ def test_open_cfgrib_dataset_uses_selector_filter_keys(monkeypatch) -> None:
             "level": 2,
         }
     }
+
+
+def test_encode_radar_ptype_combo_masks_no_ptype() -> None:
+    refl = np.array([[20.0, 20.0], [20.0, np.nan]], dtype=np.float32)
+    rain = np.array([[1.0, 0.0], [0.0, 0.0]], dtype=np.float32)
+    snow = np.array([[0.0, 1.0], [0.0, 0.0]], dtype=np.float32)
+    sleet = np.array([[0.0, 0.0], [1.0, 0.0]], dtype=np.float32)
+    frzr = np.zeros((2, 2), dtype=np.float32)
+
+    byte_band, alpha, meta = _encode_radar_ptype_combo(
+        requested_var="radar_ptype",
+        normalized_var="radar_ptype",
+        refl_values=refl,
+        ptype_values={
+            "crain": rain,
+            "csnow": snow,
+            "cicep": sleet,
+            "cfrzr": frzr,
+        },
+    )
+
+    assert meta["spec_key"] == "radar_ptype"
+    assert int(alpha[0, 0]) == 255
+    assert int(alpha[0, 1]) == 255
+    assert int(alpha[1, 0]) == 255
+    assert int(alpha[1, 1]) == 0
+    assert int(byte_band[1, 1]) == 255

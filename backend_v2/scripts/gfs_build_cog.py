@@ -23,6 +23,7 @@ from app.services.fetch_engine import fetch_grib
 from app.services.grid import detect_latlon_names
 
 from build_cog_v2 import (
+    _encode_radar_ptype_combo,
     _encode_with_nodata,
     _open_cfgrib_dataset,
     _write_sidecar_json,
@@ -168,20 +169,26 @@ def _coerce_run_id(run_id: str | None, path: Path) -> str:
     return _derive_run_id(path)
 
 
-def _resolve_radar_component_paths(
+def _resolve_radar_blend_component_paths(
     component_paths: dict[str, Path],
     *,
     refl_key: str,
-    ptype_key: str,
-) -> tuple[Path, Path]:
-    refl_path = component_paths.get(refl_key)
-    ptype_path = component_paths.get(ptype_key)
-    if refl_path is None or ptype_path is None:
-        available = sorted(component_paths.keys())
-        raise RuntimeError(
-            f"Missing radar_ptype component files; expected=({refl_key},{ptype_key}) have={available}"
-        )
-    return refl_path, ptype_path
+    rain_key: str,
+    snow_key: str,
+    sleet_key: str,
+    frzr_key: str,
+) -> tuple[Path, Path, Path, Path, Path]:
+    expected = [refl_key, rain_key, snow_key, sleet_key, frzr_key]
+    resolved: list[Path] = []
+    for key in expected:
+        path = component_paths.get(key)
+        if path is None:
+            available = sorted(component_paths.keys())
+            raise RuntimeError(
+                f"Missing radar_ptype_combo component file: expected={key} have={available}"
+            )
+        resolved.append(path)
+    return tuple(resolved)  # type: ignore[return-value]
 
 
 def build_gfs_cog(
@@ -225,8 +232,12 @@ def build_gfs_cog(
     ds_u: xr.Dataset | None = None
     ds_v: xr.Dataset | None = None
     ds_refl: xr.Dataset | None = None
-    ds_ptype: xr.Dataset | None = None
+    ds_rain: xr.Dataset | None = None
+    ds_snow: xr.Dataset | None = None
+    ds_sleet: xr.Dataset | None = None
+    ds_frzr: xr.Dataset | None = None
     ds: xr.Dataset | None = None
+    pre_encoded: tuple[np.ndarray, np.ndarray, dict] | None = None
     try:
         derive_kind = str(var_spec.derive or "") if var_spec.derived else ""
         if derive_kind == "wspd10m":
@@ -285,47 +296,51 @@ def build_gfs_cog(
             )
             da.attrs = dict(u_da.attrs)
             da.attrs["GRIB_units"] = "mph"
-        elif derive_kind == "radar_ptype":
+        elif derive_kind == "radar_ptype_combo":
             if not fetch_result.component_paths:
-                raise RuntimeError("Missing component paths for radar_ptype")
+                raise RuntimeError("Missing component paths for radar_ptype_combo")
             refl_component = str(var_spec.selectors.hints.get("refl_component", "refc"))
-            ptype_component = str(var_spec.selectors.hints.get("ptype_component", "crain"))
-            refl_path, ptype_path = _resolve_radar_component_paths(
+            rain_component = str(var_spec.selectors.hints.get("rain_component", "crain"))
+            snow_component = str(var_spec.selectors.hints.get("snow_component", "csnow"))
+            sleet_component = str(var_spec.selectors.hints.get("sleet_component", "cicep"))
+            frzr_component = str(var_spec.selectors.hints.get("frzr_component", "cfrzr"))
+            refl_path, rain_path, snow_path, sleet_path, frzr_path = _resolve_radar_blend_component_paths(
                 fetch_result.component_paths,
                 refl_key=refl_component,
-                ptype_key=ptype_component,
+                rain_key=rain_component,
+                snow_key=snow_component,
+                sleet_key=sleet_component,
+                frzr_key=frzr_component,
             )
-            refl_spec = plugin.get_var(refl_component)
-            ptype_spec = plugin.get_var(ptype_component)
-            ds_refl = _open_cfgrib_dataset(refl_path, refl_spec)
-            ds_ptype = _open_cfgrib_dataset(ptype_path, ptype_spec)
             source_path = refl_path
 
+            ds_refl = _open_cfgrib_dataset(refl_path, plugin.get_var(refl_component))
+            ds_rain = _open_cfgrib_dataset(rain_path, plugin.get_var(rain_component))
+            ds_snow = _open_cfgrib_dataset(snow_path, plugin.get_var(snow_component))
+            ds_sleet = _open_cfgrib_dataset(sleet_path, plugin.get_var(sleet_component))
+            ds_frzr = _open_cfgrib_dataset(frzr_path, plugin.get_var(frzr_component))
+
             refl_da = plugin.select_dataarray(ds_refl, refl_component)
-            ptype_da = plugin.select_dataarray(ds_ptype, ptype_component)
-            if "time" in refl_da.dims:
-                refl_da = refl_da.isel(time=0)
-            if "time" in ptype_da.dims:
-                ptype_da = ptype_da.isel(time=0)
-            refl_da = refl_da.squeeze()
-            ptype_da = ptype_da.squeeze()
-            if refl_da.shape != ptype_da.shape:
-                raise RuntimeError(
-                    "radar_ptype component shape mismatch: "
-                    f"refl_shape={refl_da.shape} ptype_shape={ptype_da.shape}"
-                )
-            refl_vals = np.asarray(refl_da.values, dtype=np.float32)
-            ptype_vals = np.asarray(ptype_da.values, dtype=np.float32)
-            mask = np.isfinite(ptype_vals) & (ptype_vals > 0.0)
-            derived_vals = np.where(mask, refl_vals, np.nan).astype(np.float32)
-            da = xr.DataArray(
-                derived_vals,
-                dims=refl_da.dims,
-                coords={dim: refl_da.coords[dim] for dim in refl_da.dims if dim in refl_da.coords},
-                name=normalized_var,
+            rain_da = plugin.select_dataarray(ds_rain, rain_component)
+            snow_da = plugin.select_dataarray(ds_snow, snow_component)
+            sleet_da = plugin.select_dataarray(ds_sleet, sleet_component)
+            frzr_da = plugin.select_dataarray(ds_frzr, frzr_component)
+
+            arrays = [refl_da, rain_da, snow_da, sleet_da, frzr_da]
+            arrays = [arr.isel(time=0) if "time" in arr.dims else arr for arr in arrays]
+            refl_da, rain_da, snow_da, sleet_da, frzr_da = [arr.squeeze() for arr in arrays]
+            da = refl_da
+            pre_encoded = _encode_radar_ptype_combo(
+                requested_var=var,
+                normalized_var=normalized_var,
+                refl_values=np.asarray(refl_da.values, dtype=np.float32),
+                ptype_values={
+                    "crain": np.asarray(rain_da.values, dtype=np.float32),
+                    "csnow": np.asarray(snow_da.values, dtype=np.float32),
+                    "cicep": np.asarray(sleet_da.values, dtype=np.float32),
+                    "cfrzr": np.asarray(frzr_da.values, dtype=np.float32),
+                },
             )
-            da.attrs = dict(refl_da.attrs)
-            da.attrs["GRIB_units"] = da.attrs.get("GRIB_units", "dBZ")
         else:
             if fetch_result.grib_path is None:
                 raise RuntimeError("Missing GRIB path from fetch result")
@@ -346,13 +361,16 @@ def build_gfs_cog(
 
         da, _, _ = _normalize_latlon_dataarray(da)
         values = np.asarray(da.values, dtype=np.float32)
-        byte_band, alpha_band, meta, _, _, _ = _encode_with_nodata(
-            values,
-            requested_var=var,
-            normalized_var=normalized_var,
-            da=da,
-            allow_range_fallback=allow_range_fallback,
-        )
+        if pre_encoded is None:
+            byte_band, alpha_band, meta, _, _, _ = _encode_with_nodata(
+                values,
+                requested_var=var,
+                normalized_var=normalized_var,
+                da=da,
+                allow_range_fallback=allow_range_fallback,
+            )
+        else:
+            byte_band, alpha_band, meta = pre_encoded
 
         run_id = _coerce_run_id(fetch_result.upstream_run_id, source_path)
         out_root_path = Path(out_root)
@@ -424,8 +442,14 @@ def build_gfs_cog(
             ds_v.close()
         if ds_refl is not None:
             ds_refl.close()
-        if ds_ptype is not None:
-            ds_ptype.close()
+        if ds_rain is not None:
+            ds_rain.close()
+        if ds_snow is not None:
+            ds_snow.close()
+        if ds_sleet is not None:
+            ds_sleet.close()
+        if ds_frzr is not None:
+            ds_frzr.close()
 
 
 def parse_args() -> argparse.Namespace:

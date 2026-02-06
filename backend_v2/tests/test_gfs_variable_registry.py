@@ -50,16 +50,14 @@ def test_gfs_plugin_normalize_var_id() -> None:
     assert GFS_MODEL.normalize_var_id("cref") == "refc"
     assert GFS_MODEL.normalize_var_id("refc") == "refc"
     assert GFS_MODEL.normalize_var_id("ugrd10m") == "10u"
-    assert GFS_MODEL.normalize_var_id("radar_rain") == "radar_rain"
+    assert GFS_MODEL.normalize_var_id("radar_ptype") == "radar_ptype"
 
 
 def test_gfs_plugin_contains_radar_ptype_specs() -> None:
-    rain = GFS_MODEL.get_var("radar_rain")
-    snow = GFS_MODEL.get_var("radar_snow")
-    assert rain is not None
-    assert snow is not None
-    assert rain.derived is True
-    assert rain.derive == "radar_ptype"
+    combo = GFS_MODEL.get_var("radar_ptype")
+    assert combo is not None
+    assert combo.derived is True
+    assert combo.derive == "radar_ptype_combo"
 
 
 def test_gfs_plugin_select_tmp2m_from_selector_attrs() -> None:
