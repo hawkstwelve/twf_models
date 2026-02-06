@@ -340,7 +340,6 @@ def _encode_radar_ptype_combo(
                 f"P-type component shape mismatch for {key}: refl={refl_values.shape} ptype={values.shape}"
             )
 
-    # Precedence from least to most restrictive; later masks overwrite earlier ones if overlap occurs.
     type_order = ("rain", "snow", "sleet", "frzr")
     type_to_component = {
         "rain": "crain",
@@ -357,14 +356,24 @@ def _encode_radar_ptype_combo(
     breaks: dict[str, dict[str, int]] = {}
     color_offset = 0
 
-    for ptype in type_order:
+    component_stack = np.stack(
+        [
+            np.where(np.isfinite(ptype_values[type_to_component[ptype]]), ptype_values[type_to_component[ptype]], 0.0)
+            for ptype in type_order
+        ],
+        axis=0,
+    ).astype(np.float32)
+    component_stack = np.where(component_stack > 0.0, component_stack, 0.0)
+    dominant_idx = np.argmax(component_stack, axis=0)
+    dominant_val = np.max(component_stack, axis=0)
+    has_ptype = dominant_val > 0.0
+
+    for idx, ptype in enumerate(type_order):
         cfg = RADAR_CONFIG[ptype]
         levels = list(cfg["levels"])
         colors = list(cfg["colors"])
-        comp_key = type_to_component[ptype]
-        comp_vals = ptype_values[comp_key]
-        ptype_mask = np.isfinite(comp_vals) & (comp_vals > 0.0)
-        visible = finite_refl & ptype_mask & (refl_values >= levels[0])
+        type_mask = has_ptype & (dominant_idx == idx)
+        visible = finite_refl & type_mask & (refl_values >= levels[0])
         if np.any(visible):
             bins = np.digitize(refl_values, levels, right=False) - 1
             bins = np.clip(bins, 0, len(colors) - 1).astype(np.uint8)
@@ -384,6 +393,7 @@ def _encode_radar_ptype_combo(
         "ptype_order": list(type_order),
         "ptype_breaks": breaks,
         "ptype_levels": {key: list(RADAR_CONFIG[key]["levels"]) for key in type_order},
+        "ptype_blend": "dominant_component",
     }
     return byte_band, alpha, meta
 

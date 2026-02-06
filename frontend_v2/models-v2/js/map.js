@@ -1,6 +1,6 @@
-import { API_BASE, DEFAULTS } from "./config.js?v=20260206-1935";
-import { applyFramesToSlider, initControls } from "./controls.js?v=20260206-1935";
-import { buildTileUrl, createBaseLayer, createLabelLayer, createOverlayLayer } from "./layers.js?v=20260206-1935";
+import { API_BASE, DEFAULTS } from "./config.js?v=20260206-2010";
+import { applyFramesToSlider, initControls } from "./controls.js?v=20260206-2010";
+import { buildTileUrl, createBaseLayer, createLabelLayer, createOverlayLayer } from "./layers.js?v=20260206-2010";
 
 console.debug("modules loaded ok");
 

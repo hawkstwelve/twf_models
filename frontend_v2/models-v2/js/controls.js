@@ -1,5 +1,7 @@
 import { API_BASE, DEFAULTS, VARIABLE_LABELS, VARIABLES } from "./config.js";
 
+const ALLOWED_VARIABLES = new Set(["tmp2m", "wspd10m", "radar_ptype"]);
+
 async function fetchJson(url) {
   const response = await fetch(url, { credentials: "omit" });
   if (!response.ok) {
@@ -57,7 +59,6 @@ function applyVariableLabels(items) {
   const fallbackLabels = {
     "tmp2m": "Surface Temperature",
     "wspd10m": "Wind Speed",
-    "refc": "Composite Reflectivity",
     "precip_rain": "Rain",
     "precip_snow": "Snow",
     "precip_sleet": "Sleet",
@@ -88,6 +89,16 @@ function applyVariableLabels(items) {
       return { ...item, id, label };
     }
     return { id, label };
+  });
+}
+
+function filterVisibleVariables(items) {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+  return items.filter((item) => {
+    const id = asId(item);
+    return id && ALLOWED_VARIABLES.has(id);
   });
 }
 
@@ -289,8 +300,7 @@ export async function initControls({
   }
 
   variables = await fetchVars({ model: selectedModel, region: selectedRegion, run: selectedRun });
-
-  variables = applyVariableLabels(variables);
+  variables = filterVisibleVariables(applyVariableLabels(variables));
 
   selectedVar = pickDefaultValue(variables, selectedVar);
   if (varSelect) {
@@ -392,7 +402,7 @@ export async function initControls({
       }
 
       variables = await fetchVars({ model: selectedModel, region: selectedRegion, run: selectedRun });
-      variables = applyVariableLabels(variables);
+      variables = filterVisibleVariables(applyVariableLabels(variables));
       selectedVar = pickDefaultValue(variables, DEFAULTS.variable);
       if (varSelect) {
         setSelectOptions(varSelect, variables);
@@ -419,7 +429,7 @@ export async function initControls({
       }
 
       variables = await fetchVars({ model: selectedModel, region: selectedRegion, run: selectedRun });
-      variables = applyVariableLabels(variables);
+      variables = filterVisibleVariables(applyVariableLabels(variables));
       selectedVar = pickDefaultValue(variables, DEFAULTS.variable);
       if (varSelect) {
         setSelectOptions(varSelect, variables);
@@ -434,7 +444,7 @@ export async function initControls({
     runSelect.addEventListener("change", async (event) => {
       selectedRun = event.target.value || DEFAULTS.run;
       variables = await fetchVars({ model: selectedModel, region: selectedRegion, run: selectedRun });
-      variables = applyVariableLabels(variables);
+      variables = filterVisibleVariables(applyVariableLabels(variables));
       selectedVar = pickDefaultValue(variables, DEFAULTS.variable);
       if (varSelect) {
         setSelectOptions(varSelect, variables);

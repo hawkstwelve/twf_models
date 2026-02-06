@@ -105,3 +105,29 @@ def test_encode_radar_ptype_combo_masks_no_ptype() -> None:
     assert int(alpha[1, 0]) == 255
     assert int(alpha[1, 1]) == 0
     assert int(byte_band[1, 1]) == 255
+
+
+def test_encode_radar_ptype_combo_prefers_dominant_component() -> None:
+    refl = np.array([[30.0]], dtype=np.float32)
+    rain = np.array([[0.4]], dtype=np.float32)
+    snow = np.array([[0.8]], dtype=np.float32)
+    sleet = np.array([[0.1]], dtype=np.float32)
+    frzr = np.array([[0.2]], dtype=np.float32)
+
+    byte_band, alpha, meta = _encode_radar_ptype_combo(
+        requested_var="radar_ptype",
+        normalized_var="radar_ptype",
+        refl_values=refl,
+        ptype_values={
+            "crain": rain,
+            "csnow": snow,
+            "cicep": sleet,
+            "cfrzr": frzr,
+        },
+    )
+
+    assert int(alpha[0, 0]) == 255
+    snow_offset = int(meta["ptype_breaks"]["snow"]["offset"])
+    frzr_offset = int(meta["ptype_breaks"]["frzr"]["offset"])
+    pixel = int(byte_band[0, 0])
+    assert snow_offset <= pixel < frzr_offset
