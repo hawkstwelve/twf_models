@@ -813,6 +813,9 @@ def run_gdaladdo_overviews(
     base_cmd = [
         "gdaladdo",
         "--config",
+        "GDAL_TIFF_INTERNAL_OVERVIEW",
+        "YES",
+        "--config",
         "COMPRESS_OVERVIEW",
         "DEFLATE",
         "--config",
@@ -828,6 +831,9 @@ def run_gdaladdo_overviews(
             + [str(cog_path)]
             + _OVERVIEW_LEVELS
         )
+
+    # Ensure a clean slate if COG driver produced internal overviews unexpectedly.
+    run_cmd(base_cmd + ["-clean", str(cog_path)])
 
     _run(band1_resampling, ["-b", "1"])
     _run(band2_resampling, ["-b", "2"])
