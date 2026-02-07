@@ -745,6 +745,46 @@ def gdalinfo_json(path: Path) -> dict:
     return run_cmd_json(["gdalinfo", "-json", str(path)])
 
 
+_OVERVIEW_LEVELS = ["2", "4", "8", "16", "32", "64"]
+
+
+def run_gdaladdo_overviews(
+    cog_path: Path,
+    band1_resampling: str,
+    band2_resampling: str,
+) -> None:
+    require_gdal("gdaladdo")
+    base_cmd = [
+        "gdaladdo",
+        "--config",
+        "COMPRESS_OVERVIEW",
+        "DEFLATE",
+        "--config",
+        "INTERLEAVE_OVERVIEW",
+        "PIXEL",
+    ]
+
+    def _run(resampling: str, extra_args: list[str]) -> None:
+        run_cmd(
+            base_cmd
+            + ["-r", resampling]
+            + extra_args
+            + [str(cog_path)]
+            + _OVERVIEW_LEVELS
+        )
+
+    _run(band1_resampling, ["-b", "1"])
+    _run(band2_resampling, ["-b", "2"])
+
+    try:
+        _run("nearest", ["-mask", "1"])
+    except RuntimeError as exc:
+        logger.warning("gdaladdo -mask failed, falling back to nearest mask regen: %s", exc)
+        _run("nearest", [])
+        _run(band1_resampling, ["-b", "1"])
+        _run(band2_resampling, ["-b", "2"])
+
+
 def assert_alpha_present(info: dict) -> int:
     bands = info.get("bands") or []
     if not bands:
@@ -821,6 +861,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fh", type=int, required=True)
     parser.add_argument("--var", type=str, required=True)
     parser.add_argument("--debug", action="store_true")
+    parser.add_argument(
+        "--smooth",
+        action="store_true",
+        help="(stub) Enable smoothing for continuous variables only (not yet implemented)",
+    )
     parser.add_argument("--keep-cycles", type=int, default=None)
     parser.add_argument(
         "--bbox",
@@ -934,6 +979,9 @@ def main() -> int:
     allow_range_fallback = bool(
         args.allow_range_fallback or os.environ.get("TWF_V2_ALLOW_RANGE_FALLBACK")
     )
+    smooth_enabled = bool(args.smooth or os.environ.get("TWF_V2_SMOOTH"))
+    if smooth_enabled and args.debug:
+        print("Smooth stub enabled (continuous-only, not yet implemented)")
     normalized_var = plugin.normalize_var_id(args.var)
     grib_path: Path | None = None
     u_path: Path | None = None
@@ -1524,6 +1572,8 @@ def main() -> int:
 
             warp_resampling = "near" if meta.get("kind") == "discrete" else "bilinear"
             print(f"Warping to EPSG:3857 ({warp_resampling}): {warped_tif}")
+            # Stub for future smoothing: when enabled for continuous vars only,
+            # apply a higher-order resampling for band 1 without touching alpha.
             warp_to_3857(
                 byte_tif,
                 warped_tif,
@@ -1572,32 +1622,12 @@ def main() -> int:
                 ]
             )
 
-            require_gdal("gdaladdo")
             addo_resampling = (
                 "nearest"
                 if meta.get("kind") == "discrete" or spec_key_used == "radar_ptype"
                 else "average"
             )
-            run_cmd(
-                [
-                    "gdaladdo",
-                    "-r",
-                    addo_resampling,
-                    "--config",
-                    "COMPRESS_OVERVIEW",
-                    "DEFLATE",
-                    "--config",
-                    "INTERLEAVE_OVERVIEW",
-                    "PIXEL",
-                    str(cog_path),
-                    "2",
-                    "4",
-                    "8",
-                    "16",
-                    "32",
-                    "64",
-                ]
-            )
+            run_gdaladdo_overviews(cog_path, addo_resampling, "nearest")
 
             if args.debug:
                 cog_info = gdalinfo_json(cog_path)
@@ -1606,14 +1636,23 @@ def main() -> int:
                     len((band or {}).get("overviews") or [])
                     for band in (cog_info.get("bands") or [])
                 ]
+                mask_overviews = []
+                for band in (cog_info.get("bands") or []):
+                    mask = (band or {}).get("mask") or {}
+                    mask_overviews.append(len((mask.get("overviews") or [])))
                 has_external_ovr = any(path.lower().endswith(".ovr") for path in cog_files)
                 print(
                     "COG overview debug: "
                     f"resampling={addo_resampling} "
                     f"bands={len(cog_info.get('bands') or [])} "
                     f"overviews_per_band={band_overviews} "
+                    f"mask_overviews_per_band={mask_overviews} "
                     f"internal_overviews={not has_external_ovr}"
                 )
+                if has_external_ovr or any(count == 0 for count in band_overviews):
+                    print("WARNING: Missing internal band overviews or found external .ovr")
+                if any(count == 0 for count in mask_overviews):
+                    print("WARNING: Missing mask overviews on one or more bands")
 
         _write_sidecar_json(
             sidecar_path,
