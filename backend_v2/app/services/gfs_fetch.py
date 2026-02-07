@@ -507,7 +507,16 @@ def fetch_gfs_grib(
     target_dir = _cache_dir_for_run(base_dir, run_dt)
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    expected_suffix = cache_key or variable or "subset"
+    suffix_parts: list[str] = []
+    if cache_key:
+        suffix_parts.append(str(cache_key))
+    # Always include the requested variable if it differs, to prevent collisions.
+    if variable and (not cache_key or str(variable) != str(cache_key)):
+        suffix_parts.append(str(variable))
+    if not suffix_parts:
+        suffix_parts = [variable or "subset"]
+
+    expected_suffix = "__".join(suffix_parts)
     expected_filename = f"{model}.t{run_dt:%H}z.{product}f{fh:02d}.{expected_suffix}.grib2"
     expected_path = target_dir / expected_filename
     original_required_vars = list(required_vars or [])
