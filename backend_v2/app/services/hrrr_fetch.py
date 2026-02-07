@@ -385,12 +385,19 @@ def fetch_hrrr_grib(
 
     path = Path(downloaded)
     if not path.exists():
-        candidates = list(target_dir.rglob("*.grib2"))
-        if candidates:
-            candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-            path = candidates[0]
+        # Herbie may occasionally report a path that is not the final cached target.
+        # Only trust the deterministic expected target for this exact request; never
+        # fall back to "latest *.grib2" in the run directory, which can cross-wire
+        # variables (e.g., refc request opening a t2m subset file).
+        if expected_path.exists() and _is_readable_grib(expected_path):
+            path = expected_path
+        elif downloaded_full and expected_full_path.exists() and _is_readable_grib(expected_full_path):
+            path = expected_full_path
         else:
-            raise UpstreamNotReady(f"Downloaded GRIB2 not found: {path}")
+            raise UpstreamNotReady(
+                f"Downloaded GRIB2 not found for requested variable={normalized_var or 'full'} "
+                f"run={run_id} fh={fh:02d}; reported_path={path}"
+            )
 
     if downloaded_full:
         elapsed = time.time() - download_start
