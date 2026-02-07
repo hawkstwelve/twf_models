@@ -412,6 +412,34 @@ def build_gfs_cog(
             arrays = [refl_da, rain_da, snow_da, sleet_da, frzr_da]
             arrays = [arr.isel(time=0) if "time" in arr.dims else arr for arr in arrays]
             refl_da, rain_da, snow_da, sleet_da, frzr_da = [arr.squeeze() for arr in arrays]
+
+            # IMPORTANT: Normalize/sort lat/lon consistently *before* encoding.
+            # Otherwise we can end up writing bands in one lon-order while the GeoTIFF
+            # geotransform/coords are in another order (shifts precip to the wrong place).
+            refl_da, lat_name, lon_name = _normalize_latlon_dataarray(refl_da)
+            rain_da, _, _ = _normalize_latlon_dataarray(rain_da)
+            snow_da, _, _ = _normalize_latlon_dataarray(snow_da)
+            sleet_da, _, _ = _normalize_latlon_dataarray(sleet_da)
+            frzr_da, _, _ = _normalize_latlon_dataarray(frzr_da)
+
+            # Sanity: ensure all components are on the same grid after normalization.
+            if not np.array_equal(rain_da.coords[lat_name].values, refl_da.coords[lat_name].values) or not np.array_equal(
+                rain_da.coords[lon_name].values, refl_da.coords[lon_name].values
+            ):
+                rain_da = rain_da.reindex_like(refl_da, method=None)
+            if not np.array_equal(snow_da.coords[lat_name].values, refl_da.coords[lat_name].values) or not np.array_equal(
+                snow_da.coords[lon_name].values, refl_da.coords[lon_name].values
+            ):
+                snow_da = snow_da.reindex_like(refl_da, method=None)
+            if not np.array_equal(sleet_da.coords[lat_name].values, refl_da.coords[lat_name].values) or not np.array_equal(
+                sleet_da.coords[lon_name].values, refl_da.coords[lon_name].values
+            ):
+                sleet_da = sleet_da.reindex_like(refl_da, method=None)
+            if not np.array_equal(frzr_da.coords[lat_name].values, refl_da.coords[lat_name].values) or not np.array_equal(
+                frzr_da.coords[lon_name].values, refl_da.coords[lon_name].values
+            ):
+                frzr_da = frzr_da.reindex_like(refl_da, method=None)
+
             da = refl_da
             if model == "gfs" and TWF_GFS_RADAR_DEBUG:
                 def _log_component_stats(label: str, comp: xr.DataArray) -> None:
@@ -607,7 +635,10 @@ def build_gfs_cog(
         if da.ndim != 2:
             raise RuntimeError(f"Expected 2D DataArray after squeeze, got dims={da.dims}")
 
-        da, _, _ = _normalize_latlon_dataarray(da)
+        # For radar_ptype_combo we already normalized before encoding.
+        # Re-normalizing here would reorder coords without reordering the already-encoded bands.
+        if pre_encoded is None:
+            da, _, _ = _normalize_latlon_dataarray(da)
         values = np.asarray(da.values, dtype=np.float32)
         if pre_encoded is None:
             byte_band, alpha_band, meta, _, _, _ = _encode_with_nodata(
