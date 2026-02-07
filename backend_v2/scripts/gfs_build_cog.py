@@ -645,6 +645,8 @@ def build_gfs_cog(
                 warped_tif,
                 clip_bounds_3857=clip_bounds_3857,
                 resampling=warp_resampling,
+                tr_meters=(1000.0, 1000.0),
+                tap=True,
             )
             info = gdalinfo_json(warped_tif)
             assert_alpha_present(info)
