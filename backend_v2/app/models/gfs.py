@@ -250,6 +250,21 @@ GFS_VARS: dict[str, VarSpec] = {
         derived=True,
         derive="wspd10m",
     ),
+    "radar_ptype": VarSpec(
+        id="radar_ptype",
+        name="Composite Reflectivity + P-Type",
+        selectors=VarSelectors(
+            hints={
+                "refl_component": "refc",
+                "rain_component": "crain",
+                "snow_component": "csnow",
+                "sleet_component": "cicep",
+                "frzr_component": "cfrzr",
+            }
+        ),
+        derived=True,
+        derive="radar_ptype_combo",
+    ),
     "refc": VarSpec(
         id="refc",
         name="Composite Reflectivity",
