@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from herbie import Herbie
+import xarray as xr
 
 from app.models.base import VarSelectors
 
@@ -145,6 +146,27 @@ def _is_readable_grib(path: Path) -> bool:
             return bool(handle.read(4))
     except OSError:
         return False
+
+
+def _subset_contains_requested_variable(path: Path, requested_var: str | None) -> bool:
+    """Best-effort validation that a subset GRIB actually contains the requested field."""
+    if not requested_var:
+        return True
+    normalized = normalize_api_variable(requested_var)
+    try:
+        ds = xr.open_dataset(path, engine="cfgrib")
+    except Exception:
+        return False
+    try:
+        _ = select_dataarray(ds, normalized)
+        return True
+    except Exception:
+        return False
+    finally:
+        try:
+            ds.close()
+        except Exception:
+            pass
 
 
 # --- wgrib2 helpers ---
@@ -319,9 +341,22 @@ def fetch_hrrr_grib(
             pass
 
     if expected_path.exists():
-        _delete_cfgrib_index_files(expected_path)
-        logger.info("Using cached GRIB: %s", expected_path)
-        return GribFetchResult(path=expected_path, is_full_file=False)
+        if want_subset and not _subset_contains_requested_variable(expected_path, normalized_var):
+            logger.warning(
+                "Cached subset GRIB does not contain requested variable; purging cache file: "
+                "path=%s requested_var=%s",
+                expected_path,
+                normalized_var or "full",
+            )
+            try:
+                expected_path.unlink()
+            except OSError:
+                pass
+            _delete_cfgrib_index_files(expected_path)
+        else:
+            _delete_cfgrib_index_files(expected_path)
+            logger.info("Using cached GRIB: %s", expected_path)
+            return GribFetchResult(path=expected_path, is_full_file=False)
 
     if (
         want_subset
@@ -438,12 +473,44 @@ def fetch_hrrr_grib(
         _log_idx_fallback(run_id, fh)
         logger.info("Extracting subset GRIB with wgrib2: src=%s -> dst=%s match=%s", target_path, expected_path, search)
         _extract_grib_with_wgrib2(src=target_path, search=search, dst=expected_path)
+        if not _subset_contains_requested_variable(expected_path, normalized_var):
+            logger.warning(
+                "Extracted subset GRIB missing requested variable; deleting and marking not ready: "
+                "path=%s requested_var=%s",
+                expected_path,
+                normalized_var or "full",
+            )
+            try:
+                expected_path.unlink()
+            except OSError:
+                pass
+            _delete_cfgrib_index_files(expected_path)
+            raise UpstreamNotReady(
+                f"Requested variable not available yet: var={normalized_var or 'full'} run={run_id} fh={fh:02d}"
+            )
         _delete_cfgrib_index_files(expected_path)
         logger.info("Cached GRIB: %s", expected_path)
         return GribFetchResult(path=expected_path, is_full_file=False)
 
     if not target_path.exists() or target_path.stat().st_size == 0:
         raise UpstreamNotReady(f"Expected GRIB2 not found after download: {target_path}")
+
+    if want_subset and not downloaded_full:
+        if not _subset_contains_requested_variable(target_path, normalized_var):
+            logger.warning(
+                "Downloaded subset GRIB missing requested variable; deleting and marking not ready: "
+                "path=%s requested_var=%s",
+                target_path,
+                normalized_var or "full",
+            )
+            try:
+                target_path.unlink()
+            except OSError:
+                pass
+            _delete_cfgrib_index_files(target_path)
+            raise UpstreamNotReady(
+                f"Requested variable not available yet: var={normalized_var or 'full'} run={run_id} fh={fh:02d}"
+            )
 
     _delete_cfgrib_index_files(target_path)
     logger.info("Cached GRIB: %s", target_path)
