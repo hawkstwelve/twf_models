@@ -2037,21 +2037,53 @@ def main() -> int:
                     "COG COPY_SRC_OVERVIEWS unsupported/incompatible; retrying with COG-driver overview build: %s",
                     exc,
                 )
+                require_gdal("gdaladdo")
+                # Older GDAL COG builds may still try to reuse source overviews unless they are explicitly removed.
+                run_cmd(["gdaladdo", "-clean", str(ovr_tif)])
                 if cog_path.exists():
                     cog_path.unlink()
-                run_cmd(
-                    [
-                        "gdal_translate",
-                        "-of",
-                        "COG",
-                        "-co",
-                        "COMPRESS=DEFLATE",
-                        "-co",
-                        f"RESAMPLING={addo_resampling}",
-                        str(ovr_tif),
-                        str(cog_path),
-                    ]
-                )
+                manual_overviews_needed = False
+                try:
+                    run_cmd(
+                        [
+                            "gdal_translate",
+                            "-of",
+                            "COG",
+                            "-co",
+                            "COMPRESS=DEFLATE",
+                            "-co",
+                            "OVERVIEWS=IGNORE_EXISTING",
+                            "-co",
+                            f"RESAMPLING={addo_resampling}",
+                            str(ovr_tif),
+                            str(cog_path),
+                        ]
+                    )
+                except RuntimeError as fallback_exc:
+                    if not _is_copy_src_overviews_unsupported(fallback_exc):
+                        raise
+                    logger.warning(
+                        "COG still rejected source overview state; creating COG with OVERVIEWS=NONE and rebuilding overviews: %s",
+                        fallback_exc,
+                    )
+                    if cog_path.exists():
+                        cog_path.unlink()
+                    run_cmd(
+                        [
+                            "gdal_translate",
+                            "-of",
+                            "COG",
+                            "-co",
+                            "COMPRESS=DEFLATE",
+                            "-co",
+                            "OVERVIEWS=NONE",
+                            str(ovr_tif),
+                            str(cog_path),
+                        ]
+                    )
+                    manual_overviews_needed = True
+                if manual_overviews_needed:
+                    run_gdaladdo_overviews(cog_path, addo_resampling, "nearest")
             try:
                 assert_single_internal_overview_cog(cog_path)
             except RuntimeError as exc:
