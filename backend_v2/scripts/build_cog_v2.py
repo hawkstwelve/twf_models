@@ -626,23 +626,54 @@ def write_byte_geotiff_from_arrays(
     alpha_band: np.ndarray,
     out_tif: Path,
 ) -> Path:
-    grid = _lambert_grid_from_attrs(da)
+    try:
+        grid = _lambert_grid_from_attrs(da)
 
-    byte_data, x_coords, y_coords = _apply_scan_order(byte_band, grid)
-    alpha_data, _, _ = _apply_scan_order(alpha_band, grid)
+        byte_data, x_coords, y_coords = _apply_scan_order(byte_band, grid)
+        alpha_data, _, _ = _apply_scan_order(alpha_band, grid)
 
-    dx = abs(x_coords[1] - x_coords[0]) if x_coords.size > 1 else 1.0
-    dy = abs(y_coords[1] - y_coords[0]) if y_coords.size > 1 else 1.0
-    x_min = float(np.min(x_coords))
-    x_max = float(np.max(x_coords))
-    y_min = float(np.min(y_coords))
-    y_max = float(np.max(y_coords))
-    geotransform = (x_min, dx, 0.0, y_max, 0.0, -dy)
-    print(
-        "Lambert grid transform: "
-        f"dx={dx:.3f} dy={dy:.3f} "
-        f"x=[{x_min:.2f},{x_max:.2f}] y=[{y_min:.2f},{y_max:.2f}]"
-    )
+        dx = abs(x_coords[1] - x_coords[0]) if x_coords.size > 1 else 1.0
+        dy = abs(y_coords[1] - y_coords[0]) if y_coords.size > 1 else 1.0
+        x_min = float(np.min(x_coords))
+        x_max = float(np.max(x_coords))
+        y_min = float(np.min(y_coords))
+        y_max = float(np.max(y_coords))
+        geotransform = (x_min, dx, 0.0, y_max, 0.0, -dy)
+        srs_wkt = grid["lambert_crs"].to_wkt()
+        print(
+            "Lambert grid transform: "
+            f"dx={dx:.3f} dy={dy:.3f} "
+            f"x=[{x_min:.2f},{x_max:.2f}] y=[{y_min:.2f},{y_max:.2f}]"
+        )
+        print(f"Lambert grid SRS: {grid['lambert_crs'].to_string()}")
+    except ValueError:
+        normalized_da = normalize_latlon_coords(da)
+        lat_name, lon_name = detect_latlon_names(normalized_da)
+        lat = normalized_da.coords[lat_name].values
+        lon = normalized_da.coords[lon_name].values
+        if lat.ndim != 1 or lon.ndim != 1:
+            raise ValueError("Lat/lon fallback expects 1D latitude/longitude arrays")
+
+        byte_data = byte_band
+        alpha_data = alpha_band
+        if lat[0] < lat[-1]:
+            byte_data = byte_data[::-1, :]
+            alpha_data = alpha_data[::-1, :]
+
+        dx = abs(lon[1] - lon[0]) if lon.size > 1 else 1.0
+        dy = abs(lat[1] - lat[0]) if lat.size > 1 else 1.0
+        x_min = float(np.min(lon))
+        x_max = float(np.max(lon))
+        y_min = float(np.min(lat))
+        y_max = float(np.max(lat))
+        geotransform = (x_min, dx, 0.0, y_max, 0.0, -dy)
+        srs_wkt = CRS.from_epsg(4326).to_wkt()
+        print(
+            "Lat/lon fallback transform: "
+            f"dx={dx:.3f} dy={dy:.3f} "
+            f"x=[{x_min:.2f},{x_max:.2f}] y=[{y_min:.2f},{y_max:.2f}]"
+        )
+        print("Lat/lon fallback SRS: EPSG:4326")
 
     out_tif.parent.mkdir(parents=True, exist_ok=True)
     band1_path = out_tif.with_suffix(".band1.bin")
@@ -657,7 +688,7 @@ def write_byte_geotiff_from_arrays(
         x_size=byte_data.shape[1],
         y_size=byte_data.shape[0],
         geotransform=geotransform,
-        srs_wkt=grid["lambert_crs"].to_wkt(),
+        srs_wkt=srs_wkt,
         band1_path=band1_path,
         band2_path=band2_path,
     )
