@@ -494,6 +494,14 @@ def run_cmd(args: list[str]) -> None:
         raise RuntimeError(f"Command failed ({' '.join(args)}): {stderr or 'unknown error'}")
 
 
+def run_cmd_output(args: list[str]) -> str:
+    result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        raise RuntimeError(f"Command failed ({' '.join(args)}): {stderr or 'unknown error'}")
+    return "\n".join(chunk for chunk in (result.stdout, result.stderr) if chunk)
+
+
 def run_cmd_json(args: list[str]) -> dict:
     result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     if result.returncode != 0:
@@ -777,6 +785,20 @@ def gdalinfo_json(path: Path) -> dict:
 
 
 _OVERVIEW_LEVELS = ["2", "4", "8", "16", "32", "64"]
+_GDALADDO_MASK_SUPPORTED: bool | None = None
+
+
+def _gdaladdo_supports_mask() -> bool:
+    global _GDALADDO_MASK_SUPPORTED
+    if _GDALADDO_MASK_SUPPORTED is not None:
+        return _GDALADDO_MASK_SUPPORTED
+    try:
+        output = run_cmd_output(["gdaladdo", "--help"])
+    except RuntimeError:
+        _GDALADDO_MASK_SUPPORTED = False
+        return False
+    _GDALADDO_MASK_SUPPORTED = "-mask" in output
+    return _GDALADDO_MASK_SUPPORTED
 
 
 def run_gdaladdo_overviews(
@@ -807,10 +829,16 @@ def run_gdaladdo_overviews(
     _run(band1_resampling, ["-b", "1"])
     _run(band2_resampling, ["-b", "2"])
 
-    try:
-        _run("nearest", ["-mask", "1"])
-    except RuntimeError as exc:
-        logger.warning("gdaladdo -mask failed, falling back to nearest mask regen: %s", exc)
+    if _gdaladdo_supports_mask():
+        try:
+            _run("nearest", ["-mask", "1"])
+        except RuntimeError as exc:
+            logger.warning("gdaladdo -mask failed, falling back to nearest mask regen: %s", exc)
+            _run("nearest", [])
+            _run(band1_resampling, ["-b", "1"])
+            _run(band2_resampling, ["-b", "2"])
+    else:
+        logger.warning("gdaladdo does not support -mask; using nearest fallback for mask")
         _run("nearest", [])
         _run(band1_resampling, ["-b", "1"])
         _run(band2_resampling, ["-b", "2"])
