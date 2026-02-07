@@ -1,5 +1,9 @@
 import { API_BASE, DEFAULTS, VARIABLE_LABELS, VARIABLES } from "./config.js";
 
+// Phase 0 freeze (2026-02-07):
+// Legacy Leaflet controls path is maintenance-only until MapLibre cutover.
+// Allowed changes: critical bug fixes only. No new features.
+
 const ALLOWED_VARIABLES = new Set(["tmp2m", "wspd10m", "radar_ptype"]);
 
 async function fetchJson(url) {

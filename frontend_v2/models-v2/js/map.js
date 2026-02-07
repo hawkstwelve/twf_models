@@ -2,6 +2,10 @@ import { API_BASE, DEFAULTS } from "./config.js?v=20260206-2010";
 import { applyFramesToSlider, initControls } from "./controls.js?v=20260206-2010";
 import { buildTileUrl, createBaseLayer, createLabelLayer, createOverlayLayer } from "./layers.js?v=20260206-2010";
 
+// Phase 0 freeze (2026-02-07):
+// Legacy Leaflet map runtime is maintenance-only until MapLibre cutover.
+// Allowed changes: critical bug fixes only. No new features.
+
 console.debug("modules loaded ok");
 
 function asId(value) {

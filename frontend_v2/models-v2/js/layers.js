@@ -1,5 +1,9 @@
 import { API_BASE, DEFAULTS, TILES_BASE } from "./config.js";
 
+// Phase 0 freeze (2026-02-07):
+// Legacy Leaflet rendering path is maintenance-only until MapLibre cutover.
+// Allowed changes: critical bug fixes only. No new features.
+
 const BASEMAP_ATTRIBUTION =
   '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors ' +
   '&copy; <a href="https://carto.com/attributions">CARTO</a>';

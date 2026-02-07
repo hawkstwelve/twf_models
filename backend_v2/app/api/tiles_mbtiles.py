@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+# Phase 0 freeze (2026-02-07):
+# Legacy MBTiles tile route is maintenance-only and scheduled for removal.
+# Allowed changes: critical bug fixes only. No new features.
+
 import logging
 import sqlite3
 from pathlib import Path

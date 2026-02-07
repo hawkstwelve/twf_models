@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+# Phase 0 freeze (2026-02-07):
+# This legacy Leaflet tile path is maintenance-only until TiTiler cutover.
+# Allowed changes: critical bug fixes only. No new features.
+
 import logging
 import re
 from io import BytesIO
