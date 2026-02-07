@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import re
 import sys
@@ -41,9 +42,11 @@ from build_cog_v2 import (
 
 
 RUN_RE = re.compile(r"^\d{8}_\d{2}z$")
+logger = logging.getLogger(__name__)
 GFS_RADAR_PTYPE_REFL_MIN_DBZ = float(
     os.environ.get("TWF_GFS_RADAR_PTYPE_REFL_MIN_DBZ", "0")
 )
+TWF_GFS_RADAR_DEBUG = os.environ.get("TWF_GFS_RADAR_DEBUG", "0").strip() == "1"
 
 
 def _cfgrib_filter_keys(var_spec: VarSpec | None) -> dict[str, object]:
@@ -401,6 +404,169 @@ def build_gfs_cog(
             arrays = [arr.isel(time=0) if "time" in arr.dims else arr for arr in arrays]
             refl_da, rain_da, snow_da, sleet_da, frzr_da = [arr.squeeze() for arr in arrays]
             da = refl_da
+            if model == "gfs" and TWF_GFS_RADAR_DEBUG:
+                def _log_component_stats(label: str, comp: xr.DataArray) -> None:
+                    values = np.asarray(comp.values, dtype=np.float32)
+                    finite_mask = np.isfinite(values)
+                    total = int(values.size)
+                    finite_count = int(np.count_nonzero(finite_mask))
+                    finite_pct = (finite_count / total * 100.0) if total else 0.0
+                    zero_filled = np.where(finite_mask, values, 0.0)
+                    nonzero_count = int(np.count_nonzero(zero_filled))
+                    nonzero_pct = (nonzero_count / total * 100.0) if total else 0.0
+
+                    if finite_count:
+                        finite_vals = values[finite_mask]
+                        p50, p90, p99 = np.nanpercentile(finite_vals, [50, 90, 99])
+                        vmin = float(np.nanmin(finite_vals))
+                        vmax = float(np.nanmax(finite_vals))
+                    else:
+                        p50 = p90 = p99 = float("nan")
+                        vmin = vmax = float("nan")
+
+                    attrs = comp.attrs
+                    scan_i = attrs.get("GRIB_iScansNegatively")
+                    scan_j = attrs.get("GRIB_jScansPositively")
+                    grid_nx = attrs.get("GRIB_Nx")
+                    grid_ny = attrs.get("GRIB_Ny")
+                    grid_dx = attrs.get("GRIB_DxInMetres")
+                    grid_dy = attrs.get("GRIB_DyInMetres")
+
+                    unique_vals = None
+                    counts = None
+                    is_int = np.issubdtype(values.dtype, np.integer)
+                    if finite_count:
+                        try:
+                            unique_vals, counts = np.unique(finite_vals, return_counts=True)
+                        except Exception:
+                            unique_vals, counts = None, None
+
+                    if unique_vals is not None and counts is not None:
+                        if unique_vals.size <= 64 or is_int:
+                            sample_size = min(32, unique_vals.size)
+                            sample_vals = unique_vals[:sample_size].tolist()
+                            sample_counts = counts[:sample_size].tolist()
+                            logger.info(
+                                "gfs radar %s: name=%s dims=%s shape=%s dtype=%s iScan=%s jScan=%s "
+                                "Nx=%s Ny=%s Dx=%s Dy=%s finite=%.2f%% nonzero=%.2f%% "
+                                "min=%.3f p50=%.3f p90=%.3f p99=%.3f max=%.3f uniq=%s counts=%s",
+                                label,
+                                comp.name,
+                                comp.dims,
+                                comp.shape,
+                                str(values.dtype),
+                                scan_i,
+                                scan_j,
+                                grid_nx,
+                                grid_ny,
+                                grid_dx,
+                                grid_dy,
+                                finite_pct,
+                                nonzero_pct,
+                                vmin,
+                                p50,
+                                p90,
+                                p99,
+                                vmax,
+                                sample_vals,
+                                sample_counts,
+                            )
+                            return
+
+                    if finite_count:
+                        p999 = float(np.nanpercentile(finite_vals, [99.9])[0])
+                    else:
+                        p999 = float("nan")
+                    gt1 = int(np.count_nonzero(values > 1))
+                    gt100 = int(np.count_nonzero(values > 100))
+                    gt200 = int(np.count_nonzero(values > 200))
+                    logger.info(
+                        "gfs radar %s: name=%s dims=%s shape=%s dtype=%s iScan=%s jScan=%s "
+                        "Nx=%s Ny=%s Dx=%s Dy=%s finite=%.2f%% nonzero=%.2f%% "
+                        "min=%.3f p50=%.3f p90=%.3f p99=%.3f max=%.3f p999=%.3f gt1=%s gt100=%s gt200=%s",
+                        label,
+                        comp.name,
+                        comp.dims,
+                        comp.shape,
+                        str(values.dtype),
+                        scan_i,
+                        scan_j,
+                        grid_nx,
+                        grid_ny,
+                        grid_dx,
+                        grid_dy,
+                        finite_pct,
+                        nonzero_pct,
+                        vmin,
+                        p50,
+                        p90,
+                        p99,
+                        vmax,
+                        p999,
+                        gt1,
+                        gt100,
+                        gt200,
+                    )
+
+                _log_component_stats("refl", refl_da)
+                _log_component_stats("crain", rain_da)
+                _log_component_stats("csnow", snow_da)
+                _log_component_stats("cicep", sleet_da)
+                _log_component_stats("cfrzr", frzr_da)
+
+                def _scan_flags(comp: xr.DataArray) -> tuple[object, object]:
+                    return (
+                        comp.attrs.get("GRIB_iScansNegatively"),
+                        comp.attrs.get("GRIB_jScansPositively"),
+                    )
+
+                refl_flags = _scan_flags(refl_da)
+                for name, comp in (
+                    ("crain", rain_da),
+                    ("csnow", snow_da),
+                    ("cicep", sleet_da),
+                    ("cfrzr", frzr_da),
+                ):
+                    comp_flags = _scan_flags(comp)
+                    if comp_flags != refl_flags:
+                        logger.warning(
+                            "gfs radar scan mismatch: component=%s refl=%s component_flags=%s",
+                            name,
+                            refl_flags,
+                            comp_flags,
+                        )
+
+                def _ptype_scale_stats(label: str, comp: xr.DataArray) -> None:
+                    values = np.asarray(comp.values, dtype=np.float32)
+                    finite_mask = np.isfinite(values)
+                    finite_vals = values[finite_mask]
+                    if finite_vals.size:
+                        p99 = float(np.nanpercentile(finite_vals, [99])[0])
+                        vmax = float(np.nanmax(finite_vals))
+                    else:
+                        p99 = float("nan")
+                        vmax = float("nan")
+                    total = int(values.size)
+                    gt0 = int(np.count_nonzero(values > 0))
+                    gt1 = int(np.count_nonzero(values > 1))
+                    gt100 = int(np.count_nonzero(values > 100))
+                    gt200 = int(np.count_nonzero(values > 200))
+                    frac = lambda count: (count / total) if total else 0.0
+                    logger.info(
+                        "gfs radar ptype scale %s: max=%.3f p99=%.3f frac>0=%.4f frac>1=%.4f frac>100=%.4f frac>200=%.4f",
+                        label,
+                        vmax,
+                        p99,
+                        frac(gt0),
+                        frac(gt1),
+                        frac(gt100),
+                        frac(gt200),
+                    )
+
+                _ptype_scale_stats("crain", rain_da)
+                _ptype_scale_stats("csnow", snow_da)
+                _ptype_scale_stats("cicep", sleet_da)
+                _ptype_scale_stats("cfrzr", frzr_da)
             pre_encoded = _encode_radar_ptype_combo(
                 requested_var=var,
                 normalized_var=normalized_var,
@@ -486,20 +652,23 @@ def build_gfs_cog(
                     str(cog_path),
                 ]
             )
-
-            require_gdal("gdaladdo")
-            run_cmd(
-                [
-                    "gdaladdo",
-                    str(cog_path),
-                    "2",
-                    "4",
-                    "8",
-                    "16",
-                    "32",
-                    "64",
-                ]
-            )
+            info = gdalinfo_json(cog_path)
+            bands = info.get("bands") or []
+            has_overviews = any(band.get("overviews") for band in bands)
+            if not has_overviews:
+                require_gdal("gdaladdo")
+                run_cmd(
+                    [
+                        "gdaladdo",
+                        str(cog_path),
+                        "2",
+                        "4",
+                        "8",
+                        "16",
+                        "32",
+                        "64",
+                    ]
+                )
 
         _write_sidecar_json(
             sidecar_path,
