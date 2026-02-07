@@ -41,8 +41,10 @@ class GFSPlugin(BaseModelPlugin):
             return "10v"
         if normalized in {"crain", "csnow", "cicep", "cfrzr"}:
             return normalized
-        if normalized in {"radar_ptype", "radar_ptype_combo"}:
+        if normalized == "radar_ptype_combo":
             return "radar_ptype_combo"
+        if normalized == "radar_ptype":
+            return "radar_ptype"
         return normalized
 
     def _score_candidate(self, da: xr.DataArray, var_spec: VarSpec) -> int:
