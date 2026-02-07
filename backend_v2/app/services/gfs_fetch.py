@@ -483,7 +483,8 @@ def fetch_gfs_grib(
     ok, matched, available = _subset_contains_required_variables(
         expected_path,
         validate_vars,
-    ):
+    )
+    if not ok:
         logger.warning(
             "Downloaded GFS subset missing required variables; deleting and deferring: path=%s variable=%s required=%s matched=%s available=%s",
             expected_path,
