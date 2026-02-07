@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 import tempfile
@@ -40,6 +41,9 @@ from build_cog_v2 import (
 
 
 RUN_RE = re.compile(r"^\d{8}_\d{2}z$")
+GFS_RADAR_PTYPE_REFL_MIN_DBZ = float(
+    os.environ.get("TWF_GFS_RADAR_PTYPE_REFL_MIN_DBZ", "0")
+)
 
 
 def _cfgrib_filter_keys(var_spec: VarSpec | None) -> dict[str, object]:
@@ -407,6 +411,7 @@ def build_gfs_cog(
                     "cicep": np.asarray(sleet_da.values, dtype=np.float32),
                     "cfrzr": np.asarray(frzr_da.values, dtype=np.float32),
                 },
+                refl_min_dbz=GFS_RADAR_PTYPE_REFL_MIN_DBZ,
             )
         else:
             if fetch_result.grib_path is None:

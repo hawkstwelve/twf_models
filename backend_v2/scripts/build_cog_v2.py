@@ -345,6 +345,7 @@ def _encode_radar_ptype_combo(
     normalized_var: str,
     refl_values: np.ndarray,
     ptype_values: dict[str, np.ndarray],
+    refl_min_dbz: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray, dict]:
     if refl_values.ndim != 2:
         raise RuntimeError(f"Expected 2D reflectivity array, got shape={refl_values.shape}")
@@ -416,7 +417,8 @@ def _encode_radar_ptype_combo(
     # 1) Preserve standalone refc footprint/intensity exactly for visibility.
     # 2) Recolor that visible footprint by p-type (fallback to rain where type is unknown).
     rain_levels = list(RADAR_CONFIG["rain"]["levels"])
-    rain_min_dbz = float(rain_levels[1] if len(rain_levels) > 1 else rain_levels[0])
+    default_refl_min_dbz = float(rain_levels[1] if len(rain_levels) > 1 else rain_levels[0])
+    rain_min_dbz = float(default_refl_min_dbz if refl_min_dbz is None else refl_min_dbz)
     visible_mask = np.isfinite(refl) & (refl >= rain_min_dbz)
     rain_colors = list(RADAR_CONFIG["rain"]["colors"])
     rain_offset = int(breaks["rain"]["offset"])
