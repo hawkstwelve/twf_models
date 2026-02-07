@@ -169,6 +169,30 @@ def _subset_contains_requested_variable(path: Path, requested_var: str | None) -
             pass
 
 
+def _subset_contains_required_variables(path: Path, required_vars: list[str] | None) -> bool:
+    """Best-effort validation that a subset GRIB contains all required fields."""
+    if not required_vars:
+        return True
+    normalized_vars = [normalize_api_variable(v) for v in required_vars if str(v).strip()]
+    if not normalized_vars:
+        return True
+    try:
+        ds = xr.open_dataset(path, engine="cfgrib")
+    except Exception:
+        return False
+    try:
+        for var in normalized_vars:
+            _ = select_dataarray(ds, var)
+        return True
+    except Exception:
+        return False
+    finally:
+        try:
+            ds.close()
+        except Exception:
+            pass
+
+
 # --- wgrib2 helpers ---
 
 def _wgrib2_available() -> bool:
@@ -284,6 +308,8 @@ def fetch_hrrr_grib(
     model: str = "hrrr",
     variable: str | None = None,
     search_override: str | None = None,
+    cache_key: str | None = None,
+    required_vars: list[str] | None = None,
     cache_cfg: HRRRCacheConfig | None = None,
 ) -> GribFetchResult:
     cfg = cache_cfg or HRRRCacheConfig(base_dir=default_hrrr_cache_dir(), keep_runs=1)
@@ -326,7 +352,7 @@ def fetch_hrrr_grib(
     target_dir.mkdir(parents=True, exist_ok=True)
 
     want_subset = bool(search)
-    expected_suffix = normalized_var or "full"
+    expected_suffix = cache_key or normalized_var or "full"
     expected_filename = f"{model}.t{run_dt:%H}z.wrf{product}f{fh:02d}.{expected_suffix}.grib2"
     expected_path = target_dir / expected_filename
     expected_full_filename = f"{model}.t{run_dt:%H}z.wrf{product}f{fh:02d}.full.grib2"
@@ -341,12 +367,16 @@ def fetch_hrrr_grib(
             pass
 
     if expected_path.exists():
-        if want_subset and not _subset_contains_requested_variable(expected_path, normalized_var):
+        if want_subset and not _subset_contains_required_variables(
+            expected_path,
+            required_vars or ([normalized_var] if normalized_var else None),
+        ):
             logger.warning(
-                "Cached subset GRIB does not contain requested variable; purging cache file: "
-                "path=%s requested_var=%s",
+                "Cached subset GRIB does not contain required variables; purging cache file: "
+                "path=%s requested_var=%s required_vars=%s",
                 expected_path,
                 normalized_var or "full",
+                required_vars or [],
             )
             try:
                 expected_path.unlink()
@@ -473,12 +503,16 @@ def fetch_hrrr_grib(
         _log_idx_fallback(run_id, fh)
         logger.info("Extracting subset GRIB with wgrib2: src=%s -> dst=%s match=%s", target_path, expected_path, search)
         _extract_grib_with_wgrib2(src=target_path, search=search, dst=expected_path)
-        if not _subset_contains_requested_variable(expected_path, normalized_var):
+        if not _subset_contains_required_variables(
+            expected_path,
+            required_vars or ([normalized_var] if normalized_var else None),
+        ):
             logger.warning(
-                "Extracted subset GRIB missing requested variable; deleting and marking not ready: "
-                "path=%s requested_var=%s",
+                "Extracted subset GRIB missing required variables; deleting and marking not ready: "
+                "path=%s requested_var=%s required_vars=%s",
                 expected_path,
                 normalized_var or "full",
+                required_vars or [],
             )
             try:
                 expected_path.unlink()
@@ -486,7 +520,8 @@ def fetch_hrrr_grib(
                 pass
             _delete_cfgrib_index_files(expected_path)
             raise UpstreamNotReady(
-                f"Requested variable not available yet: var={normalized_var or 'full'} run={run_id} fh={fh:02d}"
+                "Requested variables not available yet: "
+                f"var={normalized_var or 'full'} required={required_vars or []} run={run_id} fh={fh:02d}"
             )
         _delete_cfgrib_index_files(expected_path)
         logger.info("Cached GRIB: %s", expected_path)
@@ -496,12 +531,16 @@ def fetch_hrrr_grib(
         raise UpstreamNotReady(f"Expected GRIB2 not found after download: {target_path}")
 
     if want_subset and not downloaded_full:
-        if not _subset_contains_requested_variable(target_path, normalized_var):
+        if not _subset_contains_required_variables(
+            target_path,
+            required_vars or ([normalized_var] if normalized_var else None),
+        ):
             logger.warning(
-                "Downloaded subset GRIB missing requested variable; deleting and marking not ready: "
-                "path=%s requested_var=%s",
+                "Downloaded subset GRIB missing required variables; deleting and marking not ready: "
+                "path=%s requested_var=%s required_vars=%s",
                 target_path,
                 normalized_var or "full",
+                required_vars or [],
             )
             try:
                 target_path.unlink()
@@ -509,7 +548,8 @@ def fetch_hrrr_grib(
                 pass
             _delete_cfgrib_index_files(target_path)
             raise UpstreamNotReady(
-                f"Requested variable not available yet: var={normalized_var or 'full'} run={run_id} fh={fh:02d}"
+                "Requested variables not available yet: "
+                f"var={normalized_var or 'full'} required={required_vars or []} run={run_id} fh={fh:02d}"
             )
 
     _delete_cfgrib_index_files(target_path)
