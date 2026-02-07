@@ -53,15 +53,25 @@ def _is_readable_grib(path: Path) -> bool:
         return False
 
 
-def _required_grib_vars_for_request(model_id: str, normalized_var: str) -> list[str]:
+def _required_grib_vars_for_request(model_id: str, normalized_var: str) -> tuple[list[str], str]:
     from app.models.registry import MODEL_REGISTRY
 
+    fallback_components = ["refc", "crain", "csnow", "cicep", "cfrzr"]
     model = MODEL_REGISTRY.get(model_id)
     if model is None:
-        return [normalized_var]
+        return [normalized_var], "registry_missing"
     var_spec = model.get_var(normalized_var)
     if var_spec is None:
-        return [normalized_var]
+        return [normalized_var], "spec_missing"
+    if normalized_var in {"radar_ptype", "radar_ptype_combo"}:
+        hints = var_spec.selectors.hints
+        return [
+            str(hints.get("refl_component") or "refc"),
+            str(hints.get("rain_component") or "crain"),
+            str(hints.get("snow_component") or "csnow"),
+            str(hints.get("sleet_component") or "cicep"),
+            str(hints.get("frzr_component") or "cfrzr"),
+        ], "registry_hints" if hints else "fallback_default"
     if var_spec.derived and var_spec.derive == "radar_ptype_combo":
         hints = var_spec.selectors.hints
         return [
@@ -70,14 +80,14 @@ def _required_grib_vars_for_request(model_id: str, normalized_var: str) -> list[
             str(hints.get("snow_component") or "csnow"),
             str(hints.get("sleet_component") or "cicep"),
             str(hints.get("frzr_component") or "cfrzr"),
-        ]
+        ], "registry_hints"
     if var_spec.derived and var_spec.derive == "wspd10m":
         hints = var_spec.selectors.hints
         return [
             str(hints.get("u_component") or "10u"),
             str(hints.get("v_component") or "10v"),
-        ]
-    return [normalized_var]
+        ], "registry_hints"
+    return [normalized_var], "registry_default"
 
 
 def _inventory_strings(herbie: Herbie | None) -> list[str]:
@@ -102,19 +112,45 @@ def _inventory_strings(herbie: Herbie | None) -> list[str]:
 
 
 def _local_grib_varnames(path: Path) -> list[str]:
-    ds = None
-    try:
-        ds = xr.open_dataset(path, engine="cfgrib", backend_kwargs={"indexpath": ""})
-        return sorted(list(ds.data_vars))
-    except Exception as exc:
-        logger.info("GFS local GRIB inspection failed: %r", exc)
-        return []
-    finally:
-        if ds is not None:
-            try:
-                ds.close()
-            except Exception:
-                pass
+    def _open_with(filter_keys: dict[str, object] | None) -> xr.Dataset:
+        kwargs = {"indexpath": ""}
+        if filter_keys:
+            kwargs["filter_by_keys"] = filter_keys
+        return xr.open_dataset(path, engine="cfgrib", backend_kwargs=kwargs)
+
+    attempts = [None]
+    last_exc: Exception | None = None
+    for filter_keys in attempts:
+        ds = None
+        try:
+            ds = _open_with(filter_keys)
+            return sorted(list(ds.data_vars))
+        except Exception as exc:
+            last_exc = exc
+            message = str(exc)
+            if filter_keys is None and ("stepType" in message or "multiple values for key" in message):
+                for step_type in ("instant", "avg"):
+                    ds_retry = None
+                    try:
+                        ds_retry = _open_with({"stepType": step_type})
+                        return sorted(list(ds_retry.data_vars))
+                    except Exception as retry_exc:
+                        last_exc = retry_exc
+                    finally:
+                        if ds_retry is not None:
+                            try:
+                                ds_retry.close()
+                            except Exception:
+                                pass
+            continue
+        finally:
+            if ds is not None:
+                try:
+                    ds.close()
+                except Exception:
+                    pass
+    logger.info("GFS local GRIB inspection failed: %r", last_exc)
+    return []
 
 
 def _subset_contains_required_variables(
@@ -376,11 +412,22 @@ def fetch_gfs_grib(
     expected_suffix = cache_key or variable or "subset"
     expected_filename = f"{model}.t{run_dt:%H}z.{product}f{fh:02d}.{expected_suffix}.grib2"
     expected_path = target_dir / expected_filename
-    validate_vars = required_vars if required_vars is not None else (
-        _required_grib_vars_for_request(model, normalized_var) if normalized_var else []
-    )
+    if required_vars is not None:
+        validate_vars = required_vars
+        validate_source = "explicit"
+    elif normalized_var:
+        validate_vars, validate_source = _required_grib_vars_for_request(model, normalized_var)
+    else:
+        validate_vars = []
+        validate_source = "none"
     if validate_vars is not None and not validate_vars:
         validate_vars = None
+    logger.info(
+        "GFS required vars: normalized_var=%s required=%s source=%s",
+        normalized_var,
+        validate_vars or [],
+        validate_source,
+    )
     available_vars = _inventory_strings(herbie)
 
     if expected_path.exists():
