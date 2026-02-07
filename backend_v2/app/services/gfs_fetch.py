@@ -53,19 +53,15 @@ def _is_readable_grib(path: Path) -> bool:
         return False
 
 
-def _required_grib_vars_for_request(model_id: str, variable: str | None) -> list[str]:
-    if not variable:
-        return []
+def _required_grib_vars_for_request(model_id: str, normalized_var: str) -> list[str]:
     from app.models.registry import MODEL_REGISTRY
-    from app.services.variable_registry import normalize_api_variable
 
-    normalized = normalize_api_variable(variable)
     model = MODEL_REGISTRY.get(model_id)
     if model is None:
-        return [normalized]
-    var_spec = model.get_var(normalized)
+        return [normalized_var]
+    var_spec = model.get_var(normalized_var)
     if var_spec is None:
-        return [normalized]
+        return [normalized_var]
     if var_spec.derived and var_spec.derive == "radar_ptype_combo":
         hints = var_spec.selectors.hints
         return [
@@ -81,93 +77,67 @@ def _required_grib_vars_for_request(model_id: str, variable: str | None) -> list
             str(hints.get("u_component") or "10u"),
             str(hints.get("v_component") or "10v"),
         ]
-    return [normalized]
+    return [normalized_var]
+
+
+def _inventory_strings(herbie: Herbie | None) -> list[str]:
+    if herbie is None:
+        return []
+    try:
+        inv = herbie.inventory()
+    except Exception as exc:
+        logger.info("GFS inventory lookup failed: %r", exc)
+        return []
+    if inv is None:
+        return []
+    for key in ("searchString", "variable", "shortName", "cfVarName"):
+        if key in inv.columns:
+            values = inv[key].dropna().astype(str).tolist()
+            if values:
+                return values
+    try:
+        return [str(row) for row in inv.itertuples(index=False)]
+    except Exception:
+        return []
+
+
+def _local_grib_varnames(path: Path) -> list[str]:
+    ds = None
+    try:
+        ds = xr.open_dataset(path, engine="cfgrib", backend_kwargs={"indexpath": ""})
+        return sorted(list(ds.data_vars))
+    except Exception as exc:
+        logger.info("GFS local GRIB inspection failed: %r", exc)
+        return []
+    finally:
+        if ds is not None:
+            try:
+                ds.close()
+            except Exception:
+                pass
 
 
 def _subset_contains_required_variables(
-    path: Path,
     required_vars: list[str] | None,
-) -> tuple[bool, list[str], list[str] | None]:
+    available: list[str] | None,
+) -> tuple[bool, list[str], list[str]]:
     """Best-effort validation that a subset GRIB contains all required fields."""
+    available_list = list(available or [])
     if not required_vars:
-        return True, [], None
+        return True, [], available_list
     from app.services.variable_registry import normalize_api_variable
 
     normalized_vars = [normalize_api_variable(v) for v in required_vars if str(v).strip()]
     if not normalized_vars:
-        return True, [], None
-    plugin = get_model("gfs")
+        return True, [], available_list
 
-    def _available_inventory() -> list[str] | None:
-        ds = None
-        try:
-            ds = xr.open_dataset(path, engine="cfgrib", backend_kwargs={"indexpath": ""})
-            return sorted(ds.data_vars.keys())
-        except Exception:
-            return None
-        finally:
-            if ds is not None:
-                try:
-                    ds.close()
-                except Exception:
-                    pass
-
-    def _cfgrib_filter_keys_for_var(var_id: str) -> dict[str, object]:
-        var_spec = plugin.get_var(var_id)
-        if var_spec is None or not var_spec.selectors.filter_by_keys:
-            return {}
-        filter_keys: dict[str, object] = {}
-        for key, value in var_spec.selectors.filter_by_keys.items():
-            if key == "level":
-                try:
-                    filter_keys[key] = int(value)
-                except (TypeError, ValueError):
-                    filter_keys[key] = value
-            else:
-                filter_keys[key] = value
-        return filter_keys
-
-    def _open_for_var(var_id: str) -> xr.Dataset:
-        filter_keys = _cfgrib_filter_keys_for_var(var_id)
-        attempts: list[dict[str, object]] = []
-        if filter_keys:
-            attempts.append(dict(filter_keys))
-            if "stepType" not in filter_keys:
-                attempts.append({**filter_keys, "stepType": "instant"})
-                attempts.append({**filter_keys, "stepType": "avg"})
-
-        last_exc: Exception | None = None
-        for fk in attempts:
-            try:
-                return xr.open_dataset(
-                    path,
-                    engine="cfgrib",
-                    backend_kwargs={"filter_by_keys": fk, "indexpath": ""},
-                )
-            except Exception as exc:
-                last_exc = exc
-                continue
-        if attempts:
-            assert last_exc is not None
-            raise last_exc
-        return xr.open_dataset(path, engine="cfgrib", backend_kwargs={"indexpath": ""})
-
-    matched: list[str] = []
-    for var in normalized_vars:
-        ds = None
-        try:
-            ds = _open_for_var(var)
-            _ = plugin.select_dataarray(ds, var)
-            matched.append(var)
-        except Exception:
-            return False, matched, _available_inventory()
-        finally:
-            if ds is not None:
-                try:
-                    ds.close()
-                except Exception:
-                    pass
-    return True, matched, _available_inventory()
+    available_lc = [item.lower() for item in available_list]
+    matched = [
+        var
+        for var in normalized_vars
+        if any(var.lower() in item for item in available_lc)
+    ]
+    return len(matched) == len(normalized_vars), matched, available_list
 
 
 def _parse_run_datetime(run: str) -> datetime | None:
@@ -346,6 +316,9 @@ def fetch_gfs_grib(
     )
     run_dt = _parse_run_datetime(run)
 
+    plugin = get_model(model)
+    normalized_var = plugin.normalize_var_id(variable) if variable else None
+
     search = search_override
     if not search:
         selectors = _resolve_var_selectors(model, variable)
@@ -403,16 +376,28 @@ def fetch_gfs_grib(
     expected_suffix = cache_key or variable or "subset"
     expected_filename = f"{model}.t{run_dt:%H}z.{product}f{fh:02d}.{expected_suffix}.grib2"
     expected_path = target_dir / expected_filename
-    validate_vars = required_vars if required_vars is not None else _required_grib_vars_for_request(model, variable)
+    validate_vars = required_vars if required_vars is not None else (
+        _required_grib_vars_for_request(model, normalized_var) if normalized_var else []
+    )
     if validate_vars is not None and not validate_vars:
         validate_vars = None
+    available_vars = _inventory_strings(herbie)
 
     if expected_path.exists():
         if _is_readable_grib(expected_path):
-            ok, matched, available = _subset_contains_required_variables(
-                expected_path,
-                validate_vars,
-            )
+            if available_vars:
+                logger.info("Cached GFS subset validation using inventory vars")
+                ok, matched, available = _subset_contains_required_variables(
+                    validate_vars,
+                    available_vars,
+                )
+            else:
+                available_local = _local_grib_varnames(expected_path)
+                logger.info("Cached GFS subset validation using local GRIB vars")
+                ok, matched, available = _subset_contains_required_variables(
+                    validate_vars,
+                    available_local,
+                )
             if not ok:
                 logger.warning(
                     "Cached GFS subset missing required variables; purging: path=%s variable=%s required=%s matched=%s available=%s",
@@ -434,7 +419,6 @@ def fetch_gfs_grib(
                 "Immutable cache conflict: target GFS GRIB exists but is unreadable; "
                 f"refusing overwrite at {expected_path}"
             )
-
     try:
         with _requests_guard(timeout_seconds, blocked_hosts):
             downloaded = herbie.download(search, save_dir=target_dir)
@@ -448,7 +432,6 @@ def fetch_gfs_grib(
                 f"Upstream timeout while probing GFS source: {exc}"
             ) from exc
         raise RuntimeError(f"Herbie download failed: {exc}") from exc
-
     if isinstance(downloaded, (list, tuple)):
         downloaded = downloaded[0] if downloaded else None
 
@@ -481,17 +464,26 @@ def fetch_gfs_grib(
             shutil.move(str(path), str(expected_path))
 
     ok, matched, available = _subset_contains_required_variables(
-        expected_path,
         validate_vars,
+        available_vars,
     )
+    available_inventory = available
+    available_local = []
+    if (not available_inventory) or not ok:
+        available_local = _local_grib_varnames(expected_path)
+        ok, matched, _ = _subset_contains_required_variables(
+            validate_vars,
+            available_local,
+        )
     if not ok:
         logger.warning(
-            "Downloaded GFS subset missing required variables; deleting and deferring: path=%s variable=%s required=%s matched=%s available=%s",
+            "Downloaded GFS subset missing required variables; deleting and deferring: path=%s variable=%s required=%s matched=%s available_inventory=%s available_local=%s",
             expected_path,
             variable or "subset",
             validate_vars or [],
             matched,
-            available,
+            available_inventory,
+            available_local,
         )
         try:
             expected_path.unlink()
