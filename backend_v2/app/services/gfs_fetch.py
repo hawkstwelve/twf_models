@@ -53,16 +53,64 @@ def _is_readable_grib(path: Path) -> bool:
         return False
 
 
-def _subset_contains_required_variables(path: Path, required_vars: list[str] | None) -> bool:
+def _required_grib_vars_for_request(model_id: str, variable: str | None) -> list[str]:
+    if not variable:
+        return []
+    from app.models.registry import MODEL_REGISTRY
+    from app.services.variable_registry import normalize_api_variable
+
+    normalized = normalize_api_variable(variable)
+    model = MODEL_REGISTRY.get(model_id)
+    if model is None:
+        return [normalized]
+    var_spec = model.get_var(normalized)
+    if var_spec is None:
+        return [normalized]
+    if var_spec.derived and var_spec.derive == "radar_ptype_combo":
+        hints = var_spec.selectors.hints
+        return [
+            str(hints.get("refl_component") or "refc"),
+            str(hints.get("rain_component") or "crain"),
+            str(hints.get("snow_component") or "csnow"),
+            str(hints.get("sleet_component") or "cicep"),
+            str(hints.get("frzr_component") or "cfrzr"),
+        ]
+    if var_spec.derived and var_spec.derive == "wspd10m":
+        hints = var_spec.selectors.hints
+        return [
+            str(hints.get("u_component") or "10u"),
+            str(hints.get("v_component") or "10v"),
+        ]
+    return [normalized]
+
+
+def _subset_contains_required_variables(
+    path: Path,
+    required_vars: list[str] | None,
+) -> tuple[bool, list[str], list[str] | None]:
     """Best-effort validation that a subset GRIB contains all required fields."""
     if not required_vars:
-        return True
+        return True, [], None
     from app.services.variable_registry import normalize_api_variable
 
     normalized_vars = [normalize_api_variable(v) for v in required_vars if str(v).strip()]
     if not normalized_vars:
-        return True
+        return True, [], None
     plugin = get_model("gfs")
+
+    def _available_inventory() -> list[str] | None:
+        ds = None
+        try:
+            ds = xr.open_dataset(path, engine="cfgrib", backend_kwargs={"indexpath": ""})
+            return sorted(ds.data_vars.keys())
+        except Exception:
+            return None
+        finally:
+            if ds is not None:
+                try:
+                    ds.close()
+                except Exception:
+                    pass
 
     def _cfgrib_filter_keys_for_var(var_id: str) -> dict[str, object]:
         var_spec = plugin.get_var(var_id)
@@ -104,20 +152,22 @@ def _subset_contains_required_variables(path: Path, required_vars: list[str] | N
             raise last_exc
         return xr.open_dataset(path, engine="cfgrib", backend_kwargs={"indexpath": ""})
 
+    matched: list[str] = []
     for var in normalized_vars:
         ds = None
         try:
             ds = _open_for_var(var)
             _ = plugin.select_dataarray(ds, var)
+            matched.append(var)
         except Exception:
-            return False
+            return False, matched, _available_inventory()
         finally:
             if ds is not None:
                 try:
                     ds.close()
                 except Exception:
                     pass
-    return True
+    return True, matched, _available_inventory()
 
 
 def _parse_run_datetime(run: str) -> datetime | None:
@@ -353,19 +403,23 @@ def fetch_gfs_grib(
     expected_suffix = cache_key or variable or "subset"
     expected_filename = f"{model}.t{run_dt:%H}z.{product}f{fh:02d}.{expected_suffix}.grib2"
     expected_path = target_dir / expected_filename
-    validate_vars = required_vars if required_vars is not None else None
+    validate_vars = required_vars if required_vars is not None else _required_grib_vars_for_request(model, variable)
+    if validate_vars is not None and not validate_vars:
+        validate_vars = None
 
     if expected_path.exists():
         if _is_readable_grib(expected_path):
-            if not _subset_contains_required_variables(
+            ok, matched, available = _subset_contains_required_variables(
                 expected_path,
                 validate_vars,
             ):
                 logger.warning(
-                    "Cached GFS subset missing required variables; purging: path=%s variable=%s required=%s",
+                    "Cached GFS subset missing required variables; purging: path=%s variable=%s required=%s matched=%s available=%s",
                     expected_path,
                     variable or "subset",
-                    required_vars or [],
+                    validate_vars or [],
+                    matched,
+                    available,
                 )
                 try:
                     expected_path.unlink()
@@ -425,15 +479,17 @@ def fetch_gfs_grib(
         except OSError:
             shutil.move(str(path), str(expected_path))
 
-    if not _subset_contains_required_variables(
+    ok, matched, available = _subset_contains_required_variables(
         expected_path,
         validate_vars,
     ):
         logger.warning(
-            "Downloaded GFS subset missing required variables; deleting and deferring: path=%s variable=%s required=%s",
+            "Downloaded GFS subset missing required variables; deleting and deferring: path=%s variable=%s required=%s matched=%s available=%s",
             expected_path,
             variable or "subset",
-            required_vars or [],
+            validate_vars or [],
+            matched,
+            available,
         )
         try:
             expected_path.unlink()
@@ -441,7 +497,7 @@ def fetch_gfs_grib(
             pass
         raise UpstreamNotReady(
             "Requested variables not available yet: "
-            f"var={variable or 'subset'} required={required_vars or []} "
+            f"var={variable or 'subset'} required={validate_vars or []} "
             f"run={run_dt.strftime('%Y%m%d_%Hz')} fh={fh:02d}"
         )
 
