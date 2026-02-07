@@ -1565,15 +1565,30 @@ def main() -> int:
                     "COG",
                     "-co",
                     "COMPRESS=DEFLATE",
+                    "-co",
+                    "OVERVIEWS=NONE",
                     str(warped_tif),
                     str(cog_path),
                 ]
             )
 
             require_gdal("gdaladdo")
+            addo_resampling = (
+                "nearest"
+                if meta.get("kind") == "discrete" or spec_key_used == "radar_ptype"
+                else "average"
+            )
             run_cmd(
                 [
                     "gdaladdo",
+                    "-r",
+                    addo_resampling,
+                    "--config",
+                    "COMPRESS_OVERVIEW",
+                    "DEFLATE",
+                    "--config",
+                    "INTERLEAVE_OVERVIEW",
+                    "PIXEL",
                     str(cog_path),
                     "2",
                     "4",
@@ -1583,6 +1598,22 @@ def main() -> int:
                     "64",
                 ]
             )
+
+            if args.debug:
+                cog_info = gdalinfo_json(cog_path)
+                cog_files = [str(path) for path in (cog_info.get("files") or [])]
+                band_overviews = [
+                    len((band or {}).get("overviews") or [])
+                    for band in (cog_info.get("bands") or [])
+                ]
+                has_external_ovr = any(path.lower().endswith(".ovr") for path in cog_files)
+                print(
+                    "COG overview debug: "
+                    f"resampling={addo_resampling} "
+                    f"bands={len(cog_info.get('bands') or [])} "
+                    f"overviews_per_band={band_overviews} "
+                    f"internal_overviews={not has_external_ovr}"
+                )
 
         _write_sidecar_json(
             sidecar_path,
