@@ -347,6 +347,7 @@ def _encode_radar_ptype_combo(
     refl_values: np.ndarray,
     ptype_values: dict[str, np.ndarray],
     refl_min_dbz: float | None = None,
+    footprint_min_dbz: float = 15.0,
 ) -> tuple[np.ndarray, np.ndarray, dict]:
     if refl_values.ndim != 2:
         raise RuntimeError(f"Expected 2D reflectivity array, got shape={refl_values.shape}")
@@ -420,7 +421,7 @@ def _encode_radar_ptype_combo(
     rain_levels = list(RADAR_CONFIG["rain"]["levels"])
     default_refl_min_dbz = float(rain_levels[1] if len(rain_levels) > 1 else rain_levels[0])
     rain_min_dbz = float(default_refl_min_dbz if refl_min_dbz is None else refl_min_dbz)
-    visible_mask = np.isfinite(refl) & (refl >= rain_min_dbz)
+    visible_mask = np.isfinite(refl) & (refl >= footprint_min_dbz)
     rain_colors = list(RADAR_CONFIG["rain"]["colors"])
     rain_offset = int(breaks["rain"]["offset"])
     if np.any(visible_mask):
@@ -465,7 +466,7 @@ def _encode_radar_ptype_combo(
     }
     if TWF_RADAR_PTYPE_DEBUG:
         logger.info(
-            "radar_ptype_combo summary: visible=%s/%s fallback_rain=%s snow=%s sleet=%s frzr=%s threshold=%.2f binary_like=%s",
+            "radar_ptype_combo summary: visible=%s/%s fallback_rain=%s snow=%s sleet=%s frzr=%s threshold=%.2f binary_like=%s footprint_min_dbz=%.2f",
             meta["visible_pixels"],
             total_count,
             fallback_rain_count,
@@ -474,6 +475,7 @@ def _encode_radar_ptype_combo(
             recolor_counts.get("frzr", 0),
             type_thresh,
             binary_like,
+            footprint_min_dbz,
         )
     return byte_band, alpha, meta
 

@@ -46,6 +46,9 @@ logger = logging.getLogger(__name__)
 GFS_RADAR_PTYPE_REFL_MIN_DBZ = float(
     os.environ.get("TWF_GFS_RADAR_PTYPE_REFL_MIN_DBZ", "0")
 )
+GFS_RADAR_PTYPE_FOOTPRINT_MIN_DBZ = float(
+    os.environ.get("TWF_GFS_RADAR_PTYPE_FOOTPRINT_MIN_DBZ", "0")
+)
 TWF_GFS_RADAR_DEBUG = os.environ.get("TWF_GFS_RADAR_DEBUG", "0").strip() == "1"
 
 
@@ -584,6 +587,7 @@ def build_gfs_cog(
                     "cfrzr": np.asarray(frzr_da.values, dtype=np.float32),
                 },
                 refl_min_dbz=GFS_RADAR_PTYPE_REFL_MIN_DBZ,
+                footprint_min_dbz=GFS_RADAR_PTYPE_FOOTPRINT_MIN_DBZ,
             )
         else:
             if fetch_result.grib_path is None:
