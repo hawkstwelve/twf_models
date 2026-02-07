@@ -42,7 +42,7 @@ class GFSPlugin(BaseModelPlugin):
         if normalized in {"crain", "csnow", "cicep", "cfrzr"}:
             return normalized
         if normalized in {"radar_ptype", "radar_ptype_combo"}:
-            return normalized
+            return "radar_ptype_combo"
         return normalized
 
     def _score_candidate(self, da: xr.DataArray, var_spec: VarSpec) -> int:
@@ -250,8 +250,8 @@ GFS_VARS: dict[str, VarSpec] = {
         derived=True,
         derive="wspd10m",
     ),
-    "radar_ptype": VarSpec(
-        id="radar_ptype",
+    "radar_ptype_combo": VarSpec(
+        id="radar_ptype_combo",
         name="Composite Reflectivity + P-Type",
         selectors=VarSelectors(
             hints={

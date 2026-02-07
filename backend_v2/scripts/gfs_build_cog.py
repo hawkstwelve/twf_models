@@ -303,6 +303,12 @@ def build_gfs_cog(
     pre_encoded: tuple[np.ndarray, np.ndarray, dict] | None = None
     try:
         derive_kind = str(var_spec.derive or "") if var_spec.derived else ""
+        logger.info(
+            "GFS build: requested_var=%s normalized_var=%s derive_kind=%s",
+            var,
+            normalized_var,
+            derive_kind,
+        )
         if derive_kind == "wspd10m":
             u_key = var_spec.selectors.hints.get("u_component", "10u")
             v_key = var_spec.selectors.hints.get("v_component", "10v")
@@ -718,6 +724,13 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+
+    if TWF_GFS_RADAR_DEBUG or args.debug:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        )
+        logger.setLevel(logging.INFO)
 
     plugin = get_model(args.model)
     region_spec = plugin.get_region(args.region)
