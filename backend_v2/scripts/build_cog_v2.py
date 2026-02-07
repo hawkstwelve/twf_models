@@ -633,7 +633,8 @@ def write_byte_geotiff_from_arrays(
     byte_band: np.ndarray,
     alpha_band: np.ndarray,
     out_tif: Path,
-) -> Path:
+) -> tuple[Path, bool]:
+    used_latlon = False
     try:
         grid = _lambert_grid_from_attrs(da)
 
@@ -655,6 +656,7 @@ def write_byte_geotiff_from_arrays(
         )
         print(f"Lambert grid SRS: {grid['lambert_crs'].to_string()}")
     except ValueError:
+        used_latlon = True
         normalized_da = normalize_latlon_coords(da)
         lat_name, lon_name = detect_latlon_names(normalized_da)
         lat = normalized_da.coords[lat_name].values
@@ -722,7 +724,7 @@ def write_byte_geotiff_from_arrays(
         except OSError:
             pass
 
-    return out_tif
+    return out_tif, used_latlon
 
 
 def warp_to_3857(
@@ -754,6 +756,16 @@ def warp_to_3857(
         "-overwrite",
     ]
 
+    if tr_meters is not None:
+        xres, yres = tr_meters
+        cmd.extend([
+            "-tr",
+            str(xres),
+            str(yres),
+        ])
+        if tap:
+            cmd.append("-tap")
+
     if clip_bounds_3857 is not None:
         minx, miny, maxx, maxy = clip_bounds_3857
         cmd.extend([
@@ -765,15 +777,6 @@ def warp_to_3857(
             "-te_srs",
             "EPSG:3857",
         ])
-        if tr_meters is not None:
-            xres, yres = tr_meters
-            cmd.extend([
-                "-tr",
-                str(xres),
-                str(yres),
-            ])
-            if tap:
-                cmd.append("-tap")
 
     cmd.extend([str(src_tif), str(dst_tif)])
     run_cmd(cmd)
@@ -1627,18 +1630,24 @@ def main() -> int:
             warped_tif = temp_root / f"{base_name}.3857.tif"
 
             print(f"Writing byte GeoTIFF: {byte_tif}")
-            write_byte_geotiff_from_arrays(da, byte_band, alpha_band, byte_tif)
+            _, used_latlon = write_byte_geotiff_from_arrays(da, byte_band, alpha_band, byte_tif)
 
             warp_resampling = "near" if meta.get("kind") == "discrete" else "bilinear"
             print(f"Warping to EPSG:3857 ({warp_resampling}): {warped_tif}")
             # Stub for future smoothing: when enabled for continuous vars only,
             # apply a higher-order resampling for band 1 without touching alpha.
+            # Use deterministic -tr/-tap for lat/lon grids to avoid coarse GDAL defaults.
+            tr_meters = (1000.0, 1000.0) if used_latlon else None
             warp_to_3857(
                 byte_tif,
                 warped_tif,
                 clip_bounds_3857=clip_bounds_3857,
                 resampling=warp_resampling,
+                tr_meters=tr_meters,
+                tap=bool(tr_meters),
             )
+            if args.debug:
+                print(f"Warp debug: used_latlon={used_latlon} tr_meters={tr_meters}")
 
             info = gdalinfo_json(warped_tif)
             if args.debug:
