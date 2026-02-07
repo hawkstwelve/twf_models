@@ -41,7 +41,7 @@ class GFSPlugin(BaseModelPlugin):
             return "10v"
         if normalized in {"crain", "csnow", "cicep", "cfrzr"}:
             return normalized
-        if normalized == "radar_ptype":
+        if normalized in {"radar_ptype", "radar_ptype_combo"}:
             return normalized
         return normalized
 
