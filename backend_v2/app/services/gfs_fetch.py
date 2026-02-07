@@ -412,9 +412,20 @@ def fetch_gfs_grib(
     expected_suffix = cache_key or variable or "subset"
     expected_filename = f"{model}.t{run_dt:%H}z.{product}f{fh:02d}.{expected_suffix}.grib2"
     expected_path = target_dir / expected_filename
+    original_required_vars = list(required_vars or [])
+    required_expanded = False
     if required_vars is not None:
-        validate_vars = required_vars
-        validate_source = "explicit"
+        required_lc = [str(item).strip().lower() for item in required_vars if str(item).strip()]
+        if any(item in {"radar_ptype", "radar_ptype_combo"} for item in required_lc):
+            if normalized_var:
+                validate_vars, _ = _required_grib_vars_for_request(model, normalized_var)
+            else:
+                validate_vars = ["refc", "crain", "csnow", "cicep", "cfrzr"]
+            validate_source = "explicit_expanded"
+            required_expanded = True
+        else:
+            validate_vars = required_lc
+            validate_source = "explicit"
     elif normalized_var:
         validate_vars, validate_source = _required_grib_vars_for_request(model, normalized_var)
     else:
@@ -423,8 +434,9 @@ def fetch_gfs_grib(
     if validate_vars is not None and not validate_vars:
         validate_vars = None
     logger.info(
-        "GFS required vars: normalized_var=%s required=%s source=%s",
+        "GFS required vars: normalized_var=%s original_required_vars=%s expanded_required_vars=%s source=%s",
         normalized_var,
+        original_required_vars,
         validate_vars or [],
         validate_source,
     )
