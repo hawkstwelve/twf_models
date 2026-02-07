@@ -1001,13 +1001,22 @@ def assert_single_internal_overview_cog(path: Path) -> None:
         if not (((band or {}).get("mask") or {}).get("overviews") or [])
     ]
     if missing_mask_overviews:
-        raise RuntimeError(
-            f"COG invariant failed: missing internal mask overviews on bands={','.join(missing_mask_overviews)}"
+        if _gdaladdo_supports_mask():
+            raise RuntimeError(
+                f"COG invariant failed: missing internal mask overviews on bands={','.join(missing_mask_overviews)}"
+            )
+        logger.warning(
+            "COG invariant relaxed: missing internal mask overviews on bands=%s because gdaladdo -mask is unavailable",
+            ",".join(missing_mask_overviews),
         )
 
 
 _OVERVIEW_LEVELS = ["2", "4", "8", "16", "32", "64"]
 _GDALADDO_MASK_SUPPORTED: bool | None = None
+
+
+def _is_external_overview_conflict(exc: RuntimeError) -> bool:
+    return "Cannot add external overviews when there are already internal overviews" in str(exc)
 
 
 def _gdaladdo_supports_mask() -> bool:
@@ -1040,6 +1049,12 @@ def run_gdaladdo_overviews(
         "--config",
         "INTERLEAVE_OVERVIEW",
         "PIXEL",
+        "--config",
+        "GTIFF_FORCE_EXTERNAL_OVR",
+        "NO",
+        "--config",
+        "USE_RRD",
+        "NO",
     ]
 
     def _run(resampling: str, extra_args: list[str]) -> None:
@@ -1054,22 +1069,28 @@ def run_gdaladdo_overviews(
     # Ensure a clean slate if COG driver produced internal overviews unexpectedly.
     run_cmd(base_cmd + ["-clean", str(cog_path)])
 
-    _run(band1_resampling, ["-b", "1"])
-    _run(band2_resampling, ["-b", "2"])
+    try:
+        _run(band1_resampling, ["-b", "1"])
+        _run(band2_resampling, ["-b", "2"])
+    except RuntimeError as exc:
+        if not _is_external_overview_conflict(exc):
+            raise
+        logger.warning(
+            "Band-specific gdaladdo overviews are not supported by this GDAL build; "
+            "falling back to all-band overviews with resampling=%s",
+            band1_resampling,
+        )
+        run_cmd(base_cmd + ["-clean", str(cog_path)])
+        _run(band1_resampling, [])
+        return
 
     if _gdaladdo_supports_mask():
         try:
             _run("nearest", ["-mask", "1"])
         except RuntimeError as exc:
-            logger.warning("gdaladdo -mask failed, falling back to nearest mask regen: %s", exc)
-            _run("nearest", [])
-            _run(band1_resampling, ["-b", "1"])
-            _run(band2_resampling, ["-b", "2"])
+            logger.warning("gdaladdo -mask failed; keeping current internal overviews: %s", exc)
     else:
-        logger.warning("gdaladdo does not support -mask; using nearest fallback for mask")
-        _run("nearest", [])
-        _run(band1_resampling, ["-b", "1"])
-        _run(band2_resampling, ["-b", "2"])
+        logger.warning("gdaladdo does not support -mask; keeping current internal overviews")
 
 
 def assert_alpha_present(info: dict) -> int:
