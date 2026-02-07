@@ -154,26 +154,124 @@ def _local_grib_varnames(path: Path) -> list[str]:
 
 
 def _subset_contains_required_variables(
+    model_id: str | None,
     required_vars: list[str] | None,
     available: list[str] | None,
 ) -> tuple[bool, list[str], list[str]]:
-    """Best-effort validation that a subset GRIB contains all required fields."""
+    """Best-effort validation that a subset GRIB contains all required fields.
+
+    Notes:
+    - Herbie inventory fields vary by source (shortName like "TMP", "UGRD" or
+      searchString snippets like ":TMP:2 m above ground:").
+    - Our API variables are normalized ids ("tmp2m", "10u", "10v", "refc", etc.).
+
+    This matcher expands each required API var into one or more plausible GRIB tokens
+    and considers a required var satisfied if ANY token matches the inventory.
+    """
+
     available_list = list(available or [])
     if not required_vars:
         return True, [], available_list
+
     from app.services.variable_registry import normalize_api_variable
 
-    normalized_vars = [normalize_api_variable(v) for v in required_vars if str(v).strip()]
-    if not normalized_vars:
+    required_norm = [normalize_api_variable(v) for v in required_vars if str(v).strip()]
+    if not required_norm:
         return True, [], available_list
 
-    available_lc = [item.lower() for item in available_list]
-    matched = [
-        var
-        for var in normalized_vars
-        if any(var.lower() in item for item in available_lc)
-    ]
-    return len(matched) == len(normalized_vars), matched, available_list
+    # Normalize available inventory strings.
+    available_upper = [str(item).strip().upper() for item in available_list if str(item).strip()]
+    available_norm = [normalize_api_variable(item) for item in available_list if str(item).strip()]
+
+    def _tokens_from_search(var: str) -> list[str]:
+        # Try to derive shortName tokens from the model registry/herbie selector search.
+        try:
+            selectors = _resolve_var_selectors(model_id or "gfs", var)
+            search = _select_herbie_search(selectors) or ""
+        except Exception:
+            search = ""
+
+        tokens: list[str] = []
+        if search:
+            for alt in str(search).split("|"):
+                # Typical pattern: ":TMP:2 m above ground:" -> parts[1] == "TMP"
+                parts = [p for p in alt.split(":") if p]
+                if parts:
+                    # Prefer the first all-alpha-ish token (e.g., TMP, UGRD, REFC).
+                    cand = parts[0].strip()
+                    if cand:
+                        tokens.append(cand)
+                    if len(parts) > 1:
+                        cand2 = parts[1].strip()
+                        if cand2:
+                            tokens.append(cand2)
+        return tokens
+
+    # Hard fallbacks for common/derived vars when inventory only exposes GRIB shortNames.
+    # (These are intentionally conservative and limited.)
+    FALLBACK_TOKEN_MAP: dict[str, list[str]] = {
+        "tmp2m": ["TMP"],
+        "t2m": ["TMP"],
+        "10u": ["UGRD"],
+        "10v": ["VGRD"],
+        "wspd10m": ["UGRD", "VGRD"],
+        "refc": ["REFC"],
+        "refd": ["REFD"],
+        "crain": ["CRAIN"],
+        "csnow": ["CSNOW"],
+        "cicep": ["CICEP"],
+        "cfrzr": ["CFRZR"],
+        "gust10m": ["GUST"],
+    }
+
+    def _candidate_tokens(var: str) -> list[str]:
+        tokens: list[str] = []
+        # 1) Static token map.
+        tokens.extend(FALLBACK_TOKEN_MAP.get(var, []))
+        # 2) Search-derived tokens.
+        tokens.extend(_tokens_from_search(var))
+        # 3) Raw forms (helps if required vars are already GRIB-like).
+        tokens.append(var)
+        tokens.append(var.upper())
+        # Dedup preserving order.
+        out: list[str] = []
+        seen: set[str] = set()
+        for t in tokens:
+            tt = str(t).strip()
+            if not tt:
+                continue
+            key = tt.upper()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(tt)
+        return out
+
+    matched: list[str] = []
+    for var in required_norm:
+        tokens = _candidate_tokens(var)
+
+        # Direct matches against normalized inventory (best when inventory gives cfgrib varnames).
+        if var in available_norm:
+            matched.append(var)
+            continue
+
+        # Match any token to inventory shortNames or searchStrings.
+        ok = False
+        for token in tokens:
+            t_up = token.upper()
+            # Exact shortName match.
+            if t_up in available_upper:
+                ok = True
+                break
+            # Substring match for searchString-ish inventories.
+            if any(t_up in item for item in available_upper):
+                ok = True
+                break
+        if ok:
+            matched.append(var)
+
+    return len(matched) == len(required_norm), matched, available_list
 
 
 def _parse_run_datetime(run: str) -> datetime | None:
@@ -447,6 +545,7 @@ def fetch_gfs_grib(
             if available_vars:
                 logger.info("Cached GFS subset validation using inventory vars")
                 ok, matched, available = _subset_contains_required_variables(
+                    model,
                     validate_vars,
                     available_vars,
                 )
@@ -454,6 +553,7 @@ def fetch_gfs_grib(
                 available_local = _local_grib_varnames(expected_path)
                 logger.info("Cached GFS subset validation using local GRIB vars")
                 ok, matched, available = _subset_contains_required_variables(
+                    model,
                     validate_vars,
                     available_local,
                 )
@@ -523,6 +623,7 @@ def fetch_gfs_grib(
             shutil.move(str(path), str(expected_path))
 
     ok, matched, available = _subset_contains_required_variables(
+        model,
         validate_vars,
         available_vars,
     )
@@ -531,6 +632,7 @@ def fetch_gfs_grib(
     if (not available_inventory) or not ok:
         available_local = _local_grib_varnames(expected_path)
         ok, matched, _ = _subset_contains_required_variables(
+            model,
             validate_vars,
             available_local,
         )
