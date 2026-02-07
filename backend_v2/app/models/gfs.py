@@ -12,6 +12,17 @@ from .base import BaseModelPlugin, RegionSpec, VarSelectors, VarSpec
 
 
 class GFSPlugin(BaseModelPlugin):
+    _STRICT_SELECTION_VARS = {
+        "tmp2m",
+        "10u",
+        "10v",
+        "refc",
+        "crain",
+        "csnow",
+        "cicep",
+        "cfrzr",
+    }
+
     def target_fhs(self, cycle_hour: int) -> list[int]:
         del cycle_hour
         return list(GFS_INITIAL_FHS)
@@ -100,6 +111,12 @@ class GFSPlugin(BaseModelPlugin):
         upstream = var_spec.selectors.hints.get("upstream_var")
         if upstream and upstream in ds.data_vars:
             return ds[upstream]
+
+        if var_id in self._STRICT_SELECTION_VARS:
+            available = ", ".join(sorted(ds.data_vars))
+            raise ValueError(
+                f"GFS strict selection failed for {var_id}; available={available}"
+            )
 
         if len(ds.data_vars) == 1:
             only_name = next(iter(ds.data_vars))
@@ -238,6 +255,9 @@ GFS_VARS: dict[str, VarSpec] = {
         name="Composite Reflectivity",
         selectors=VarSelectors(
             search=[":REFC:"],
+            filter_by_keys={
+                "shortName": "refc",
+            },
             hints={
                 "upstream_var": "refc",
                 "cf_var": "refc",
@@ -250,6 +270,10 @@ GFS_VARS: dict[str, VarSpec] = {
         name="Categorical Rain",
         selectors=VarSelectors(
             search=[":CRAIN:surface:"],
+            filter_by_keys={
+                "shortName": "crain",
+                "typeOfLevel": "surface",
+            },
             hints={
                 "upstream_var": "crain",
                 "short_name": "crain",
@@ -261,6 +285,10 @@ GFS_VARS: dict[str, VarSpec] = {
         name="Categorical Snow",
         selectors=VarSelectors(
             search=[":CSNOW:surface:"],
+            filter_by_keys={
+                "shortName": "csnow",
+                "typeOfLevel": "surface",
+            },
             hints={
                 "upstream_var": "csnow",
                 "short_name": "csnow",
@@ -272,6 +300,10 @@ GFS_VARS: dict[str, VarSpec] = {
         name="Categorical Sleet",
         selectors=VarSelectors(
             search=[":CICEP:surface:"],
+            filter_by_keys={
+                "shortName": "cicep",
+                "typeOfLevel": "surface",
+            },
             hints={
                 "upstream_var": "cicep",
                 "short_name": "cicep",
@@ -283,6 +315,10 @@ GFS_VARS: dict[str, VarSpec] = {
         name="Categorical Freezing Rain",
         selectors=VarSelectors(
             search=[":CFRZR:surface:"],
+            filter_by_keys={
+                "shortName": "cfrzr",
+                "typeOfLevel": "surface",
+            },
             hints={
                 "upstream_var": "cfrzr",
                 "short_name": "cfrzr",

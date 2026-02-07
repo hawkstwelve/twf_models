@@ -19,6 +19,7 @@ import numpy as np
 import xarray as xr
 
 from app.models import get_model
+from app.models.base import VarSpec
 from app.services.fetch_engine import fetch_grib
 from app.services.grid import detect_latlon_names
 
@@ -39,6 +40,61 @@ from build_cog_v2 import (
 
 
 RUN_RE = re.compile(r"^\d{8}_\d{2}z$")
+
+
+def _cfgrib_filter_keys(var_spec: VarSpec | None) -> dict[str, object]:
+    if var_spec is None:
+        return {}
+    selectors = var_spec.selectors
+    if not selectors.filter_by_keys:
+        return {}
+    filter_keys: dict[str, object] = {}
+    for key, value in selectors.filter_by_keys.items():
+        if key == "level":
+            try:
+                filter_keys[key] = int(value)
+            except (TypeError, ValueError):
+                filter_keys[key] = value
+        else:
+            filter_keys[key] = value
+    return filter_keys
+
+
+def _open_cfgrib_dataset_strict(path: Path, var_spec: VarSpec | None) -> xr.Dataset:
+    """GFS-only strict cfgrib open.
+
+    If selector filters exist, all attempts must honor those filters. We intentionally
+    avoid a broad fallback for these cases so mixed-message subsets cannot silently map
+    to the wrong field.
+    """
+    base_filter_keys = _cfgrib_filter_keys(var_spec)
+    retry_filters: list[dict[str, object]] = []
+    if base_filter_keys:
+        retry_filters.append(dict(base_filter_keys))
+        if "stepType" not in base_filter_keys:
+            retry_filters.append({**base_filter_keys, "stepType": "instant"})
+            retry_filters.append({**base_filter_keys, "stepType": "avg"})
+
+    last_exc: Exception | None = None
+    for filter_keys in retry_filters:
+        try:
+            return xr.open_dataset(
+                path,
+                engine="cfgrib",
+                backend_kwargs={"filter_by_keys": filter_keys, "indexpath": ""},
+            )
+        except Exception as exc:  # pragma: no cover - retry path
+            last_exc = exc
+            continue
+
+    if retry_filters:
+        assert last_exc is not None
+        raise RuntimeError(
+            f"Failed strict cfgrib open for path={path} filters={retry_filters}: "
+            f"{type(last_exc).__name__}: {last_exc}"
+        ) from last_exc
+
+    return _open_cfgrib_dataset(path, var_spec)
 
 
 def _parse_bbox(value: str) -> tuple[float, float, float, float]:
@@ -241,26 +297,30 @@ def build_gfs_cog(
     try:
         derive_kind = str(var_spec.derive or "") if var_spec.derived else ""
         if derive_kind == "wspd10m":
-            if not fetch_result.component_paths:
-                raise RuntimeError("Missing component paths for wspd10m")
             u_key = var_spec.selectors.hints.get("u_component", "10u")
             v_key = var_spec.selectors.hints.get("v_component", "10v")
-            u_path = fetch_result.component_paths.get(u_key)
-            v_path = fetch_result.component_paths.get(v_key)
-            if u_path is None or v_path is None:
-                raise RuntimeError(
-                    f"Missing wspd10m component files; have={sorted(fetch_result.component_paths.keys())}"
-                )
+            if fetch_result.component_paths:
+                u_path = fetch_result.component_paths.get(u_key)
+                v_path = fetch_result.component_paths.get(v_key)
+                if u_path is None or v_path is None:
+                    raise RuntimeError(
+                        f"Missing wspd10m component files; have={sorted(fetch_result.component_paths.keys())}"
+                    )
+            elif fetch_result.grib_path is not None:
+                u_path = fetch_result.grib_path
+                v_path = fetch_result.grib_path
+            else:
+                raise RuntimeError("Missing GRIB source for wspd10m")
             u_spec = plugin.get_var(u_key)
             v_spec = plugin.get_var(v_key)
             try:
-                ds_u = _open_cfgrib_dataset(u_path, u_spec)
+                ds_u = _open_cfgrib_dataset_strict(u_path, u_spec)
             except Exception as exc:
                 raise RuntimeError(
                     f"Failed opening U-component GRIB with cfgrib: path={u_path} type={type(exc).__name__} repr={exc!r}"
                 ) from exc
             try:
-                ds_v = _open_cfgrib_dataset(v_path, v_spec)
+                ds_v = _open_cfgrib_dataset_strict(v_path, v_spec)
             except Exception as exc:
                 raise RuntimeError(
                     f"Failed opening V-component GRIB with cfgrib: path={v_path} type={type(exc).__name__} repr={exc!r}"
@@ -297,28 +357,35 @@ def build_gfs_cog(
             da.attrs = dict(u_da.attrs)
             da.attrs["GRIB_units"] = "mph"
         elif derive_kind == "radar_ptype_combo":
-            if not fetch_result.component_paths:
-                raise RuntimeError("Missing component paths for radar_ptype_combo")
             refl_component = str(var_spec.selectors.hints.get("refl_component", "refc"))
             rain_component = str(var_spec.selectors.hints.get("rain_component", "crain"))
             snow_component = str(var_spec.selectors.hints.get("snow_component", "csnow"))
             sleet_component = str(var_spec.selectors.hints.get("sleet_component", "cicep"))
             frzr_component = str(var_spec.selectors.hints.get("frzr_component", "cfrzr"))
-            refl_path, rain_path, snow_path, sleet_path, frzr_path = _resolve_radar_blend_component_paths(
-                fetch_result.component_paths,
-                refl_key=refl_component,
-                rain_key=rain_component,
-                snow_key=snow_component,
-                sleet_key=sleet_component,
-                frzr_key=frzr_component,
-            )
+            if fetch_result.component_paths:
+                refl_path, rain_path, snow_path, sleet_path, frzr_path = _resolve_radar_blend_component_paths(
+                    fetch_result.component_paths,
+                    refl_key=refl_component,
+                    rain_key=rain_component,
+                    snow_key=snow_component,
+                    sleet_key=sleet_component,
+                    frzr_key=frzr_component,
+                )
+            elif fetch_result.grib_path is not None:
+                refl_path = fetch_result.grib_path
+                rain_path = fetch_result.grib_path
+                snow_path = fetch_result.grib_path
+                sleet_path = fetch_result.grib_path
+                frzr_path = fetch_result.grib_path
+            else:
+                raise RuntimeError("Missing GRIB source for radar_ptype_combo")
             source_path = refl_path
 
-            ds_refl = _open_cfgrib_dataset(refl_path, plugin.get_var(refl_component))
-            ds_rain = _open_cfgrib_dataset(rain_path, plugin.get_var(rain_component))
-            ds_snow = _open_cfgrib_dataset(snow_path, plugin.get_var(snow_component))
-            ds_sleet = _open_cfgrib_dataset(sleet_path, plugin.get_var(sleet_component))
-            ds_frzr = _open_cfgrib_dataset(frzr_path, plugin.get_var(frzr_component))
+            ds_refl = _open_cfgrib_dataset_strict(refl_path, plugin.get_var(refl_component))
+            ds_rain = _open_cfgrib_dataset_strict(rain_path, plugin.get_var(rain_component))
+            ds_snow = _open_cfgrib_dataset_strict(snow_path, plugin.get_var(snow_component))
+            ds_sleet = _open_cfgrib_dataset_strict(sleet_path, plugin.get_var(sleet_component))
+            ds_frzr = _open_cfgrib_dataset_strict(frzr_path, plugin.get_var(frzr_component))
 
             refl_da = plugin.select_dataarray(ds_refl, refl_component)
             rain_da = plugin.select_dataarray(ds_rain, rain_component)
@@ -346,7 +413,7 @@ def build_gfs_cog(
                 raise RuntimeError("Missing GRIB path from fetch result")
             source_path = fetch_result.grib_path
             try:
-                ds = _open_cfgrib_dataset(source_path, var_spec)
+                ds = _open_cfgrib_dataset_strict(source_path, var_spec)
             except Exception as exc:
                 raise RuntimeError(
                     f"Failed opening GRIB with cfgrib: path={source_path} type={type(exc).__name__} repr={exc!r}"

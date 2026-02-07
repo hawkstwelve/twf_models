@@ -13,6 +13,7 @@ from herbie import Herbie
 import requests
 import xarray as xr
 
+from app.models import get_model
 from app.services.paths import default_gfs_cache_dir
 
 logger = logging.getLogger(__name__)
@@ -56,26 +57,67 @@ def _subset_contains_required_variables(path: Path, required_vars: list[str] | N
     """Best-effort validation that a subset GRIB contains all required fields."""
     if not required_vars:
         return True
-    from app.services.variable_registry import normalize_api_variable, select_dataarray
+    from app.services.variable_registry import normalize_api_variable
 
     normalized_vars = [normalize_api_variable(v) for v in required_vars if str(v).strip()]
     if not normalized_vars:
         return True
-    try:
-        ds = xr.open_dataset(path, engine="cfgrib")
-    except Exception:
-        return False
-    try:
-        for var in normalized_vars:
-            _ = select_dataarray(ds, var)
-        return True
-    except Exception:
-        return False
-    finally:
+    plugin = get_model("gfs")
+
+    def _cfgrib_filter_keys_for_var(var_id: str) -> dict[str, object]:
+        var_spec = plugin.get_var(var_id)
+        if var_spec is None or not var_spec.selectors.filter_by_keys:
+            return {}
+        filter_keys: dict[str, object] = {}
+        for key, value in var_spec.selectors.filter_by_keys.items():
+            if key == "level":
+                try:
+                    filter_keys[key] = int(value)
+                except (TypeError, ValueError):
+                    filter_keys[key] = value
+            else:
+                filter_keys[key] = value
+        return filter_keys
+
+    def _open_for_var(var_id: str) -> xr.Dataset:
+        filter_keys = _cfgrib_filter_keys_for_var(var_id)
+        attempts: list[dict[str, object]] = []
+        if filter_keys:
+            attempts.append(dict(filter_keys))
+            if "stepType" not in filter_keys:
+                attempts.append({**filter_keys, "stepType": "instant"})
+                attempts.append({**filter_keys, "stepType": "avg"})
+
+        last_exc: Exception | None = None
+        for fk in attempts:
+            try:
+                return xr.open_dataset(
+                    path,
+                    engine="cfgrib",
+                    backend_kwargs={"filter_by_keys": fk, "indexpath": ""},
+                )
+            except Exception as exc:
+                last_exc = exc
+                continue
+        if attempts:
+            assert last_exc is not None
+            raise last_exc
+        return xr.open_dataset(path, engine="cfgrib", backend_kwargs={"indexpath": ""})
+
+    for var in normalized_vars:
+        ds = None
         try:
-            ds.close()
+            ds = _open_for_var(var)
+            _ = plugin.select_dataarray(ds, var)
         except Exception:
-            pass
+            return False
+        finally:
+            if ds is not None:
+                try:
+                    ds.close()
+                except Exception:
+                    pass
+    return True
 
 
 def _parse_run_datetime(run: str) -> datetime | None:
