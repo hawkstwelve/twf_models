@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 import logging
+import os
 import re
 
 from fastapi import HTTPException
@@ -155,6 +156,11 @@ def _resolve_radar_blend_component_vars(
     return fallback
 
 
+def _use_hrrr_shared_source() -> bool:
+    raw = os.environ.get("TWF_HRRR_SHARED_SOURCE_PER_HOUR", "1").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 def fetch_grib(
     model: str,
     run: str,
@@ -183,6 +189,31 @@ def fetch_grib(
             raise HTTPException(status_code=501, detail="Fetch not implemented for model")
 
     product = plugin.product
+
+    # HRRR shared-source mode: one canonical full GRIB per run+fh, then select variables
+    # at build time. This avoids per-variable subset cache cross-wiring.
+    if model == "hrrr" and _use_hrrr_shared_source():
+        try:
+            result = fetch_hrrr_grib(
+                run=run,
+                fh=fh,
+                model=model,
+                product=product,
+                variable=None,
+                search_override=None,
+                cache_cfg=HRRRCacheConfig(base_dir=cache_dir, keep_runs=1) if cache_dir else None,
+            )
+        except Exception as exc:
+            if is_upstream_not_ready(exc):
+                return _not_ready(run, exc)
+            raise
+        run_id = _normalize_run_id(run, result.path)
+        return FetchResult(
+            upstream_run_id=run_id,
+            is_full_download=result.is_full_file,
+            grib_path=result.path,
+            component_paths=None,
+        )
 
     if not var_spec.derived:
         fetch_var = _resolve_upstream_var(var_spec, var_spec.id)

@@ -1,4 +1,4 @@
-"""Scheduled task scheduler"""
+"Scheduled task scheduler"""
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 import os

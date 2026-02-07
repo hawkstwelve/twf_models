@@ -16,7 +16,7 @@ from app.models.base import VarSelectors
 
 from .hrrr_runs import HRRRCacheConfig, enforce_cycle_retention
 from .paths import default_hrrr_cache_dir
-from .variable_registry import herbie_search_for, normalize_api_variable
+from .variable_registry import herbie_search_for, normalize_api_variable, select_dataarray
 
 logger = logging.getLogger(__name__)
 

@@ -19,6 +19,10 @@ class HRRRPlugin(BaseModelPlugin):
         normalized = normalize_api_variable(var_id)
         if normalized in {"t2m", "tmp2m", "2t"}:
             return "tmp2m"
+        if normalized in {"10u", "u10"}:
+            return "10u"
+        if normalized in {"10v", "v10"}:
+            return "10v"
         if normalized in {"refc", "cref"}:
             return "refc"
         if normalized == "wspd10m":
@@ -75,11 +79,44 @@ HRRR_VARS: dict[str, VarSpec] = {
         derived=True,
         derive="wspd10m",
     ),
+    "10u": VarSpec(
+        id="10u",
+        name="10m U Wind",
+        selectors=VarSelectors(
+            search=[":UGRD:10 m above ground:"],
+            filter_by_keys={
+                "shortName": "10u",
+                "typeOfLevel": "heightAboveGround",
+                "level": "10",
+            },
+            hints={
+                "upstream_var": "10u",
+            },
+        ),
+    ),
+    "10v": VarSpec(
+        id="10v",
+        name="10m V Wind",
+        selectors=VarSelectors(
+            search=[":VGRD:10 m above ground:"],
+            filter_by_keys={
+                "shortName": "10v",
+                "typeOfLevel": "heightAboveGround",
+                "level": "10",
+            },
+            hints={
+                "upstream_var": "10v",
+            },
+        ),
+    ),
     "refc": VarSpec(
         id="refc",
         name="Composite Reflectivity",
         selectors=VarSelectors(
             search=[":REFC:"],
+            filter_by_keys={
+                "shortName": "refc",
+            },
             hints={
                 "upstream_var": "refc",
             },
@@ -90,6 +127,10 @@ HRRR_VARS: dict[str, VarSpec] = {
         name="Categorical Rain",
         selectors=VarSelectors(
             search=[":CRAIN:surface:"],
+            filter_by_keys={
+                "shortName": "crain",
+                "typeOfLevel": "surface",
+            },
             hints={"upstream_var": "crain"},
         ),
     ),
@@ -98,6 +139,10 @@ HRRR_VARS: dict[str, VarSpec] = {
         name="Categorical Snow",
         selectors=VarSelectors(
             search=[":CSNOW:surface:"],
+            filter_by_keys={
+                "shortName": "csnow",
+                "typeOfLevel": "surface",
+            },
             hints={"upstream_var": "csnow"},
         ),
     ),
@@ -106,6 +151,10 @@ HRRR_VARS: dict[str, VarSpec] = {
         name="Categorical Sleet",
         selectors=VarSelectors(
             search=[":CICEP:surface:"],
+            filter_by_keys={
+                "shortName": "cicep",
+                "typeOfLevel": "surface",
+            },
             hints={"upstream_var": "cicep"},
         ),
     ),
@@ -114,6 +163,10 @@ HRRR_VARS: dict[str, VarSpec] = {
         name="Categorical Freezing Rain",
         selectors=VarSelectors(
             search=[":CFRZR:surface:"],
+            filter_by_keys={
+                "shortName": "cfrzr",
+                "typeOfLevel": "surface",
+            },
             hints={"upstream_var": "cfrzr"},
         ),
     ),

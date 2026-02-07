@@ -903,10 +903,13 @@ def main() -> int:
             if fetch_result.not_ready_reason:
                 _log_upstream_not_ready(args, fetch_result.not_ready_reason)
                 return 2
-            if not fetch_result.component_paths:
-                raise RuntimeError("Missing component paths for wspd10m")
-            u_path, v_path = _resolve_uv_paths(fetch_result.component_paths)
-            grib_path = u_path
+            if fetch_result.component_paths:
+                u_path, v_path = _resolve_uv_paths(fetch_result.component_paths)
+                grib_path = u_path
+            elif fetch_result.grib_path is not None:
+                grib_path = fetch_result.grib_path
+            else:
+                raise RuntimeError("Missing GRIB source for wspd10m")
         except Exception as exc:
             if is_upstream_not_ready(exc):
                 _log_upstream_not_ready(args, str(exc))
@@ -914,8 +917,11 @@ def main() -> int:
             logger.exception("Failed to fetch HRRR GRIB for wspd10m")
             return 2
 
-        print(f"GRIB path (u10): {u_path}")
-        print(f"GRIB path (v10): {v_path}")
+        if u_path is not None and v_path is not None:
+            print(f"GRIB path (u10): {u_path}")
+            print(f"GRIB path (v10): {v_path}")
+        else:
+            print(f"GRIB path (shared): {grib_path}")
     elif derive_kind == "radar_ptype_combo":
         try:
             fetch_result = fetch_grib(
@@ -929,31 +935,37 @@ def main() -> int:
             if fetch_result.not_ready_reason:
                 _log_upstream_not_ready(args, fetch_result.not_ready_reason)
                 return 2
-            if not fetch_result.component_paths:
-                raise RuntimeError("Missing component paths for radar_ptype_combo")
             refl_component, rain_component, snow_component, sleet_component, frzr_component = (
                 _radar_blend_component_ids(var_spec)
             )
-            refl_path, rain_path, snow_path, sleet_path, frzr_path = _resolve_radar_blend_component_paths(
-                fetch_result.component_paths,
-                refl_key=refl_component,
-                rain_key=rain_component,
-                snow_key=snow_component,
-                sleet_key=sleet_component,
-                frzr_key=frzr_component,
-            )
-            grib_path = refl_path
+            if fetch_result.component_paths:
+                refl_path, rain_path, snow_path, sleet_path, frzr_path = _resolve_radar_blend_component_paths(
+                    fetch_result.component_paths,
+                    refl_key=refl_component,
+                    rain_key=rain_component,
+                    snow_key=snow_component,
+                    sleet_key=sleet_component,
+                    frzr_key=frzr_component,
+                )
+                grib_path = refl_path
+            elif fetch_result.grib_path is not None:
+                grib_path = fetch_result.grib_path
+            else:
+                raise RuntimeError("Missing GRIB source for radar_ptype_combo")
         except Exception as exc:
             if is_upstream_not_ready(exc):
                 _log_upstream_not_ready(args, str(exc))
                 return 2
             logger.exception("Failed to fetch GRIB components for radar_ptype_combo")
             return 2
-        print(f"GRIB path (reflectivity): {refl_path}")
-        print(f"GRIB path (rain mask): {rain_path}")
-        print(f"GRIB path (snow mask): {snow_path}")
-        print(f"GRIB path (sleet mask): {sleet_path}")
-        print(f"GRIB path (frzr mask): {frzr_path}")
+        if all(path is not None for path in (refl_path, rain_path, snow_path, sleet_path, frzr_path)):
+            print(f"GRIB path (reflectivity): {refl_path}")
+            print(f"GRIB path (rain mask): {rain_path}")
+            print(f"GRIB path (snow mask): {snow_path}")
+            print(f"GRIB path (sleet mask): {sleet_path}")
+            print(f"GRIB path (frzr mask): {frzr_path}")
+        else:
+            print(f"GRIB path (shared): {grib_path}")
     else:
         try:
             fetch_result = fetch_grib(
@@ -1024,8 +1036,12 @@ def main() -> int:
                 u_component, v_component = _component_ids(var_spec)
                 u_spec = plugin.get_var(u_component)
                 v_spec = plugin.get_var(v_component)
-                ds_u = _open_cfgrib_dataset(u_path, u_spec)
-                ds_v = _open_cfgrib_dataset(v_path, v_spec)
+                source_u_path = u_path or grib_path
+                source_v_path = v_path or grib_path
+                if source_u_path is None or source_v_path is None:
+                    raise RuntimeError("Missing GRIB path for wspd10m components")
+                ds_u = _open_cfgrib_dataset(source_u_path, u_spec)
+                ds_v = _open_cfgrib_dataset(source_v_path, v_spec)
                 u_candidates = [u_component, "ugrd10m", "u10", "10u"]
                 v_candidates = [v_component, "vgrd10m", "v10", "10v"]
                 u_da, u_key = select_first(ds_u, u_candidates, "u wind")
@@ -1084,11 +1100,19 @@ def main() -> int:
                 refl_component, rain_component, snow_component, sleet_component, frzr_component = (
                     _radar_blend_component_ids(var_spec)
                 )
-                ds_refl = _open_cfgrib_dataset(refl_path, plugin.get_var(refl_component))
-                ds_rain = _open_cfgrib_dataset(rain_path, plugin.get_var(rain_component))
-                ds_snow = _open_cfgrib_dataset(snow_path, plugin.get_var(snow_component))
-                ds_sleet = _open_cfgrib_dataset(sleet_path, plugin.get_var(sleet_component))
-                ds_frzr = _open_cfgrib_dataset(frzr_path, plugin.get_var(frzr_component))
+                shared_source_path = grib_path
+                refl_source = refl_path or shared_source_path
+                rain_source = rain_path or shared_source_path
+                snow_source = snow_path or shared_source_path
+                sleet_source = sleet_path or shared_source_path
+                frzr_source = frzr_path or shared_source_path
+                if any(src is None for src in (refl_source, rain_source, snow_source, sleet_source, frzr_source)):
+                    raise RuntimeError("Missing GRIB source path for radar_ptype components")
+                ds_refl = _open_cfgrib_dataset(refl_source, plugin.get_var(refl_component))
+                ds_rain = _open_cfgrib_dataset(rain_source, plugin.get_var(rain_component))
+                ds_snow = _open_cfgrib_dataset(snow_source, plugin.get_var(snow_component))
+                ds_sleet = _open_cfgrib_dataset(sleet_source, plugin.get_var(sleet_component))
+                ds_frzr = _open_cfgrib_dataset(frzr_source, plugin.get_var(frzr_component))
 
                 refl_da = plugin.select_dataarray(ds_refl, refl_component)
                 rain_da = plugin.select_dataarray(ds_rain, rain_component)

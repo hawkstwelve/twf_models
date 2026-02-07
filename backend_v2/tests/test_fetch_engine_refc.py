@@ -41,9 +41,9 @@ def test_fetch_grib_hrrr_refc_generic_path(monkeypatch, tmp_path: Path) -> None:
     def fake_fetch_hrrr_grib(*, run: str, variable: str | None = None, **kwargs):
         del kwargs
         assert run == "latest"
-        assert variable == "refc"
+        assert variable is None
         return SimpleNamespace(
-            path=day_dir / "hrrr.t06z.wrfsfcf00.refc.grib2",
+            path=day_dir / "hrrr.t06z.wrfsfcf00.full.grib2",
             is_full_file=False,
         )
 
@@ -59,7 +59,7 @@ def test_fetch_grib_hrrr_refc_generic_path(monkeypatch, tmp_path: Path) -> None:
 
     assert result.not_ready_reason is None
     assert result.grib_path is not None
-    assert result.grib_path.name.endswith(".refc.grib2")
+    assert result.grib_path.name.endswith(".full.grib2")
 
 
 def test_fetch_grib_hrrr_radar_ptype_combo_components(monkeypatch, tmp_path: Path) -> None:
@@ -70,9 +70,8 @@ def test_fetch_grib_hrrr_radar_ptype_combo_components(monkeypatch, tmp_path: Pat
     def fake_fetch_hrrr_grib(*, run: str, variable: str | None = None, **kwargs):
         del kwargs
         calls.append((run, variable))
-        suffix = variable or "var"
         return SimpleNamespace(
-            path=day_dir / f"hrrr.t15z.wrfsfcf00.{suffix}.grib2",
+            path=day_dir / "hrrr.t15z.wrfsfcf00.full.grib2",
             is_full_file=False,
         )
 
@@ -87,11 +86,7 @@ def test_fetch_grib_hrrr_radar_ptype_combo_components(monkeypatch, tmp_path: Pat
     )
 
     assert result.not_ready_reason is None
-    assert result.component_paths is not None
-    assert calls == [
-        ("latest", "refc"),
-        ("latest", "crain"),
-        ("latest", "csnow"),
-        ("latest", "cicep"),
-        ("latest", "cfrzr"),
-    ]
+    assert result.component_paths is None
+    assert result.grib_path is not None
+    assert result.grib_path.name.endswith(".full.grib2")
+    assert calls == [("latest", None)]
