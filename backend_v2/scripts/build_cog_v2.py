@@ -200,29 +200,41 @@ def _coerce_grib_path(grib_path: object) -> Path:
 
 def _open_cfgrib_dataset(grib_path: object, var_spec: VarSpec | None) -> xr.Dataset:
     path = _coerce_grib_path(grib_path)
+    base_filter_keys = _cfgrib_filter_keys(var_spec)
+    retry_filters: list[dict[str, object]] = []
+    if base_filter_keys:
+        retry_filters.append(dict(base_filter_keys))
+        if "stepType" not in base_filter_keys:
+            # Some fields are published with both instant/avg; try both deterministically.
+            retry_filters.append({**base_filter_keys, "stepType": "instant"})
+            retry_filters.append({**base_filter_keys, "stepType": "avg"})
+
+    # If we know the target variable, do not broad-open first. Broad opens on full HRRR
+    # files can "succeed" with the wrong variable while logging many skipped fields.
+    for filter_keys in retry_filters:
+        try:
+            return xr.open_dataset(
+                path,
+                engine="cfgrib",
+                backend_kwargs={"filter_by_keys": filter_keys, "indexpath": ""},
+            )
+        except Exception:
+            continue
+
+    # Fallback for paths/vars where no filter keys are available.
     try:
-        return xr.open_dataset(path, engine="cfgrib")
+        return xr.open_dataset(path, engine="cfgrib", backend_kwargs={"indexpath": ""})
     except Exception as exc:
         message = str(exc)
         retry_on_multi_key = "multiple values for key" in message or "multiple values for unique key" in message
         retry_on_type_hint = "typeOfLevel" in message
-        if retry_on_multi_key or retry_on_type_hint:
-            base_filter_keys = _cfgrib_filter_keys(var_spec)
-            retry_filters: list[dict[str, object]] = []
-            if base_filter_keys:
-                retry_filters.append(dict(base_filter_keys))
-            if retry_on_multi_key and "stepType" not in base_filter_keys:
-                # Categorical p-type fields can contain both instant and avg in one GRIB.
-                for step_type in ("instant", "avg"):
-                    merged = dict(base_filter_keys)
-                    merged["stepType"] = step_type
-                    retry_filters.append(merged)
-            for filter_keys in retry_filters:
+        if (retry_on_multi_key or retry_on_type_hint) and not retry_filters:
+            for step_type in ("instant", "avg"):
                 try:
                     return xr.open_dataset(
                         path,
                         engine="cfgrib",
-                        backend_kwargs={"filter_by_keys": filter_keys},
+                        backend_kwargs={"filter_by_keys": {"stepType": step_type}, "indexpath": ""},
                     )
                 except Exception:
                     continue

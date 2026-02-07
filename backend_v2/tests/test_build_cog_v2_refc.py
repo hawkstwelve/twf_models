@@ -36,7 +36,7 @@ def test_open_cfgrib_dataset_retries_step_type(monkeypatch) -> None:
         del path
         assert engine == "cfgrib"
         calls.append(backend_kwargs)
-        if backend_kwargs is None:
+        if backend_kwargs == {"indexpath": ""}:
             raise Exception(
                 "multiple values for unique key, try re-open the file with one of: "
                 "filter_by_keys={'stepType': 'instant'}"
@@ -49,8 +49,8 @@ def test_open_cfgrib_dataset_retries_step_type(monkeypatch) -> None:
     spec = VarSpec(id="crain", name="Categorical Rain", selectors=VarSelectors())
     result = build_cog_v2._open_cfgrib_dataset("/tmp/fake.grib2", spec)
     assert result == "ok"
-    assert calls[0] is None
-    assert calls[1] == {"filter_by_keys": {"stepType": "instant"}}
+    assert calls[0] == {"indexpath": ""}
+    assert calls[1] == {"filter_by_keys": {"stepType": "instant"}, "indexpath": ""}
 
 
 def test_open_cfgrib_dataset_uses_selector_filter_keys(monkeypatch) -> None:
@@ -60,8 +60,6 @@ def test_open_cfgrib_dataset_uses_selector_filter_keys(monkeypatch) -> None:
         del path
         assert engine == "cfgrib"
         calls.append(backend_kwargs)
-        if backend_kwargs is None:
-            raise Exception("multiple values for key 'typeOfLevel'")
         return "ok"
 
     monkeypatch.setattr(build_cog_v2.xr, "open_dataset", fake_open_dataset)
@@ -72,11 +70,12 @@ def test_open_cfgrib_dataset_uses_selector_filter_keys(monkeypatch) -> None:
     )
     result = build_cog_v2._open_cfgrib_dataset("/tmp/fake.grib2", spec)
     assert result == "ok"
-    assert calls[1] == {
+    assert calls[0] == {
         "filter_by_keys": {
             "typeOfLevel": "heightAboveGround",
             "level": 2,
-        }
+        },
+        "indexpath": "",
     }
 
 

@@ -59,7 +59,9 @@ HRRR_VARS: dict[str, VarSpec] = {
         selectors=VarSelectors(
             search=[":TMP:2 m above ground:"],
             filter_by_keys={
+                "shortName": "2t",
                 "typeOfLevel": "heightAboveGround",
+                "level": "2",
             },
             hints={
                 "upstream_var": "t2m",
