@@ -4,7 +4,7 @@ import numpy as np
 import xarray as xr
 
 from app.models.base import VarSelectors, VarSpec
-from scripts.build_cog_v2 import _encode_radar_ptype_combo, _encode_with_nodata
+from scripts.build_cog_v2 import _encode_radar_ptype_combo, _encode_with_nodata, resolve_target_grid_meters
 from scripts import build_cog_v2
 
 
@@ -185,3 +185,30 @@ def test_encode_radar_ptype_combo_auto_scales_percent_inputs() -> None:
     pixel = int(byte_band[0, 0])
     assert snow_offset <= pixel < frzr_offset
     assert meta["ptype_scale"]["snow"] == "percent_to_fraction"
+
+
+def test_resolve_target_grid_meters_defaults(monkeypatch) -> None:
+    monkeypatch.delenv("TWF_TARGET_GRID_METERS", raising=False)
+    monkeypatch.delenv("TWF_TARGET_GRID_METERS_HRRR", raising=False)
+    monkeypatch.delenv("TWF_TARGET_GRID_METERS_GFS", raising=False)
+    monkeypatch.delenv("TWF_TARGET_GRID_METERS_ECMWF", raising=False)
+    monkeypatch.delenv("TWF_TARGET_GRID_METERS_GFS_PNW", raising=False)
+    monkeypatch.delenv("TWF_TARGET_GRID_METERS_GFS_CONUS", raising=False)
+
+    assert resolve_target_grid_meters("hrrr", "pnw") == (3000.0, 3000.0)
+    assert resolve_target_grid_meters("gfs", "pnw") == (25000.0, 25000.0)
+    assert resolve_target_grid_meters("gfs", "conus") == (25000.0, 25000.0)
+    assert resolve_target_grid_meters("ecmwf", "pnw") == (9000.0, 9000.0)
+
+
+def test_resolve_target_grid_meters_override_precedence(monkeypatch) -> None:
+    monkeypatch.setenv("TWF_TARGET_GRID_METERS_GFS", "20000")
+    monkeypatch.setenv("TWF_TARGET_GRID_METERS_GFS_PNW", "22000")
+    monkeypatch.setenv("TWF_TARGET_GRID_METERS", "18000")
+    assert resolve_target_grid_meters("gfs", "pnw") == (18000.0, 18000.0)
+
+    monkeypatch.delenv("TWF_TARGET_GRID_METERS", raising=False)
+    assert resolve_target_grid_meters("gfs", "pnw") == (22000.0, 22000.0)
+
+    monkeypatch.delenv("TWF_TARGET_GRID_METERS_GFS_PNW", raising=False)
+    assert resolve_target_grid_meters("gfs", "pnw") == (20000.0, 20000.0)

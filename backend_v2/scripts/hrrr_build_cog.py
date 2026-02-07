@@ -11,7 +11,7 @@ if str(_BACKEND_V2_DIR) not in sys.path:
 if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 
-from build_cog_v2 import main
+from build_cog import main
 
 
 if __name__ == "__main__":

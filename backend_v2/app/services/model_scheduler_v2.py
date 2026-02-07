@@ -188,9 +188,7 @@ def _workers() -> int:
 
 def _build_script_path_for_model(model_id: str) -> Path:
     backend_v2_dir = Path(__file__).resolve().parents[2]
-    if model_id == "gfs":
-        return backend_v2_dir / "scripts" / "gfs_build_cog.py"
-    return backend_v2_dir / "scripts" / "build_cog_v2.py"
+    return backend_v2_dir / "scripts" / "build_cog.py"
 
 
 def _resolve_regions_for_cli(model_id: str, out_root: Path, region: str | None) -> list[str]:

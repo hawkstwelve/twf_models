@@ -17,8 +17,8 @@ def test_build_script_path_for_model() -> None:
     gfs_script = _build_script_path_for_model("gfs")
     hrrr_script = _build_script_path_for_model("hrrr")
 
-    assert gfs_script.name == "gfs_build_cog.py"
-    assert hrrr_script.name == "build_cog_v2.py"
+    assert gfs_script.name == "build_cog.py"
+    assert hrrr_script.name == "build_cog.py"
 
 
 def test_resolve_regions_for_cli_accepts_explicit_region_without_existing_root(tmp_path: Path) -> None:
