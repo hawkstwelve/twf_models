@@ -71,6 +71,27 @@ def test_titiler_tile_route_renders_png(monkeypatch, tmp_path: Path) -> None:
     assert int(arr[0, 1, 3]) == 0
 
 
+def test_titiler_legacy_v2_path_renders_png(monkeypatch, tmp_path: Path) -> None:
+    _touch_cog(tmp_path)
+    monkeypatch.setattr(titiler_main, "get_data_root", lambda: tmp_path)
+    monkeypatch.setattr(titiler_main, "resolve_run", lambda model, region, run: "20260207_19z")
+    monkeypatch.setattr(titiler_main, "COGReader", _FakeCOGReader)
+
+    response = titiler_main.tile_legacy_v2_compat(
+        model="hrrr",
+        region="pnw",
+        run="latest",
+        var="tmp2m",
+        fh=0,
+        z=6,
+        x=10,
+        y=22,
+    )
+    assert response.status_code == 200
+    assert response.media_type == "image/png"
+    assert "immutable" in response.headers["cache-control"]
+
+
 def test_titiler_invalid_segment_rejected(monkeypatch, tmp_path: Path) -> None:
     _touch_cog(tmp_path)
     monkeypatch.setattr(titiler_main, "get_data_root", lambda: tmp_path)

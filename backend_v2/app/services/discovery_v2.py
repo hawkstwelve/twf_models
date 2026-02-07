@@ -68,6 +68,16 @@ def _read_json(path: Path) -> dict | None:
         return None
 
 
+def build_tile_url_template(
+    model: str,
+    region: str,
+    run: str,
+    var: str,
+    fh: int,
+) -> str:
+    return f"/tiles/{model}/{region}/{run}/{var}/{fh}/{{z}}/{{x}}/{{y}}.png"
+
+
 def list_models() -> list[dict[str, str]]:
     root = get_data_root()
     models = [p.name for p in _safe_list_dirs(root)]
@@ -177,7 +187,21 @@ def list_frames(model: str, region: str, run: str, var: str) -> list[dict]:
         seen_fhs.add(fh)
         sidecar = _read_json(var_root / f"fh{fh:03d}.json")
         meta = {"meta": sidecar} if sidecar is not None else None
-        frames.append({"fh": fh, "has_cog": True, "meta": meta})
+        frames.append(
+            {
+                "fh": fh,
+                "has_cog": True,
+                "meta": meta,
+                "run": resolved_run,
+                "tile_url_template": build_tile_url_template(
+                    model=model,
+                    region=region,
+                    run=resolved_run,
+                    var=var,
+                    fh=fh,
+                ),
+            }
+        )
 
     frames.sort(key=lambda item: item["fh"])
     _cache_set(cache_key, frames)

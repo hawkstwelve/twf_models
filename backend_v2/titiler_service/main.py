@@ -171,6 +171,21 @@ def tile_canonical(
     return _tile_response(model=model, region=region, run=run, var=var, fh=fh, z=z, x=x, y=y)
 
 
+@router.get("/tiles/v2/{model}/{region}/{run}/{var}/{fh}/{z}/{x}/{y}.png")
+def tile_legacy_v2_compat(
+    model: str,
+    region: str,
+    run: str,
+    var: str,
+    fh: int,
+    z: int,
+    x: int,
+    y: int,
+) -> Response:
+    # Compatibility alias while nginx/frontends migrate from legacy V2 tile namespace.
+    return _tile_response(model=model, region=region, run=run, var=var, fh=fh, z=z, x=x, y=y)
+
+
 @router.get("/tiles-titiler/{model}/{region}/{run}/{var}/{fh}/{z}/{x}/{y}.png")
 def tile_parallel_path(
     model: str,
@@ -192,4 +207,3 @@ def health_check() -> dict[str, str]:
 
 
 app.include_router(router)
-

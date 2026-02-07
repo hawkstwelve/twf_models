@@ -37,3 +37,6 @@ def test_gfs_discovery_lists_runs_vars_and_frames(monkeypatch: pytest.MonkeyPatc
 
     frames = discovery_v2.list_frames("gfs", "pnw", "latest", "tmp2m")
     assert [row["fh"] for row in frames] == [0, 6]
+    assert all(row["run"] == "20260206_06z" for row in frames)
+    assert frames[0]["tile_url_template"] == "/tiles/gfs/pnw/20260206_06z/tmp2m/0/{z}/{x}/{y}.png"
+    assert frames[1]["tile_url_template"] == "/tiles/gfs/pnw/20260206_06z/tmp2m/6/{z}/{x}/{y}.png"

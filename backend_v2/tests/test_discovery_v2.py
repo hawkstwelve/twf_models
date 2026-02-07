@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.services.discovery_v2 import is_valid_run_id, parse_fh_filename
+from app.services.discovery_v2 import build_tile_url_template, is_valid_run_id, parse_fh_filename
 
 
 def test_is_valid_run_id() -> None:
@@ -18,3 +18,14 @@ def test_parse_fh_filename() -> None:
     assert parse_fh_filename("fh6.cog.tif") is None
     assert parse_fh_filename("fh006.tif") is None
     assert parse_fh_filename("fh006.cog.tif.ovr") is None
+
+
+def test_build_tile_url_template() -> None:
+    template = build_tile_url_template(
+        model="hrrr",
+        region="pnw",
+        run="20260207_21z",
+        var="tmp2m",
+        fh=6,
+    )
+    assert template == "/tiles/hrrr/pnw/20260207_21z/tmp2m/6/{z}/{x}/{y}.png"
