@@ -692,6 +692,8 @@ def warp_to_3857(
     clip_bounds_3857: tuple[float, float, float, float] | None = None,
     *,
     resampling: str = "bilinear",
+    tr_meters: tuple[float, float] | None = None,
+    tap: bool = True,
 ) -> None:
     require_gdal("gdalwarp")
     dst_tif.parent.mkdir(parents=True, exist_ok=True)
@@ -704,14 +706,8 @@ def warp_to_3857(
         "EPSG:3857",
         "-r",
         resampling,
-        "-srcnodata",
-        "255",
-        "-dstnodata",
-        "255",
         "-srcalpha",
         "-dstalpha",
-        "-wo",
-        "SRC_ALPHA=YES",
         "-co",
         "TILED=YES",
         "-co",
@@ -730,6 +726,15 @@ def warp_to_3857(
             "-te_srs",
             "EPSG:3857",
         ])
+        if tr_meters is not None:
+            xres, yres = tr_meters
+            cmd.extend([
+                "-tr",
+                str(xres),
+                str(yres),
+            ])
+            if tap:
+                cmd.append("-tap")
 
     cmd.extend([str(src_tif), str(dst_tif)])
     run_cmd(cmd)
@@ -764,6 +769,46 @@ def log_warped_info(path: Path, info: dict) -> None:
         f"path={path} width={size[0]} height={size[1]} bands={len(info.get('bands') or [])} "
         f"bounds_3857=({lower_left[0]:.2f},{lower_left[1]:.2f},{upper_right[0]:.2f},{upper_right[1]:.2f})"
     )
+
+
+def _band_min_max(info: dict, band_index: int) -> tuple[float | None, float | None]:
+    bands = info.get("bands") or []
+    if band_index < 1 or band_index > len(bands):
+        return None, None
+    band = bands[band_index - 1] or {}
+
+    def _to_float(value: object) -> float | None:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    min_val = _to_float(band.get("minimum"))
+    max_val = _to_float(band.get("maximum"))
+    if min_val is not None and max_val is not None:
+        return min_val, max_val
+
+    metadata = band.get("metadata") or {}
+    if isinstance(metadata, dict):
+        for _, domain_values in metadata.items():
+            if not isinstance(domain_values, dict):
+                continue
+            if min_val is None:
+                min_val = _to_float(
+                    domain_values.get("STATISTICS_MINIMUM")
+                    or domain_values.get("STATISTICS_APPROXIMATE_MINIMUM")
+                )
+            if max_val is None:
+                max_val = _to_float(
+                    domain_values.get("STATISTICS_MAXIMUM")
+                    or domain_values.get("STATISTICS_APPROXIMATE_MAXIMUM")
+                )
+            if min_val is not None and max_val is not None:
+                break
+
+    return min_val, max_val
 
 
 def parse_args() -> argparse.Namespace:
@@ -1487,6 +1532,15 @@ def main() -> int:
             )
 
             info = gdalinfo_json(warped_tif)
+            if args.debug:
+                band_count = len(info.get("bands") or [])
+                alpha_min, alpha_max = _band_min_max(info, 2)
+                print(
+                    "Warp debug: "
+                    f"bands={band_count} "
+                    f"alpha_band2_min={alpha_min if alpha_min is not None else 'n/a'} "
+                    f"alpha_band2_max={alpha_max if alpha_max is not None else 'n/a'}"
+                )
             assert_alpha_present(info)
             log_warped_info(warped_tif, info)
 
