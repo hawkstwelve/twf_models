@@ -779,6 +779,8 @@ def warp_to_3857(
         ])
 
     cmd.extend([str(src_tif), str(dst_tif)])
+    if os.environ.get("TWF_GDAL_DEBUG", "0").strip() == "1":
+        print("GDAL cmd:", " ".join(cmd))
     run_cmd(cmd)
 
 
@@ -1634,6 +1636,7 @@ def main() -> int:
             base_name = grib_path.stem
             byte_tif = temp_root / f"{base_name}.byte.tif"
             warped_tif = temp_root / f"{base_name}.3857.tif"
+            ovr_tif = temp_root / f"{base_name}.3857.ovrsrc.tif"
 
             print(f"Writing byte GeoTIFF: {byte_tif}")
             _, used_latlon = write_byte_geotiff_from_arrays(da, byte_band, alpha_band, byte_tif)
@@ -1680,8 +1683,36 @@ def main() -> int:
                     f"to [{clip_bounds_3857[2]:.2f}, {clip_bounds_3857[3]:.2f}]"
                 )
 
-            print(f"Writing COG: {cog_path}")
+            # Build per-band internal overviews on an intermediate GeoTIFF, then copy them into the final COG.
+            # This avoids relying on gdaladdo -mask (not available in some GDAL builds) and prevents one-zoom-level
+            # artifacts caused by inconsistent mask/overview handling.
+            addo_resampling = (
+                "nearest"
+                if meta.get("kind") == "discrete" or spec_key_used == "radar_ptype"
+                else "average"
+            )
+
+            # Create a plain GeoTIFF copy we can safely add internal overviews to.
             require_gdal("gdal_translate")
+            run_cmd(
+                [
+                    "gdal_translate",
+                    "-of",
+                    "GTiff",
+                    "-co",
+                    "TILED=YES",
+                    "-co",
+                    "COMPRESS=DEFLATE",
+                    str(warped_tif),
+                    str(ovr_tif),
+                ]
+            )
+
+            # Add internal overviews per band (band 1 uses average/nearest depending on var; band 2 (alpha) always nearest).
+            run_gdaladdo_overviews(ovr_tif, addo_resampling, "nearest")
+
+            # Now build the final COG and copy the already-built overviews.
+            print(f"Writing COG: {cog_path}")
             run_cmd(
                 [
                     "gdal_translate",
@@ -1690,18 +1721,11 @@ def main() -> int:
                     "-co",
                     "COMPRESS=DEFLATE",
                     "-co",
-                    "OVERVIEWS=NONE",
-                    str(warped_tif),
+                    "COPY_SRC_OVERVIEWS=YES",
+                    str(ovr_tif),
                     str(cog_path),
                 ]
             )
-
-            addo_resampling = (
-                "nearest"
-                if meta.get("kind") == "discrete" or spec_key_used == "radar_ptype"
-                else "average"
-            )
-            run_gdaladdo_overviews(cog_path, addo_resampling, "nearest")
 
             if args.debug:
                 cog_info = gdalinfo_json(cog_path)
