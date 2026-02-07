@@ -9,13 +9,25 @@ from app.services import fetch_engine
 def test_fetch_grib_gfs_refc_generic_path(monkeypatch, tmp_path: Path) -> None:
     day_dir = tmp_path / "20260206" / "06"
     day_dir.mkdir(parents=True, exist_ok=True)
+    seen: dict[str, object] = {}
 
-    def fake_fetch_gfs_grib(*, run: str, variable: str | None = None, **kwargs):
+    def fake_fetch_gfs_grib(
+        *,
+        run: str,
+        variable: str | None = None,
+        search_override: str | None = None,
+        cache_key: str | None = None,
+        required_vars: list[str] | None = None,
+        **kwargs,
+    ):
         del kwargs
         assert run == "latest"
         assert variable == "refc"
+        seen["search_override"] = search_override
+        seen["cache_key"] = cache_key
+        seen["required_vars"] = required_vars
         return SimpleNamespace(
-            path=day_dir / "gfs.t06z.pgrb2.0p25f00.refc.grib2",
+            path=day_dir / "gfs.t06z.pgrb2.0p25f00.radar_ptype.grib2",
             is_full_file=False,
         )
 
@@ -31,7 +43,10 @@ def test_fetch_grib_gfs_refc_generic_path(monkeypatch, tmp_path: Path) -> None:
 
     assert result.not_ready_reason is None
     assert result.grib_path is not None
-    assert result.grib_path.name.endswith(".refc.grib2")
+    assert result.grib_path.name.endswith(".radar_ptype.grib2")
+    assert seen["cache_key"] == "radar_ptype"
+    assert seen["required_vars"] == ["refc"]
+    assert ":REFC:" in str(seen["search_override"])
 
 
 def test_fetch_grib_hrrr_refc_generic_path(monkeypatch, tmp_path: Path) -> None:

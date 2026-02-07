@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 from herbie import Herbie
 import requests
+import xarray as xr
 
 from app.services.paths import default_gfs_cache_dir
 
@@ -49,6 +50,32 @@ def _is_readable_grib(path: Path) -> bool:
             return bool(handle.read(4))
     except OSError:
         return False
+
+
+def _subset_contains_required_variables(path: Path, required_vars: list[str] | None) -> bool:
+    """Best-effort validation that a subset GRIB contains all required fields."""
+    if not required_vars:
+        return True
+    from app.services.variable_registry import normalize_api_variable, select_dataarray
+
+    normalized_vars = [normalize_api_variable(v) for v in required_vars if str(v).strip()]
+    if not normalized_vars:
+        return True
+    try:
+        ds = xr.open_dataset(path, engine="cfgrib")
+    except Exception:
+        return False
+    try:
+        for var in normalized_vars:
+            _ = select_dataarray(ds, var)
+        return True
+    except Exception:
+        return False
+    finally:
+        try:
+            ds.close()
+        except Exception:
+            pass
 
 
 def _parse_run_datetime(run: str) -> datetime | None:
@@ -196,6 +223,8 @@ def fetch_gfs_grib(
     model: str = "gfs",
     variable: str | None = None,
     search_override: str | None = None,
+    cache_key: str | None = None,
+    required_vars: list[str] | None = None,
     cache_dir: Path | None = None,
     **kwargs: object,
 ) -> GribFetchResult:
@@ -279,18 +308,35 @@ def fetch_gfs_grib(
     target_dir = _cache_dir_for_run(base_dir, run_dt)
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    expected_suffix = variable or "subset"
+    expected_suffix = cache_key or variable or "subset"
     expected_filename = f"{model}.t{run_dt:%H}z.{product}f{fh:02d}.{expected_suffix}.grib2"
     expected_path = target_dir / expected_filename
+    validate_vars = required_vars if required_vars is not None else None
 
     if expected_path.exists():
         if _is_readable_grib(expected_path):
-            logger.info("Using cached GFS GRIB: %s", expected_path)
-            return GribFetchResult(path=expected_path, is_full_file=False)
-        raise RuntimeError(
-            "Immutable cache conflict: target GFS GRIB exists but is unreadable; "
-            f"refusing overwrite at {expected_path}"
-        )
+            if not _subset_contains_required_variables(
+                expected_path,
+                validate_vars,
+            ):
+                logger.warning(
+                    "Cached GFS subset missing required variables; purging: path=%s variable=%s required=%s",
+                    expected_path,
+                    variable or "subset",
+                    required_vars or [],
+                )
+                try:
+                    expected_path.unlink()
+                except OSError:
+                    pass
+            else:
+                logger.info("Using cached GFS GRIB: %s", expected_path)
+                return GribFetchResult(path=expected_path, is_full_file=False)
+        else:
+            raise RuntimeError(
+                "Immutable cache conflict: target GFS GRIB exists but is unreadable; "
+                f"refusing overwrite at {expected_path}"
+            )
 
     try:
         with _requests_guard(timeout_seconds, blocked_hosts):
@@ -314,12 +360,13 @@ def fetch_gfs_grib(
 
     path = Path(downloaded)
     if not path.exists():
-        candidates = list(target_dir.rglob("*.grib2"))
-        if candidates:
-            candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-            path = candidates[0]
+        if expected_path.exists() and _is_readable_grib(expected_path):
+            path = expected_path
         else:
-            raise UpstreamNotReady(f"Downloaded GRIB2 not found: {path}")
+            raise UpstreamNotReady(
+                f"Downloaded GRIB2 not found for requested variable={variable or 'subset'} "
+                f"run={run_dt.strftime('%Y%m%d_%Hz')} fh={fh:02d}; reported_path={path}"
+            )
 
     if path.stat().st_size == 0:
         raise UpstreamNotReady(f"Downloaded GRIB2 is empty: {path}")
@@ -335,6 +382,26 @@ def fetch_gfs_grib(
             path.replace(expected_path)
         except OSError:
             shutil.move(str(path), str(expected_path))
+
+    if not _subset_contains_required_variables(
+        expected_path,
+        validate_vars,
+    ):
+        logger.warning(
+            "Downloaded GFS subset missing required variables; deleting and deferring: path=%s variable=%s required=%s",
+            expected_path,
+            variable or "subset",
+            required_vars or [],
+        )
+        try:
+            expected_path.unlink()
+        except OSError:
+            pass
+        raise UpstreamNotReady(
+            "Requested variables not available yet: "
+            f"var={variable or 'subset'} required={required_vars or []} "
+            f"run={run_dt.strftime('%Y%m%d_%Hz')} fh={fh:02d}"
+        )
 
     return GribFetchResult(path=expected_path, is_full_file=False)
 

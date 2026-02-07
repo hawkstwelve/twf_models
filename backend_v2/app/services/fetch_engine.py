@@ -167,6 +167,11 @@ def _use_hrrr_shared_source() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _use_gfs_shared_source() -> bool:
+    raw = os.environ.get("TWF_GFS_SUBSET_BUNDLE_PER_HOUR", "1").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 def _join_search_terms(terms: list[str]) -> str | None:
     seen: set[str] = set()
     ordered: list[str] = []
@@ -191,6 +196,56 @@ def _resolve_hrrr_subset_bundle(
 ) -> tuple[str, str | None, str, list[str]]:
     # Stable bundle keys per run+fh prevent cache cross-wiring while still reusing
     # a single subset source for related variables in that hour.
+    if var_norm == "tmp2m":
+        tmp_spec = plugin.get_var("tmp2m") or var_spec
+        return (
+            "tmp2m",
+            _select_search(tmp_spec.selectors),
+            "tmp2m",
+            ["tmp2m"],
+        )
+
+    if var_norm in {"10u", "10v", "wspd10m"} or str(getattr(var_spec, "derive", "") or "") == "wspd10m":
+        wspd_spec = plugin.get_var("wspd10m") or var_spec
+        u_var, v_var = _resolve_component_vars(wspd_spec, ("10u", "10v"))
+        search_terms: list[str] = []
+        for comp in (u_var, v_var):
+            comp_spec = plugin.get_var(comp)
+            if comp_spec is not None:
+                comp_search = _select_search(comp_spec.selectors)
+                if comp_search:
+                    search_terms.append(comp_search)
+        required = [u_var, v_var] if var_norm == "wspd10m" else [var_norm]
+        return ("wspd10m", _join_search_terms(search_terms), var_norm, required)
+
+    radar_components = ("refc", "crain", "csnow", "cicep", "cfrzr")
+    if var_norm in set(radar_components) | {"radar_ptype"} or str(getattr(var_spec, "derive", "") or "") == "radar_ptype_combo":
+        radar_spec = plugin.get_var("radar_ptype") or var_spec
+        refl_var, rain_var, snow_var, sleet_var, frzr_var = _resolve_radar_blend_component_vars(
+            radar_spec,
+            radar_components,
+        )
+        comps = [refl_var, rain_var, snow_var, sleet_var, frzr_var]
+        search_terms = []
+        for comp in comps:
+            comp_spec = plugin.get_var(comp)
+            if comp_spec is not None:
+                comp_search = _select_search(comp_spec.selectors)
+                if comp_search:
+                    search_terms.append(comp_search)
+        required = comps if var_norm == "radar_ptype" else [var_norm]
+        return ("radar_ptype", _join_search_terms(search_terms), var_norm, required)
+
+    return (var_norm, _select_search(var_spec.selectors), var_norm, [var_norm])
+
+
+def _resolve_gfs_subset_bundle(
+    plugin: object,
+    *,
+    var_norm: str,
+    var_spec: object,
+) -> tuple[str, str | None, str, list[str]]:
+    # Deterministic bundle keys per run+fh for GFS subsets.
     if var_norm == "tmp2m":
         tmp_spec = plugin.get_var("tmp2m") or var_spec
         return (
@@ -285,6 +340,39 @@ def fetch_grib(
             )
         except Exception as exc:
             if is_upstream_not_ready(exc):
+                return _not_ready(run, exc)
+            raise
+        run_id = _normalize_run_id(run, result.path)
+        return FetchResult(
+            upstream_run_id=run_id,
+            is_full_download=result.is_full_file,
+            grib_path=result.path,
+            component_paths=None,
+        )
+
+    # GFS shared-source mode (subset bundles): one canonical subset GRIB per run+fh
+    # per bundle key, then select variable(s) at build time.
+    if model == "gfs" and _use_gfs_shared_source():
+        bundle_key, bundle_search, fetch_var, required_vars = _resolve_gfs_subset_bundle(
+            plugin,
+            var_norm=var_norm,
+            var_spec=var_spec,
+        )
+        try:
+            result = fetch_gfs_grib(
+                run=run,
+                fh=fh,
+                model=model,
+                product=product,
+                variable=fetch_var,
+                search_override=bundle_search,
+                cache_key=bundle_key,
+                required_vars=required_vars,
+                cache_dir=cache_dir,
+                **kwargs,
+            )
+        except Exception as exc:
+            if is_gfs_not_ready(exc):
                 return _not_ready(run, exc)
             raise
         run_id = _normalize_run_id(run, result.path)
