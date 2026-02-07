@@ -7,6 +7,21 @@ import pytest
 from scripts import build_cog
 
 
+def test_is_copy_src_overviews_unsupported() -> None:
+    exc = RuntimeError(
+        "Command failed (...): Warning 6: driver COG does not support creation option COPY_SRC_OVERVIEWS"
+    )
+    assert build_cog._is_copy_src_overviews_unsupported(exc)
+
+    exc = RuntimeError(
+        "Command failed (...): ERROR 6: fh000.cog.tif: COPY_SRC_OVERVIEWS cannot be used when the bands have not the same number of overview levels."
+    )
+    assert build_cog._is_copy_src_overviews_unsupported(exc)
+
+    exc = RuntimeError("Command failed (...): some unrelated gdal error")
+    assert not build_cog._is_copy_src_overviews_unsupported(exc)
+
+
 def test_run_gdaladdo_overviews_no_mask_support_keeps_band_overviews(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[list[str]] = []
 

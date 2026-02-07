@@ -1019,6 +1019,14 @@ def _is_external_overview_conflict(exc: RuntimeError) -> bool:
     return "Cannot add external overviews when there are already internal overviews" in str(exc)
 
 
+def _is_copy_src_overviews_unsupported(exc: RuntimeError) -> bool:
+    message = str(exc)
+    return (
+        "driver COG does not support creation option COPY_SRC_OVERVIEWS" in message
+        or "COPY_SRC_OVERVIEWS cannot be used" in message
+    )
+
+
 def _gdaladdo_supports_mask() -> bool:
     global _GDALADDO_MASK_SUPPORTED
     if _GDALADDO_MASK_SUPPORTED is not None:
@@ -2008,20 +2016,51 @@ def main() -> int:
 
             # Now build the final COG and copy the already-built overviews.
             print(f"Writing COG: {cog_path}")
-            run_cmd(
-                [
-                    "gdal_translate",
-                    "-of",
-                    "COG",
-                    "-co",
-                    "COMPRESS=DEFLATE",
-                    "-co",
-                    "COPY_SRC_OVERVIEWS=YES",
-                    str(ovr_tif),
-                    str(cog_path),
-                ]
-            )
-            assert_single_internal_overview_cog(cog_path)
+            try:
+                run_cmd(
+                    [
+                        "gdal_translate",
+                        "-of",
+                        "COG",
+                        "-co",
+                        "COMPRESS=DEFLATE",
+                        "-co",
+                        "COPY_SRC_OVERVIEWS=YES",
+                        str(ovr_tif),
+                        str(cog_path),
+                    ]
+                )
+            except RuntimeError as exc:
+                if not _is_copy_src_overviews_unsupported(exc):
+                    raise
+                logger.warning(
+                    "COG COPY_SRC_OVERVIEWS unsupported/incompatible; retrying with COG-driver overview build: %s",
+                    exc,
+                )
+                if cog_path.exists():
+                    cog_path.unlink()
+                run_cmd(
+                    [
+                        "gdal_translate",
+                        "-of",
+                        "COG",
+                        "-co",
+                        "COMPRESS=DEFLATE",
+                        "-co",
+                        f"RESAMPLING={addo_resampling}",
+                        str(ovr_tif),
+                        str(cog_path),
+                    ]
+                )
+            try:
+                assert_single_internal_overview_cog(cog_path)
+            except RuntimeError as exc:
+                logger.warning(
+                    "COG invariant failed after translate; retrying with explicit gdaladdo overviews: %s",
+                    exc,
+                )
+                run_gdaladdo_overviews(cog_path, addo_resampling, "nearest")
+                assert_single_internal_overview_cog(cog_path)
 
             if args.debug:
                 cog_info = gdalinfo_json(cog_path)
