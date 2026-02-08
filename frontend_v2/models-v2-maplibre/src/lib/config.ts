@@ -1,7 +1,11 @@
 const isLocalDevHost =
   window.location.hostname === "127.0.0.1" ||
   window.location.hostname === "localhost";
-const isLocalDevPort = window.location.port === "8080";
+
+const isLocalDevPort =
+  window.location.port === "5173" ||
+  window.location.port === "4173" ||
+  window.location.port === "8080";
 
 export const API_BASE =
   isLocalDevHost && isLocalDevPort
@@ -18,24 +22,15 @@ export const DEFAULTS = {
   region: "pnw",
   run: "latest",
   variable: "tmp2m",
-  fhStart: 0,
-  fhEnd: 18,
-  fhStep: 1,
-  zoomMin: 5,
-  zoomMax: 11,
-  center: [47.6, -122.3],
+  center: [47.6, -122.3] as [number, number],
   zoom: 6,
-  overlayOpacity: 0.55,
+  overlayOpacity: 0.85,
 };
 
-export const VARIABLE_LABELS = {
+export const ALLOWED_VARIABLES = new Set(["tmp2m", "wspd10m", "radar_ptype"]);
+
+export const VARIABLE_LABELS: Record<string, string> = {
   tmp2m: "Surface Temperature",
   wspd10m: "Wind Speed",
   radar_ptype: "Composite Reflectivity + P-Type",
 };
-
-export const VARIABLES = [
-  { id: "tmp2m", label: "Surface Temperature" },
-  { id: "wspd10m", label: "Wind Speed" },
-  { id: "radar_ptype", label: "Composite Reflectivity + P-Type" },
-];
