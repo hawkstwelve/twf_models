@@ -102,3 +102,19 @@ def test_assert_single_internal_overview_cog_requires_mask_when_supported(
 
     with pytest.raises(RuntimeError, match="missing internal mask overviews"):
         build_cog.assert_single_internal_overview_cog(Path("/tmp/sample.tif"))
+
+
+def test_assert_single_internal_overview_cog_relaxes_alpha_only_missing_band_overviews(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    info = {
+        "files": ["/tmp/sample.tif"],
+        "bands": [
+            {"overviews": [{}], "mask": {}, "colorInterpretation": "Gray"},
+            {"overviews": [], "mask": {}, "colorInterpretation": "Alpha"},
+        ],
+    }
+    monkeypatch.setattr(build_cog, "gdalinfo_json", lambda _path: info)
+    monkeypatch.setattr(build_cog, "_gdaladdo_supports_mask", lambda: False)
+
+    build_cog.assert_single_internal_overview_cog(Path("/tmp/sample.tif"))

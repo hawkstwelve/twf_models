@@ -1076,11 +1076,35 @@ def assert_single_internal_overview_cog(path: Path) -> None:
     if len(bands) < 2:
         raise RuntimeError(f"COG invariant failed: expected at least 2 bands for {path}")
 
-    missing_band_overviews = [
-        str(index + 1)
+    missing_band_overviews_idx = [
+        index
         for index, band in enumerate(bands)
-        if not (band.get("overviews") or [])
+        if not ((band or {}).get("overviews") or [])
     ]
+    missing_band_overviews = [str(index + 1) for index in missing_band_overviews_idx]
+    if missing_band_overviews:
+        alpha_band_indexes = [
+            index
+            for index, band in enumerate(bands)
+            if str((band or {}).get("colorInterpretation", "")).lower() == "alpha"
+            or str((band or {}).get("description", "")).lower() == "alpha"
+        ]
+        data_band_has_overviews = any(
+            ((band or {}).get("overviews") or [])
+            for index, band in enumerate(bands)
+            if index not in alpha_band_indexes
+        )
+        missing_only_alpha = (
+            bool(alpha_band_indexes)
+            and set(missing_band_overviews_idx).issubset(set(alpha_band_indexes))
+        )
+        if missing_only_alpha and data_band_has_overviews:
+            logger.warning(
+                "COG invariant relaxed: missing internal overviews on alpha band(s)=%s",
+                ",".join(missing_band_overviews),
+            )
+            missing_band_overviews = []
+
     if missing_band_overviews:
         raise RuntimeError(
             f"COG invariant failed: missing internal band overviews on bands={','.join(missing_band_overviews)}"
