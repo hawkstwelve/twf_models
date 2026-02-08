@@ -57,7 +57,7 @@ venv_v2/
 DocsWeaver/
 v2.code-workspace
 V2_NEXT_STEPS_ROADMAP.md
-V2_RENDERING_MIGRATION_PLAN.md 
+docs/V2_RENDERING_MIGRATION_PLAN.md 
 REACT UI/
 **/node_modules/
 **/dist/

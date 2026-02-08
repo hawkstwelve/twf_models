@@ -7,8 +7,8 @@ V2 weather model pipeline and frontend.
 - Builder: `backend_v2/scripts/build_cog.py`
 - Metadata API: `backend_v2/app` (FastAPI)
 - Tile service: `backend_v2/titiler_service`
-- Frontend source: `frontend_v2/models-v2-maplibre`
-- Frontend deployed artifact path: `frontend_v2/models-v2`
+- Frontend source/build root: `frontend_v2/models-v2`
+- Frontend build output: `frontend_v2/models-v2/dist`
 
 V1 backend/frontend code and legacy tile-serving paths were retired in Phase 7.
 
@@ -37,8 +37,7 @@ twf_models/
 │   ├── tests/
 │   └── titiler_service/
 ├── frontend_v2/
-│   ├── models-v2/              # built deploy artifacts
-│   └── models-v2-maplibre/     # React/Vite source
+│   └── models-v2/              # React/Vite app (source + dist output)
 ├── deployment/
 │   └── systemd/
 ├── scripts/
@@ -58,7 +57,7 @@ cd /Users/brianaustin/twf_models
 ### Frontend build
 
 ```bash
-cd /Users/brianaustin/twf_models/frontend_v2/models-v2-maplibre
+cd /Users/brianaustin/twf_models/frontend_v2/models-v2
 npm ci
 npm run build
 ```
@@ -79,10 +78,10 @@ cd /Users/brianaustin/twf_models
 bash scripts/v2/phase5_shadow_validate.sh
 ```
 
-Optional shadow frontend check:
+Optional shadow frontend check (only if you still host a parallel path):
 
 ```bash
-SHADOW_FRONTEND_PATH=models-v2-maplibre bash scripts/v2/phase5_shadow_validate.sh
+SHADOW_FRONTEND_PATH=models-v2-shadow bash scripts/v2/phase5_shadow_validate.sh
 ```
 
 ## Notes

@@ -2,9 +2,20 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-APP_DIR="$ROOT_DIR/frontend_v2/models-v2-maplibre"
+PRIMARY_APP_DIR="$ROOT_DIR/frontend_v2/models-v2"
+LEGACY_APP_DIR="$ROOT_DIR/frontend_v2/models-v2-maplibre"
+APP_DIR="${APP_DIR:-}"
+DST_DIR="${DST_DIR:-$PRIMARY_APP_DIR}"
+
+if [[ -z "$APP_DIR" ]]; then
+  if [[ -f "$PRIMARY_APP_DIR/package.json" ]]; then
+    APP_DIR="$PRIMARY_APP_DIR"
+  else
+    APP_DIR="$LEGACY_APP_DIR"
+  fi
+fi
+
 SRC_DIST="$APP_DIR/dist"
-DST_DIR="$ROOT_DIR/frontend_v2/models-v2"
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -18,7 +29,7 @@ require_cmd mkdir
 
 if [[ ! -f "$SRC_DIST/index.html" ]]; then
   require_cmd npm
-  echo "No dist build found. Building MapLibre frontend..."
+  echo "No dist build found. Building frontend..."
   (
     cd "$APP_DIR"
     npm ci
@@ -26,16 +37,19 @@ if [[ ! -f "$SRC_DIST/index.html" ]]; then
   )
 fi
 
-mkdir -p "$DST_DIR"
-mkdir -p "$DST_DIR/assets"
+if [[ "$APP_DIR" != "$DST_DIR" ]]; then
+  mkdir -p "$DST_DIR"
+  mkdir -p "$DST_DIR/assets"
 
-if [[ -f "$DST_DIR/index.html" && ! -f "$DST_DIR/index.phase5.backup.html" ]]; then
-  cp "$DST_DIR/index.html" "$DST_DIR/index.phase5.backup.html"
+  if [[ -f "$DST_DIR/index.html" && ! -f "$DST_DIR/index.phase5.backup.html" ]]; then
+    cp "$DST_DIR/index.html" "$DST_DIR/index.phase5.backup.html"
+  fi
+
+  cp "$SRC_DIST/index.html" "$DST_DIR/index.html"
+  cp "$SRC_DIST"/assets/* "$DST_DIR/assets/"
 fi
 
-cp "$SRC_DIST/index.html" "$DST_DIR/index.html"
-cp "$SRC_DIST"/assets/* "$DST_DIR/assets/"
-
 echo "Phase 5 frontend cutover sync complete"
-echo "Source: $SRC_DIST"
+echo "App dir: $APP_DIR"
+echo "Dist: $SRC_DIST"
 echo "Target: $DST_DIR"
