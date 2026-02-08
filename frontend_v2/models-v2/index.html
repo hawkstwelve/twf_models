@@ -1,70 +1,14 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="dark">
   <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>TWF Models V2 (MVP)</title>
-    <link
-      rel="stylesheet"
-      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
-      crossorigin=""
-    />
-    <link rel="stylesheet" href="./css/style.css" />
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TWF Models V2 (MapLibre)</title>
+    <link rel="preconnect" href="https://api.sodakweather.com" />
+    <script type="module" crossorigin src="./assets/index-DlJTtxDB.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-C_A7Wn75.css">
   </head>
   <body>
-    <header class="topbar">
-      <div class="control-group">
-        <label for="region-select">Region</label>
-        <select id="region-select"></select>
-      </div>
-      <div class="control-group">
-        <label for="model-select">Model</label>
-        <select id="model-select"></select>
-      </div>
-      <div class="control-group">
-        <label for="run-select">Run</label>
-        <select id="run-select"></select>
-      </div>
-      <div class="control-group">
-        <label for="var-select">Variable</label>
-        <select id="var-select"></select>
-      </div>
-      <div class="control-group slider-group">
-        <label for="fh-slider">Forecast Hour</label>
-        <input id="fh-slider" type="range" min="0" max="18" step="1" value="0" />
-        <span id="fh-display">FH: 0</span>
-      </div>
-      <button id="play-toggle" type="button">Play</button>
-      <div class="control-group stub">
-        <label>Compare</label>
-        <button type="button" disabled>Off</button>
-      </div>
-      <div class="control-group stub">
-        <label>Opacity</label>
-        <input type="range" min="0" max="100" value="100" disabled />
-      </div>
-    </header>
-
-    <main class="layout">
-      <section id="map"></section>
-      <aside class="legend">
-        <h3>Legend</h3>
-        <div class="legend-scale">
-          <div class="legend-title"></div>
-          <div class="legend-items"></div>
-        </div>
-        <div class="info" id="click-info">
-          Click the map for lat/lon
-        </div>
-      </aside>
-    </main>
-
-    <script
-      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
-      crossorigin=""
-    ></script>
-    <script type="module" src="./js/map.js?v=20260206-2010" data-cfasync="false"></script>
+    <div id="root"></div>
   </body>
 </html>
