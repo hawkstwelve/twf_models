@@ -9,12 +9,83 @@ from scipy.interpolate import griddata, RegularGridInterpolator
 logger = logging.getLogger(__name__)
 
 
+def _coord_attr_text(coord: xr.DataArray, key: str) -> str:
+    value = coord.attrs.get(key)
+    if value is None:
+        return ""
+    return str(value).strip().lower()
+
+
+def _looks_like_lat(name: str, coord: xr.DataArray) -> bool:
+    lname = name.strip().lower()
+    if lname in {"latitude", "lat"}:
+        return True
+    if _coord_attr_text(coord, "standard_name") == "latitude":
+        return True
+    if "latitude" in _coord_attr_text(coord, "long_name"):
+        return True
+    if _coord_attr_text(coord, "axis") == "y":
+        return True
+    units = _coord_attr_text(coord, "units")
+    if "degree" in units and "north" in units:
+        return True
+    return False
+
+
+def _looks_like_lon(name: str, coord: xr.DataArray) -> bool:
+    lname = name.strip().lower()
+    if lname in {"longitude", "lon"}:
+        return True
+    if _coord_attr_text(coord, "standard_name") == "longitude":
+        return True
+    if "longitude" in _coord_attr_text(coord, "long_name"):
+        return True
+    if _coord_attr_text(coord, "axis") == "x":
+        return True
+    units = _coord_attr_text(coord, "units")
+    if "degree" in units and "east" in units:
+        return True
+    return False
+
+
+def _pick_best_coord_name(
+    candidates: list[str],
+    coords: xr.Coordinates,
+) -> str | None:
+    if not candidates:
+        return None
+    # Prefer canonical 1D names when available, otherwise first discovered.
+    canonical_order = ("latitude", "lat", "longitude", "lon")
+    for canonical in canonical_order:
+        for candidate in candidates:
+            if candidate.lower() == canonical and coords[candidate].ndim == 1:
+                return candidate
+    for candidate in candidates:
+        if coords[candidate].ndim == 1:
+            return candidate
+    return candidates[0]
+
+
 def detect_latlon_names(ds_or_da: xr.Dataset | xr.DataArray) -> tuple[str, str]:
     coords = ds_or_da.coords
     if "latitude" in coords and "longitude" in coords:
         return "latitude", "longitude"
     if "lat" in coords and "lon" in coords:
         return "lat", "lon"
+
+    lat_candidates: list[str] = []
+    lon_candidates: list[str] = []
+    for name, coord in coords.items():
+        if _looks_like_lat(name, coord):
+            lat_candidates.append(name)
+        if _looks_like_lon(name, coord):
+            lon_candidates.append(name)
+
+    lat_name = _pick_best_coord_name(lat_candidates, coords)
+    lon_name = _pick_best_coord_name(lon_candidates, coords)
+    if lat_name and lon_name:
+        return lat_name, lon_name
+
     raise ValueError("Latitude/longitude coordinates not found in dataset")
 
 

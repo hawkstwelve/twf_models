@@ -74,13 +74,11 @@ type MapCanvasProps = {
   tileUrl: string;
   region: string;
   opacity: number;
-  onLatLonChange: (lat: string, lon: string) => void;
 };
 
-export function MapCanvas({ tileUrl, region, opacity, onLatLonChange }: MapCanvasProps) {
+export function MapCanvas({ tileUrl, region, opacity }: MapCanvasProps) {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
-  const clickHandlerRef = useRef(onLatLonChange);
   const [isLoaded, setIsLoaded] = useState(false);
 
   const view = useMemo(() => {
@@ -89,10 +87,6 @@ export function MapCanvas({ tileUrl, region, opacity, onLatLonChange }: MapCanva
       zoom: DEFAULTS.zoom,
     };
   }, [region]);
-
-  useEffect(() => {
-    clickHandlerRef.current = onLatLonChange;
-  }, [onLatLonChange]);
 
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) {
@@ -108,11 +102,7 @@ export function MapCanvas({ tileUrl, region, opacity, onLatLonChange }: MapCanva
       maxZoom: 11,
     });
 
-    map.addControl(new maplibregl.NavigationControl(), "top-left");
-
-    map.on("click", (event) => {
-      clickHandlerRef.current(event.lngLat.lat.toFixed(4), event.lngLat.lng.toFixed(4));
-    });
+    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-left");
 
     map.on("load", () => {
       setIsLoaded(true);

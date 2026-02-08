@@ -14,6 +14,7 @@ if str(_SCRIPT_DIR) not in sys.path:
 from build_cog import (
     _coerce_run_id,
     _infer_spacing,
+    _latlon_axes_from_grib_attrs,
     _normalize_latlon_dataarray,
     _resolve_radar_blend_component_paths,
     main as _build_cog_main,

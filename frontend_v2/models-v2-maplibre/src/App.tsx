@@ -115,7 +115,6 @@ export default function App() {
   const [forecastHour, setForecastHour] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [opacity, setOpacity] = useState(DEFAULTS.overlayOpacity);
-  const [latLonInfo, setLatLonInfo] = useState("Click the map for lat/lon");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -334,15 +333,10 @@ export default function App() {
           tileUrl={tileUrl}
           region={region}
           opacity={opacity}
-          onLatLonChange={(lat, lon) => setLatLonInfo(`Lat: ${lat}, Lon: ${lon}`)}
         />
 
-        <div className="absolute left-4 top-4 z-40 rounded-md border border-border/40 bg-[hsl(var(--toolbar))]/95 px-3 py-2 text-xs text-muted-foreground shadow-lg backdrop-blur-md">
-          {latLonInfo}
-        </div>
-
         {error && (
-          <div className="absolute left-4 top-16 z-40 flex items-center gap-2 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-xs text-destructive shadow-lg backdrop-blur-md">
+          <div className="absolute left-4 top-4 z-40 flex items-center gap-2 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-xs text-destructive shadow-lg backdrop-blur-md">
             <AlertCircle className="h-3.5 w-3.5" />
             {error}
           </div>

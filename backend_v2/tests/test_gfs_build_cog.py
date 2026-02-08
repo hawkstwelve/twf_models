@@ -8,6 +8,7 @@ import xarray as xr
 from scripts.gfs_build_cog import (
     _coerce_run_id,
     _infer_spacing,
+    _latlon_axes_from_grib_attrs,
     _normalize_latlon_dataarray,
     _resolve_radar_blend_component_paths,
 )
@@ -73,3 +74,26 @@ def test_resolve_radar_blend_component_paths() -> None:
     assert snow.name == "csnow.grib2"
     assert sleet.name == "cicep.grib2"
     assert frzr.name == "cfrzr.grib2"
+
+
+def test_latlon_axes_from_grib_attrs_increments() -> None:
+    da = xr.DataArray(
+        np.zeros((2, 3), dtype=np.float32),
+        dims=("y", "x"),
+        attrs={
+            "GRIB_Nx": 3,
+            "GRIB_Ny": 2,
+            "GRIB_longitudeOfFirstGridPointInDegrees": 0.0,
+            "GRIB_longitudeOfLastGridPointInDegrees": 2.0,
+            "GRIB_latitudeOfFirstGridPointInDegrees": 50.0,
+            "GRIB_latitudeOfLastGridPointInDegrees": 49.0,
+            "GRIB_iDirectionIncrementInDegrees": 1.0,
+            "GRIB_jDirectionIncrementInDegrees": 1.0,
+            "GRIB_iScansNegatively": 0,
+            "GRIB_jScansPositively": 0,
+        },
+    )
+
+    lat, lon = _latlon_axes_from_grib_attrs(da, expected_shape=(2, 3))
+    assert np.allclose(lon, np.array([0.0, 1.0, 2.0], dtype=np.float64))
+    assert np.allclose(lat, np.array([50.0, 49.0], dtype=np.float64))

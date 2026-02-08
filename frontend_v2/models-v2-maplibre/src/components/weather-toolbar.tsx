@@ -6,7 +6,6 @@ import {
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue,
 } from "@/components/ui/select";
 
 type Option = {
@@ -40,6 +39,8 @@ function ToolbarSelect(props: {
   placeholder: string;
 }) {
   const { label, icon: Icon, value, onValueChange, options, disabled, placeholder } = props;
+  const selectedLabel = options.find((opt) => opt.value === value)?.label ?? placeholder;
+
   return (
     <div className="flex flex-col gap-1">
       <span className="flex items-center gap-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/80">
@@ -48,7 +49,7 @@ function ToolbarSelect(props: {
       </span>
       <Select value={value} onValueChange={onValueChange} disabled={disabled || options.length === 0}>
         <SelectTrigger className="h-8 w-[140px] border-border/50 bg-secondary/40 text-xs font-medium text-foreground shadow-sm transition-all duration-150 hover:border-border hover:bg-secondary/60 focus:border-primary/50 focus:ring-1 focus:ring-primary/30">
-          <SelectValue placeholder={placeholder} />
+          <span className="truncate">{selectedLabel}</span>
         </SelectTrigger>
         <SelectContent>
           {options.map((opt) => (

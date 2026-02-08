@@ -39,7 +39,6 @@ function formatValidTime(runDateISO: string | null, forecastHour: number): {
       year: "numeric",
       hour: "2-digit",
       minute: "2-digit",
-      timeZone: "UTC",
       timeZoneName: "short",
     }).format(validDate);
 
