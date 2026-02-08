@@ -258,6 +258,20 @@ def resolve_target_grid_meters(model_id: str, region_id: str) -> tuple[float, fl
     return TARGET_GRID_METERS_BY_MODEL_REGION[key]
 
 
+def _is_discrete(var: str, meta: dict) -> bool:
+    var_key = str(var or "").strip().lower()
+    if str(meta.get("kind", "")).strip().lower() == "discrete":
+        return True
+    return var_key in {"radar_ptype", "ptype", "radar", "radar_ptype_combo"}
+
+
+def _warp_tr_meters(model: str, var: str, meta: dict) -> tuple[float, float] | None:
+    model_key = str(model or "").strip().lower()
+    if model_key == "gfs":
+        return (10000.0, 10000.0)
+    return None
+
+
 def _major_from_version_text(version_text: str) -> int:
     match = re.search(r"(\d+)\.", version_text)
     if not match:
@@ -2061,20 +2075,25 @@ def main() -> int:
             print(f"Writing byte GeoTIFF: {byte_tif}")
             _, used_latlon = write_byte_geotiff_from_arrays(da, byte_band, alpha_band, byte_tif)
 
-            warp_resampling = "near" if meta.get("kind") == "discrete" else "bilinear"
+            is_discrete = _is_discrete(args.var, meta)
+            warp_resampling = "near" if is_discrete else "bilinear"
             print(f"Warping to EPSG:3857 ({warp_resampling}): {warped_tif}")
-            # Use deterministic -tr/-tap for all models to keep one target grid per region.
-            tr_meters = target_grid_meters
+            tr_meters = _warp_tr_meters(args.model, args.var, meta) or target_grid_meters
+            tap = True
             warp_to_3857(
                 byte_tif,
                 warped_tif,
                 clip_bounds_3857=clip_bounds_3857,
                 resampling=warp_resampling,
                 tr_meters=tr_meters,
-                tap=True,
+                tap=tap,
             )
             if args.debug:
-                print(f"Warp debug: used_latlon={used_latlon} tr_meters={tr_meters}")
+                print(
+                    "Warp debug: "
+                    f"model={args.model} var={args.var} used_latlon={used_latlon} "
+                    f"resampling={warp_resampling} tr_meters={tr_meters} tap={tap}"
+                )
 
             info = gdalinfo_json(warped_tif)
             if args.debug:
