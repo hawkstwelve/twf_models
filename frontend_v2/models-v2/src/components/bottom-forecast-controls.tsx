@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AlertCircle, Clock, Pause, Play } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -59,13 +59,20 @@ export function BottomForecastControls({
   runDateTimeISO,
   disabled,
 }: BottomForecastControlsProps) {
+  const [previewHour, setPreviewHour] = useState<number | null>(null);
+
   const validTime = useMemo(
-    () => formatValidTime(runDateTimeISO, forecastHour),
-    [runDateTimeISO, forecastHour]
+    () => formatValidTime(runDateTimeISO, previewHour ?? forecastHour),
+    [runDateTimeISO, forecastHour, previewHour]
   );
 
   const hasFrames = availableFrames.length > 0;
-  const sliderIndex = Math.max(0, availableFrames.indexOf(forecastHour));
+  const effectiveHour = previewHour ?? forecastHour;
+  const sliderIndex = Math.max(0, availableFrames.indexOf(effectiveHour));
+
+  useEffect(() => {
+    setPreviewHour(null);
+  }, [forecastHour]);
 
   return (
     <TooltipProvider delayDuration={300}>
@@ -110,6 +117,13 @@ export function BottomForecastControls({
               onValueChange={([value]) => {
                 const next = availableFrames[Math.round(value ?? 0)];
                 if (Number.isFinite(next)) {
+                  setPreviewHour(next);
+                }
+              }}
+              onValueCommit={([value]) => {
+                const next = availableFrames[Math.round(value ?? 0)];
+                if (Number.isFinite(next)) {
+                  setPreviewHour(null);
                   onForecastHourChange(next);
                 }
               }}

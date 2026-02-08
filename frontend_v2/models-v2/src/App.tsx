@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle } from "lucide-react";
 
 import { BottomForecastControls } from "@/components/bottom-forecast-controls";
@@ -113,10 +113,12 @@ export default function App() {
   const [run, setRun] = useState(DEFAULTS.run);
   const [variable, setVariable] = useState(DEFAULTS.variable);
   const [forecastHour, setForecastHour] = useState(0);
+  const [targetForecastHour, setTargetForecastHour] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [opacity, setOpacity] = useState(DEFAULTS.overlayOpacity);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const transitionTimerRef = useRef<number | null>(null);
 
   const frameHours = useMemo(() => frameRows.map((row) => Number(row.fh)).filter(Number.isFinite), [frameRows]);
 
@@ -258,6 +260,7 @@ export default function App() {
         setFrameRows(rows);
         const frames = rows.map((row) => Number(row.fh)).filter(Number.isFinite);
         setForecastHour((prev) => nearestFrame(frames, prev));
+        setTargetForecastHour((prev) => nearestFrame(frames, prev));
       } catch (err) {
         if (cancelled) return;
         setError(err instanceof Error ? err.message : "Failed to load frames");
@@ -281,6 +284,7 @@ export default function App() {
           setFrameRows(rows);
           const frames = rows.map((row) => Number(row.fh)).filter(Number.isFinite);
           setForecastHour((prev) => nearestFrame(frames, prev));
+          setTargetForecastHour((prev) => nearestFrame(frames, prev));
         })
         .catch(() => {
           // Background refresh should not interrupt active UI.
@@ -294,7 +298,7 @@ export default function App() {
     if (!isPlaying || frameHours.length === 0) return;
 
     const interval = window.setInterval(() => {
-      setForecastHour((prev) => {
+      setTargetForecastHour((prev) => {
         const index = frameHours.indexOf(prev);
         if (index < 0) return frameHours[0];
         return frameHours[(index + 1) % frameHours.length];
@@ -309,6 +313,43 @@ export default function App() {
       setIsPlaying(false);
     }
   }, [frameHours, isPlaying]);
+
+  useEffect(() => {
+    if (frameHours.length === 0) {
+      return;
+    }
+
+    const nextTarget = nearestFrame(frameHours, targetForecastHour);
+    if (nextTarget === forecastHour) {
+      return;
+    }
+
+    if (transitionTimerRef.current !== null) {
+      window.clearTimeout(transitionTimerRef.current);
+      transitionTimerRef.current = null;
+    }
+
+    transitionTimerRef.current = window.setTimeout(() => {
+      setForecastHour(nextTarget);
+      transitionTimerRef.current = null;
+    }, 120);
+
+    return () => {
+      if (transitionTimerRef.current !== null) {
+        window.clearTimeout(transitionTimerRef.current);
+        transitionTimerRef.current = null;
+      }
+    };
+  }, [targetForecastHour, forecastHour, frameHours]);
+
+  useEffect(() => {
+    return () => {
+      if (transitionTimerRef.current !== null) {
+        window.clearTimeout(transitionTimerRef.current);
+        transitionTimerRef.current = null;
+      }
+    };
+  }, []);
 
   return (
     <div className="flex h-full flex-col">
@@ -347,7 +388,7 @@ export default function App() {
         <BottomForecastControls
           forecastHour={forecastHour}
           availableFrames={frameHours}
-          onForecastHourChange={setForecastHour}
+          onForecastHourChange={setTargetForecastHour}
           isPlaying={isPlaying}
           setIsPlaying={setIsPlaying}
           runDateTimeISO={runDateTimeISO}
