@@ -4,8 +4,8 @@ import numpy as np
 import xarray as xr
 
 from app.models.base import VarSelectors, VarSpec
-from scripts.build_cog_v2 import _encode_radar_ptype_combo, _encode_with_nodata, resolve_target_grid_meters
-from scripts import build_cog_v2
+from scripts.build_cog import _encode_radar_ptype_combo, _encode_with_nodata, resolve_target_grid_meters
+from scripts import build_cog
 
 
 def test_encode_with_nodata_refc_masks_sub_threshold() -> None:
@@ -45,9 +45,9 @@ def test_open_cfgrib_dataset_retries_step_type(monkeypatch) -> None:
             return "ok"
         raise Exception("still failing")
 
-    monkeypatch.setattr(build_cog_v2.xr, "open_dataset", fake_open_dataset)
+    monkeypatch.setattr(build_cog.xr, "open_dataset", fake_open_dataset)
     spec = VarSpec(id="crain", name="Categorical Rain", selectors=VarSelectors())
-    result = build_cog_v2._open_cfgrib_dataset("/tmp/fake.grib2", spec)
+    result = build_cog._open_cfgrib_dataset("/tmp/fake.grib2", spec)
     assert result == "ok"
     assert calls[0] == {"indexpath": ""}
     assert calls[1] == {"filter_by_keys": {"stepType": "instant"}, "indexpath": ""}
@@ -62,13 +62,13 @@ def test_open_cfgrib_dataset_uses_selector_filter_keys(monkeypatch) -> None:
         calls.append(backend_kwargs)
         return "ok"
 
-    monkeypatch.setattr(build_cog_v2.xr, "open_dataset", fake_open_dataset)
+    monkeypatch.setattr(build_cog.xr, "open_dataset", fake_open_dataset)
     spec = VarSpec(
         id="tmp2m",
         name="2m Temp",
         selectors=VarSelectors(filter_by_keys={"typeOfLevel": "heightAboveGround", "level": "2"}),
     )
-    result = build_cog_v2._open_cfgrib_dataset("/tmp/fake.grib2", spec)
+    result = build_cog._open_cfgrib_dataset("/tmp/fake.grib2", spec)
     assert result == "ok"
     assert calls[0] == {
         "filter_by_keys": {

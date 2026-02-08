@@ -2,7 +2,7 @@
 Fetch weather stations from NWS API and cache locally.
 
 Usage:
-    python scripts/fetch_stations.py --states WA,OR,ID --bbox -125.0,42.0,-110.0,49.0 --output backend/app/data/station_cache.json
+    python scripts/fetch_stations.py --states WA,OR,ID --bbox -125.0,42.0,-110.0,49.0 --output /opt/twf_models/data/v2/stations/station_cache.json
     
 Note: --states is required for the API query. --bbox is optional metadata for documentation.
 """

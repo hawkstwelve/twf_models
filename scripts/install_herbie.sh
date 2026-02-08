@@ -39,12 +39,10 @@ print('✅ All checks passed!')
     
     if [ $? -eq 0 ]; then
         echo ""
-        echo "🎉 Herbie is ready for Phase 1 testing!"
+        echo "🎉 Herbie is installed and ready."
         echo ""
-        echo "Next steps:"
-        echo "  1. Run comparison test: python scripts/tests/test_herbie_comparison.py"
-        echo "  2. Review test results"
-        echo "  3. Proceed with Phase 2 (HRRR/RAP) if results are positive"
+        echo "Next step:"
+        echo "  - Run your V2 scheduler/builder smoke test in the active environment."
     else
         echo ""
         echo "⚠️  Installation succeeded but verification failed"

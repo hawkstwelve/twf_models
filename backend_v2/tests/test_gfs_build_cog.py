@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
-from scripts.gfs_build_cog import (
+from scripts.build_cog import (
     _coerce_run_id,
     _infer_spacing,
     _latlon_axes_from_grib_attrs,

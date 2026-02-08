@@ -94,7 +94,10 @@ check_tile_pair() {
 }
 
 check_frontend "models-v2"
-check_frontend "models-v2-maplibre"
+
+if [[ -n "${SHADOW_FRONTEND_PATH:-}" ]]; then
+  check_frontend "$SHADOW_FRONTEND_PATH"
+fi
 
 for model in hrrr gfs; do
   run_id="$(latest_run "$model")"

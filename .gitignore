@@ -36,9 +36,6 @@ Thumbs.db
 # Runtime-generated artifacts (DO NOT COMMIT)
 ############################
 
-# V1 generated static assets
-backend/app/static/
-
 # Root-level runtime caches
 grib_cache/
 herbie_cache/

@@ -338,7 +338,7 @@ def main() -> int:
         return 1
     logger.info("Using fetch_run=%s for run_id=%s", fetch_run, run_id)
 
-    script_path = Path(__file__).resolve().parent / "hrrr_build_cog.py"
+    script_path = Path(__file__).resolve().parent / "build_cog.py"
     failures = build_frames(
         script_path=script_path,
         run_id=run_id,
