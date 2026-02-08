@@ -52,13 +52,9 @@ venv/
 
 ## Additional ignores for specific directories
 backend_v2/.python-version
-mbtiles/
 venv_v2/
-DocsWeaver/
-v2.code-workspace
-V2_NEXT_STEPS_ROADMAP.md
-docs/V2_RENDERING_MIGRATION_PLAN.md 
-REACT UI/
+docs/V2_RENDERING_MIGRATION_PLAN.md
+ROADMAP V1.md
 **/node_modules/
 **/dist/
 **/.next/
