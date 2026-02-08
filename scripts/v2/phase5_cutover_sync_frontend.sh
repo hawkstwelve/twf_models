@@ -3,16 +3,12 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PRIMARY_APP_DIR="$ROOT_DIR/frontend_v2/models-v2"
-LEGACY_APP_DIR="$ROOT_DIR/frontend_v2/models-v2-maplibre"
-APP_DIR="${APP_DIR:-}"
+APP_DIR="${APP_DIR:-$PRIMARY_APP_DIR}"
 DST_DIR="${DST_DIR:-$PRIMARY_APP_DIR}"
 
-if [[ -z "$APP_DIR" ]]; then
-  if [[ -f "$PRIMARY_APP_DIR/package.json" ]]; then
-    APP_DIR="$PRIMARY_APP_DIR"
-  else
-    APP_DIR="$LEGACY_APP_DIR"
-  fi
+if [[ ! -f "$APP_DIR/package.json" ]]; then
+  echo "Frontend app dir does not look buildable (missing package.json): $APP_DIR" >&2
+  exit 1
 fi
 
 SRC_DIST="$APP_DIR/dist"
