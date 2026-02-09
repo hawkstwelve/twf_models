@@ -37,6 +37,8 @@ def is_not_ready_message(text: str) -> bool:
         "idx missing",
         "no index file was found",
         "download the full file first",
+        "http 404",
+        "404 client error",
     ]
     return any(pattern in lowered for pattern in patterns)
 

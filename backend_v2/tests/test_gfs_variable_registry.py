@@ -51,6 +51,7 @@ def test_gfs_plugin_normalize_var_id() -> None:
     assert GFS_MODEL.normalize_var_id("refc") == "refc"
     assert GFS_MODEL.normalize_var_id("ugrd10m") == "10u"
     assert GFS_MODEL.normalize_var_id("radar_ptype") == "radar_ptype"
+    assert GFS_MODEL.normalize_var_id("radar_ptype_combo") == "radar_ptype"
 
 
 def test_gfs_plugin_contains_radar_ptype_specs() -> None:

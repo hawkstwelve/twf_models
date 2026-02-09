@@ -68,6 +68,20 @@ def _read_json(path: Path) -> dict | None:
         return None
 
 
+def _is_valid_cog(path: Path) -> bool:
+    if not path.exists() or not path.is_file():
+        return False
+    try:
+        if path.stat().st_size <= 8:
+            return False
+        with path.open("rb") as handle:
+            header = handle.read(4)
+    except OSError:
+        return False
+    # TIFF little-endian (II*\x00), big-endian (MM\x00*), BigTIFF variants.
+    return header in {b"II*\x00", b"MM\x00*", b"II+\x00", b"MM\x00+"}
+
+
 def build_tile_url_template(
     model: str,
     region: str,
@@ -177,7 +191,7 @@ def list_frames(model: str, region: str, run: str, var: str) -> list[dict]:
     frames: list[dict] = []
     seen_fhs: set[int] = set()
     for entry in var_root.glob("fh*.cog.tif"):
-        if not entry.is_file():
+        if not _is_valid_cog(entry):
             continue
         fh = parse_fh_filename(entry.name)
         if fh is None:

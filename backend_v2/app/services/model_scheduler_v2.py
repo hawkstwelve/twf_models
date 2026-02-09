@@ -495,6 +495,8 @@ def run_scheduler(
     latest_missing_backoff = BACKOFF_INITIAL_SECONDS
     latest_missing = False
     last_sleep_policy: tuple[str, bool, int, bool, int] | None = None
+    not_ready_backoff: dict[tuple[str, str, int], int] = {}
+    not_ready_retry_at: dict[tuple[str, str, int], float] = {}
 
     logger.info("Scheduler starting: model=%s region=%s vars=%s", model, region, vars_to_build)
 
@@ -574,6 +576,8 @@ def run_scheduler(
             elif newest_run_id != active_run_id:
                 if _should_abandon_run(active_run_id, newest_run_id, now_utc):
                     logger.info("Switching to newer run: %s -> %s", active_run_id, newest_run_id)
+                    not_ready_backoff.clear()
+                    not_ready_retry_at.clear()
                     active_run_id = newest_run_id
                     active_cycle_hour = newest_cycle_hour
                 elif active_cycle_hour is None:
@@ -582,6 +586,8 @@ def run_scheduler(
                         active_cycle_hour = int(match.group("hour"))
                     else:
                         logger.warning("Invalid active run id: %s; switching to newest", active_run_id)
+                        not_ready_backoff.clear()
+                        not_ready_retry_at.clear()
                         active_run_id = newest_run_id
                         active_cycle_hour = newest_cycle_hour
 
@@ -666,12 +672,27 @@ def run_scheduler(
             _summarize_loop(active_run_id, completed, total, len(pending), newest_run_id, latest_pointer_run)
 
             loop_not_ready: dict[tuple[str, str], dict[str, set[int] | set[str]]] = {}
+            pending_ready_count = len(pending)
+            pending_retry_in_seconds: int | None = None
 
             if pending:
                 primary_set = set(primary_vars)
-                pending.sort(key=lambda item: (item[1], 0 if item[0] in primary_set else 1, item[0]))
-                batch_size = min(len(pending), max_workers * 2)
-                batch = pending[:batch_size]
+                now_for_filter = time.time()
+                ready_pending: list[tuple[str, int]] = []
+                for var, fh in pending:
+                    key = (active_run_id, var, fh)
+                    retry_at = not_ready_retry_at.get(key, 0.0)
+                    if retry_at > now_for_filter:
+                        wait_seconds = int(max(1.0, retry_at - now_for_filter))
+                        if pending_retry_in_seconds is None or wait_seconds < pending_retry_in_seconds:
+                            pending_retry_in_seconds = wait_seconds
+                        continue
+                    ready_pending.append((var, fh))
+
+                pending_ready_count = len(ready_pending)
+                ready_pending.sort(key=lambda item: (item[1], 0 if item[0] in primary_set else 1, item[0]))
+                batch_size = min(len(ready_pending), max_workers * 2)
+                batch = ready_pending[:batch_size]
                 tasks = []
                 for var, fh in batch:
                     tasks.append(
@@ -691,6 +712,9 @@ def run_scheduler(
                 for future in concurrent.futures.as_completed(futures):
                     result = future.result()
                     if result["returncode"] == 0:
+                        state_key = (result["run_id"], result["var"], int(result["fh"]))
+                        not_ready_backoff.pop(state_key, None)
+                        not_ready_retry_at.pop(state_key, None)
                         logger.info(
                             "Build success: run=%s var=%s fh=%s",
                             result["run_id"],
@@ -705,6 +729,16 @@ def run_scheduler(
                             entry = loop_not_ready.setdefault(key, {"fhs": set(), "vars": set()})
                             entry["fhs"].add(result["fh"])
                             entry["vars"].add(result["var"])
+                            state_key = (result["run_id"], result["var"], int(result["fh"]))
+                            current = not_ready_backoff.get(state_key, 0)
+                            next_backoff = (
+                                BACKOFF_INITIAL_SECONDS
+                                if current <= 0
+                                else min(BACKOFF_MAX_SECONDS, current * 2)
+                            )
+                            jittered_backoff = int(_apply_sleep_jitter(next_backoff))
+                            not_ready_backoff[state_key] = next_backoff
+                            not_ready_retry_at[state_key] = time.time() + max(1, jittered_backoff)
                         else:
                             logger.error(
                                 "Build failed: run=%s var=%s fh=%s code=%s stderr=%s",
@@ -753,18 +787,20 @@ def run_scheduler(
             base_sleep, window_label = compute_sleep_seconds(
                 now_utc,
                 caught_up=caught_up,
-                pending=len(pending),
+                pending=pending_ready_count,
                 latest_missing=latest_missing,
                 latest_missing_backoff=latest_missing_backoff,
             )
+            if pending_ready_count == 0 and pending_retry_in_seconds is not None:
+                base_sleep = min(base_sleep, pending_retry_in_seconds)
             sleep_seconds = _apply_sleep_jitter(base_sleep)
-            policy_key = (window_label, caught_up, len(pending), latest_missing, base_sleep)
+            policy_key = (window_label, caught_up, pending_ready_count, latest_missing, base_sleep)
             if policy_key != last_sleep_policy:
                 logger.info(
                     "Sleep policy: window=%s caught_up=%s pending=%s sleep=%.0fs",
                     window_label,
                     caught_up,
-                    len(pending),
+                    pending_ready_count,
                     sleep_seconds,
                 )
                 last_sleep_policy = policy_key

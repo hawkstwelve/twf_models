@@ -17,11 +17,22 @@ try:
 except Exception:  # pragma: no cover - dependency availability is environment-specific
     COGReader = None
 
+try:
+    from rasterio.errors import RasterioIOError  # type: ignore
+except Exception:  # pragma: no cover - dependency availability is environment-specific
+    RasterioIOError = None
+
+try:
+    from rio_tiler.errors import TileOutsideBounds  # type: ignore
+except Exception:  # pragma: no cover - dependency availability is environment-specific
+    TileOutsideBounds = None
+
 
 logger = logging.getLogger(__name__)
 
 SEGMENT_RE = re.compile(r"^[a-z0-9_-]+$")
 TILE_CACHE_SECONDS = 31_536_000
+UNAVAILABLE_TILE_CACHE_SECONDS = 15
 
 app = FastAPI(
     title="TWF TiTiler Service (V2)",
@@ -106,6 +117,47 @@ def _render_tile_png(cog_path: Path, *, var_key: str, z: int, x: int, y: int) ->
     return buffer.getvalue()
 
 
+def _unavailable_tile_response() -> Response:
+    return Response(
+        status_code=204,
+        headers={
+            "Cache-Control": f"public, max-age={UNAVAILABLE_TILE_CACHE_SECONDS}",
+        },
+    )
+
+
+def _is_missing_or_unavailable_error(exc: BaseException) -> bool:
+    if isinstance(exc, FileNotFoundError):
+        return True
+    if RasterioIOError is not None and isinstance(exc, RasterioIOError):
+        return True
+    if TileOutsideBounds is not None and isinstance(exc, TileOutsideBounds):
+        return True
+
+    text = str(exc).lower()
+    patterns = (
+        "no such file",
+        "not found",
+        "does not exist",
+        "outside bounds",
+        "outside dataset bounds",
+        "asset does not exist",
+        "cannot open",
+    )
+    return any(pattern in text for pattern in patterns)
+
+
+def _validate_tile_request(fh: int, z: int, x: int, y: int) -> None:
+    if fh < 0:
+        raise HTTPException(status_code=400, detail="fh must be >= 0")
+    if z < 0:
+        raise HTTPException(status_code=400, detail="z must be >= 0")
+    if x < 0:
+        raise HTTPException(status_code=400, detail="x must be >= 0")
+    if y < 0:
+        raise HTTPException(status_code=400, detail="y must be >= 0")
+
+
 def _tile_response(
     *,
     model: str,
@@ -119,8 +171,27 @@ def _tile_response(
 ) -> Response:
     for label, value in (("model", model), ("region", region), ("run", run), ("var", var)):
         _ensure_segment(label, value)
+    _validate_tile_request(fh, z, x, y)
 
-    cog_path, resolved_run = _resolve_cog_path(model, region, run, var, fh)
+    fallback_path = Path(get_data_root()) / model / region / run / var / f"fh{fh:03d}.cog.tif"
+    try:
+        cog_path, resolved_run = _resolve_cog_path(model, region, run, var, fh)
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            logger.info(
+                "Tile unavailable: model=%s region=%s run=%s var=%s fh=%s z=%s x=%s y=%s path=%s",
+                model,
+                region,
+                run,
+                var,
+                fh,
+                z,
+                x,
+                y,
+                fallback_path,
+            )
+            return _unavailable_tile_response()
+        raise
 
     try:
         tile_bytes = _render_tile_png(cog_path, var_key=var, z=z, x=x, y=y)
@@ -128,8 +199,38 @@ def _tile_response(
         # Missing rio-tiler dependency should be explicit for ops triage.
         if "rio-tiler is not installed" in str(exc):
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+        if _is_missing_or_unavailable_error(exc):
+            logger.info(
+                "Tile unavailable during render: model=%s region=%s run=%s var=%s fh=%s z=%s x=%s y=%s path=%s reason=%s",
+                model,
+                region,
+                resolved_run,
+                var,
+                fh,
+                z,
+                x,
+                y,
+                cog_path,
+                exc,
+            )
+            return _unavailable_tile_response()
         raise HTTPException(status_code=500, detail=f"Tile render error: {exc}") from exc
     except Exception as exc:
+        if _is_missing_or_unavailable_error(exc):
+            logger.info(
+                "Tile unavailable during render: model=%s region=%s run=%s var=%s fh=%s z=%s x=%s y=%s path=%s reason=%s",
+                model,
+                region,
+                resolved_run,
+                var,
+                fh,
+                z,
+                x,
+                y,
+                cog_path,
+                exc,
+            )
+            return _unavailable_tile_response()
         logger.exception(
             "TiTiler render failed model=%s region=%s run=%s var=%s fh=%s z=%s x=%s y=%s path=%s",
             model,

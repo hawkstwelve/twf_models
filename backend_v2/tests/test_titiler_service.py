@@ -130,3 +130,46 @@ def test_titiler_missing_dependency_returns_503(monkeypatch, tmp_path: Path) -> 
             y=22,
         )
     assert exc.value.status_code == 503
+
+
+def test_titiler_missing_source_returns_204(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(titiler_main, "get_data_root", lambda: tmp_path)
+    monkeypatch.setattr(titiler_main, "resolve_run", lambda model, region, run: "20260207_19z")
+
+    response = titiler_main.tile_canonical(
+        model="hrrr",
+        region="pnw",
+        run="latest",
+        var="tmp2m",
+        fh=0,
+        z=6,
+        x=10,
+        y=22,
+    )
+
+    assert response.status_code == 204
+    assert response.headers["cache-control"].startswith("public, max-age=15")
+
+
+def test_titiler_missing_asset_during_render_returns_204(monkeypatch, tmp_path: Path) -> None:
+    _touch_cog(tmp_path)
+    monkeypatch.setattr(titiler_main, "get_data_root", lambda: tmp_path)
+    monkeypatch.setattr(titiler_main, "resolve_run", lambda model, region, run: "20260207_19z")
+    monkeypatch.setattr(
+        titiler_main,
+        "_render_tile_png",
+        lambda *args, **kwargs: (_ for _ in ()).throw(FileNotFoundError("missing asset")),
+    )
+
+    response = titiler_main.tile_canonical(
+        model="hrrr",
+        region="pnw",
+        run="latest",
+        var="tmp2m",
+        fh=0,
+        z=6,
+        x=10,
+        y=22,
+    )
+
+    assert response.status_code == 204

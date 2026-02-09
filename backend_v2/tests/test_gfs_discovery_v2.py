@@ -18,10 +18,10 @@ def test_gfs_discovery_lists_runs_vars_and_frames(monkeypatch: pytest.MonkeyPatc
     newer = root / "gfs" / "pnw" / "20260206_06z"
     older = root / "gfs" / "pnw" / "20260206_00z"
 
-    _touch(newer / "tmp2m" / "fh000.cog.tif", b"COG")
-    _touch(newer / "tmp2m" / "fh006.cog.tif", b"COG")
-    _touch(newer / "wspd10m" / "fh000.cog.tif", b"COG")
-    _touch(older / "tmp2m" / "fh000.cog.tif", b"COG")
+    _touch(newer / "tmp2m" / "fh000.cog.tif", b"II*\x00valid")
+    _touch(newer / "tmp2m" / "fh006.cog.tif", b"II*\x00valid")
+    _touch(newer / "wspd10m" / "fh000.cog.tif", b"II*\x00valid")
+    _touch(older / "tmp2m" / "fh000.cog.tif", b"II*\x00valid")
     (root / "gfs" / "pnw" / "LATEST.json").write_text(
         json.dumps({"run_id": "20260206_06z"})
     )
@@ -40,3 +40,17 @@ def test_gfs_discovery_lists_runs_vars_and_frames(monkeypatch: pytest.MonkeyPatc
     assert all(row["run"] == "20260206_06z" for row in frames)
     assert frames[0]["tile_url_template"] == "/tiles/gfs/pnw/20260206_06z/tmp2m/0/{z}/{x}/{y}.png"
     assert frames[1]["tile_url_template"] == "/tiles/gfs/pnw/20260206_06z/tmp2m/6/{z}/{x}/{y}.png"
+
+
+def test_gfs_discovery_ignores_invalid_cog_files(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    run_dir = root / "gfs" / "pnw" / "20260206_06z" / "tmp2m"
+    _touch(run_dir / "fh000.cog.tif", b"not-a-tiff")
+    _touch(run_dir / "fh006.cog.tif", b"II*\x00valid")
+    (root / "gfs" / "pnw" / "LATEST.json").write_text(json.dumps({"run_id": "20260206_06z"}))
+
+    monkeypatch.setenv("TWF_DATA_V2_ROOT", str(root))
+    discovery_v2._CACHE.clear()
+
+    frames = discovery_v2.list_frames("gfs", "pnw", "latest", "tmp2m")
+    assert [row["fh"] for row in frames] == [6]

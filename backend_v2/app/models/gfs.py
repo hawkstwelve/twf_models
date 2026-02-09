@@ -42,7 +42,7 @@ class GFSPlugin(BaseModelPlugin):
         if normalized in {"crain", "csnow", "cicep", "cfrzr"}:
             return normalized
         if normalized == "radar_ptype_combo":
-            return "radar_ptype_combo"
+            return "radar_ptype"
         if normalized == "radar_ptype":
             return "radar_ptype"
         return normalized

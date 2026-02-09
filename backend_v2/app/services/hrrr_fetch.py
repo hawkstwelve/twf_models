@@ -37,6 +37,29 @@ class UpstreamNotReady(RuntimeError):
     pass
 
 
+def _iter_exception_chain(exc: BaseException):
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        next_exc = current.__cause__ or current.__context__
+        current = next_exc if isinstance(next_exc, BaseException) else None
+
+
+def _http_status_from_exception(exc: BaseException) -> int | None:
+    for candidate in _iter_exception_chain(exc):
+        response = getattr(candidate, "response", None)
+        status_code = getattr(response, "status_code", None)
+        if isinstance(status_code, int):
+            return status_code
+    return None
+
+
+def _is_http_404(exc: BaseException) -> bool:
+    return _http_status_from_exception(exc) == 404
+
+
 def _select_herbie_search(selectors: VarSelectors) -> str | None:
     if not selectors.search:
         return None
@@ -338,7 +361,13 @@ def fetch_hrrr_grib(
         for i in range(0, 12):
             candidate = now - timedelta(hours=i)
             H = Herbie(candidate, model=model, product=product, fxx=fh)
-            if H.grib:
+            try:
+                has_grib = bool(H.grib)
+            except Exception as exc:
+                if _is_http_404(exc):
+                    continue
+                raise
+            if has_grib:
                 herbie = H
                 run_dt = H.date
                 break
@@ -410,6 +439,8 @@ def fetch_hrrr_grib(
             downloaded_full = True
             downloaded = herbie.download(save_dir=target_dir)
     except Exception as exc:
+        if _is_http_404(exc):
+            raise UpstreamNotReady("Upstream not ready (HTTP 404)") from exc
         message = str(exc)
         if search and is_idx_missing_message(message):
             if not ALLOW_FULL_GRIB_FALLBACK:
@@ -433,6 +464,8 @@ def fetch_hrrr_grib(
             try:
                 downloaded = herbie.download(save_dir=target_dir)
             except Exception as inner_exc:
+                if _is_http_404(inner_exc):
+                    raise UpstreamNotReady("Upstream not ready (HTTP 404)") from inner_exc
                 inner_message = str(inner_exc)
                 if is_upstream_not_ready_message(inner_message):
                     raise UpstreamNotReady(inner_message) from inner_exc
