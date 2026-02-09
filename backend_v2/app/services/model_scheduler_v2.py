@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Iterable
 
 from app.models import get_model
-from app.services.fetch_engine import fetch_grib, is_not_ready_message
+from app.services.fetch_engine import fetch_grib
 
 logger = logging.getLogger(__name__)
 
@@ -723,8 +723,9 @@ def run_scheduler(
                         )
                     else:
                         combined = f"{result['stderr']}\n{result['stdout']}"
-                        if is_not_ready_message(combined):
-                            reason = _normalize_reason(combined)
+                        is_retryable = result["returncode"] == 2
+                        if is_retryable:
+                            reason = _normalize_reason(combined) if combined.strip() else "returncode 2"
                             key = (result["run_id"], reason)
                             entry = loop_not_ready.setdefault(key, {"fhs": set(), "vars": set()})
                             entry["fhs"].add(result["fh"])

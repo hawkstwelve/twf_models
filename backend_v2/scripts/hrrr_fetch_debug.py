@@ -33,11 +33,19 @@ def main() -> int:
         print(f"Variable: {args.var} normalized={normalized} search={search or '(none)'}")
 
     try:
-        path = fetch_hrrr_grib(run=args.run, fh=args.fh, variable=args.var, cache_cfg=cfg)
+        result = fetch_hrrr_grib(run=args.run, fh=args.fh, variable=args.var, cache_cfg=cfg)
     except Exception as exc:
         print(str(exc))
         return 1
 
+    if result.not_ready_reason:
+        print(f"Upstream not ready: {result.not_ready_reason}")
+        return 2
+    if result.path is None:
+        print("Fetch completed without GRIB path")
+        return 1
+
+    path = result.path
     print(f"Downloaded path: {path}")
 
     try:

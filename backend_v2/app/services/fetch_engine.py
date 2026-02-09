@@ -10,9 +10,10 @@ import re
 from fastapi import HTTPException
 
 from app.models import get_model
-from app.services.gfs_fetch import fetch_gfs_grib, is_upstream_not_ready as is_gfs_not_ready
-from app.services.hrrr_fetch import fetch_hrrr_grib, is_upstream_not_ready
+from app.services.gfs_fetch import fetch_gfs_grib
+from app.services.hrrr_fetch import fetch_hrrr_grib
 from app.services.hrrr_runs import HRRRCacheConfig
+from app.services.upstream import is_upstream_not_ready_error
 
 logger = logging.getLogger(__name__)
 
@@ -27,20 +28,7 @@ class FetchResult:
 
 
 def is_not_ready_message(text: str) -> bool:
-    lowered = text.lower()
-    patterns = [
-        "upstream not ready",
-        "grib2 file not found",
-        "herbie did not return a grib2 path",
-        "could not resolve latest hrrr cycle",
-        "index not ready",
-        "idx missing",
-        "no index file was found",
-        "download the full file first",
-        "http 404",
-        "404 client error",
-    ]
-    return any(pattern in lowered for pattern in patterns)
+    return is_upstream_not_ready_error(text)
 
 
 def _run_id_from_path(path: Path | None) -> str | None:
@@ -87,6 +75,13 @@ def _not_ready(run: str, reason: Exception | str, path: Path | None = None) -> F
         grib_path=None,
         component_paths=None,
     )
+
+
+def _fetch_path_or_raise(result: object, *, context: str) -> Path:
+    path = getattr(result, "path", None)
+    if path is None:
+        raise RuntimeError(f"{context} returned no GRIB path")
+    return Path(path)
 
 
 RUN_ID_RE = re.compile(r"^(?P<day>\d{8})_(?P<hour>\d{2})z$")
@@ -341,14 +336,18 @@ def fetch_grib(
                 cache_cfg=HRRRCacheConfig(base_dir=cache_dir, keep_runs=1) if cache_dir else None,
             )
         except Exception as exc:
-            if is_upstream_not_ready(exc):
+            if is_upstream_not_ready_error(exc):
                 return _not_ready(run, exc)
             raise
-        run_id = _normalize_run_id(run, result.path)
+        not_ready_reason = getattr(result, "not_ready_reason", None)
+        if not_ready_reason:
+            return _not_ready(run, not_ready_reason)
+        path = _fetch_path_or_raise(result, context="HRRR fetch")
+        run_id = _normalize_run_id(run, path)
         return FetchResult(
             upstream_run_id=run_id,
             is_full_download=result.is_full_file,
-            grib_path=result.path,
+            grib_path=path,
             component_paths=None,
         )
 
@@ -374,14 +373,18 @@ def fetch_grib(
                 **kwargs,
             )
         except Exception as exc:
-            if is_gfs_not_ready(exc):
+            if is_upstream_not_ready_error(exc):
                 return _not_ready(run, exc)
             raise
-        run_id = _normalize_run_id(run, result.path)
+        not_ready_reason = getattr(result, "not_ready_reason", None)
+        if not_ready_reason:
+            return _not_ready(run, not_ready_reason)
+        path = _fetch_path_or_raise(result, context="GFS fetch")
+        run_id = _normalize_run_id(run, path)
         return FetchResult(
             upstream_run_id=run_id,
             is_full_download=result.is_full_file,
-            grib_path=result.path,
+            grib_path=path,
             component_paths=None,
         )
 
@@ -401,14 +404,18 @@ def fetch_grib(
                     **kwargs,
                 )
             except Exception as exc:
-                if is_gfs_not_ready(exc):
+                if is_upstream_not_ready_error(exc):
                     return _not_ready(run, exc)
                 raise
-            run_id = _normalize_run_id(run, result.path)
+            not_ready_reason = getattr(result, "not_ready_reason", None)
+            if not_ready_reason:
+                return _not_ready(run, not_ready_reason)
+            path = _fetch_path_or_raise(result, context="GFS fetch")
+            run_id = _normalize_run_id(run, path)
             return FetchResult(
                 upstream_run_id=run_id,
                 is_full_download=result.is_full_file,
-                grib_path=result.path,
+                grib_path=path,
                 component_paths=None,
             )
         try:
@@ -422,14 +429,18 @@ def fetch_grib(
                 cache_cfg=HRRRCacheConfig(base_dir=cache_dir, keep_runs=1) if cache_dir else None,
             )
         except Exception as exc:
-            if is_upstream_not_ready(exc):
+            if is_upstream_not_ready_error(exc):
                 return _not_ready(run, exc)
             raise
-        run_id = _normalize_run_id(run, result.path)
+        not_ready_reason = getattr(result, "not_ready_reason", None)
+        if not_ready_reason:
+            return _not_ready(run, not_ready_reason)
+        path = _fetch_path_or_raise(result, context="HRRR fetch")
+        run_id = _normalize_run_id(run, path)
         return FetchResult(
             upstream_run_id=run_id,
             is_full_download=result.is_full_file,
-            grib_path=result.path,
+            grib_path=path,
             component_paths=None,
         )
 
@@ -466,14 +477,19 @@ def fetch_grib(
                     **kwargs,
                 )
             except Exception as exc:
-                if is_gfs_not_ready(exc):
+                if is_upstream_not_ready_error(exc):
                     known_path = next(iter(component_paths.values()), None)
                     return _not_ready(gfs_component_run, exc, known_path)
                 raise
-            component_paths[component_var] = result.path
+            not_ready_reason = getattr(result, "not_ready_reason", None)
+            if not_ready_reason:
+                known_path = next(iter(component_paths.values()), None)
+                return _not_ready(gfs_component_run, not_ready_reason, known_path)
+            path = _fetch_path_or_raise(result, context="GFS component fetch")
+            component_paths[component_var] = path
             any_full = any_full or result.is_full_file
             if run.lower() == "latest":
-                resolved_run = _normalize_run_id(run, result.path)
+                resolved_run = _normalize_run_id(run, path)
                 gfs_component_run = _fetch_run_arg_from_run_id(resolved_run)
             continue
         try:
@@ -487,11 +503,16 @@ def fetch_grib(
                 cache_cfg=HRRRCacheConfig(base_dir=cache_dir, keep_runs=1) if cache_dir else None,
             )
         except Exception as exc:
-            if is_upstream_not_ready(exc):
+            if is_upstream_not_ready_error(exc):
                 known_path = next(iter(component_paths.values()), None)
                 return _not_ready(run, exc, known_path)
             raise
-        component_paths[component_var] = result.path
+        not_ready_reason = getattr(result, "not_ready_reason", None)
+        if not_ready_reason:
+            known_path = next(iter(component_paths.values()), None)
+            return _not_ready(run, not_ready_reason, known_path)
+        path = _fetch_path_or_raise(result, context="HRRR component fetch")
+        component_paths[component_var] = path
         any_full = any_full or result.is_full_file
     run_id = _normalize_run_id(run, next(iter(component_paths.values())))
     return FetchResult(

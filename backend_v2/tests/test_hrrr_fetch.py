@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from app.services.hrrr_fetch import UpstreamNotReady, fetch_hrrr_grib
+from app.services.hrrr_fetch import fetch_hrrr_grib
 from app.services.hrrr_runs import HRRRCacheConfig
 
 
@@ -35,14 +35,15 @@ class _FakeHerbie:
 def test_fetch_hrrr_404_is_not_ready(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr("app.services.hrrr_fetch.Herbie", _FakeHerbie)
 
-    with pytest.raises(UpstreamNotReady) as exc:
-        fetch_hrrr_grib(
-            run="20260207_16",
-            fh=18,
-            model="hrrr",
-            product="sfc",
-            variable="tmp2m",
-            cache_cfg=HRRRCacheConfig(base_dir=tmp_path, keep_runs=1),
-        )
+    result = fetch_hrrr_grib(
+        run="20260207_16",
+        fh=18,
+        model="hrrr",
+        product="sfc",
+        variable="tmp2m",
+        cache_cfg=HRRRCacheConfig(base_dir=tmp_path, keep_runs=1),
+    )
 
-    assert "HTTP 404" in str(exc.value)
+    assert result.path is None
+    assert result.not_ready_reason is not None
+    assert "404" in result.not_ready_reason

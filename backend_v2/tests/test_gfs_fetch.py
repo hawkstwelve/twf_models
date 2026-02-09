@@ -4,6 +4,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
+import requests
 
 from app.services import gfs_fetch
 
@@ -60,6 +61,11 @@ def test_fetch_moves_download_into_deterministic_path(
             return source
 
     monkeypatch.setattr(gfs_fetch, "Herbie", _DownloadHerbie)
+    monkeypatch.setattr(
+        gfs_fetch,
+        "_subset_contains_required_variables",
+        lambda *args, **kwargs: (True, ["tmp2m"], []),
+    )
 
     result = gfs_fetch.fetch_gfs_grib(
         run=run,
@@ -80,3 +86,30 @@ def test_parse_run_datetime_accepts_scheduler_run_id() -> None:
     parsed = gfs_fetch._parse_run_datetime("20260206_06z")
     assert parsed is not None
     assert parsed.strftime("%Y%m%d%H") == "2026020606"
+
+
+def test_fetch_timeout_returns_not_ready_result(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    run = "2026020600"
+
+    class _TimeoutHerbie(_DummyHerbie):
+        def download(self, _search: str, save_dir: Path):
+            del save_dir
+            raise requests.exceptions.ReadTimeout("upstream timeout")
+
+    monkeypatch.setattr(gfs_fetch, "Herbie", _TimeoutHerbie)
+
+    result = gfs_fetch.fetch_gfs_grib(
+        run=run,
+        fh=0,
+        model="gfs",
+        product="pgrb2.0p25",
+        variable="t2m",
+        search_override=":TMP:2 m above ground:",
+        cache_dir=tmp_path,
+    )
+
+    assert result.path is None
+    assert result.not_ready_reason is not None

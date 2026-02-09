@@ -8,15 +8,20 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from herbie import Herbie
 import xarray as xr
 
-from app.models.base import VarSelectors
-
 from .hrrr_runs import HRRRCacheConfig, enforce_cycle_retention
 from .paths import default_hrrr_cache_dir
 from .variable_registry import herbie_search_for, normalize_api_variable, select_dataarray
+from .upstream import is_upstream_not_ready_error
+
+if TYPE_CHECKING:
+    from app.models.base import VarSelectors
+else:  # pragma: no cover - typing-only alias for runtime
+    VarSelectors = Any  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -35,29 +40,6 @@ _IDX_FALLBACK_LOG_CACHE: dict[tuple[str, int], float] = {}
 
 class UpstreamNotReady(RuntimeError):
     pass
-
-
-def _iter_exception_chain(exc: BaseException):
-    seen: set[int] = set()
-    current: BaseException | None = exc
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        yield current
-        next_exc = current.__cause__ or current.__context__
-        current = next_exc if isinstance(next_exc, BaseException) else None
-
-
-def _http_status_from_exception(exc: BaseException) -> int | None:
-    for candidate in _iter_exception_chain(exc):
-        response = getattr(candidate, "response", None)
-        status_code = getattr(response, "status_code", None)
-        if isinstance(status_code, int):
-            return status_code
-    return None
-
-
-def _is_http_404(exc: BaseException) -> bool:
-    return _http_status_from_exception(exc) == 404
 
 
 def _select_herbie_search(selectors: VarSelectors) -> str | None:
@@ -90,25 +72,23 @@ def _resolve_var_selectors(model_id: str, variable: str | None) -> VarSelectors:
 
 @dataclass(frozen=True)
 class GribFetchResult:
-    path: Path
+    path: Path | None
     is_full_file: bool = False
+    not_ready_reason: str | None = None
 
     def __fspath__(self) -> str:
+        if self.path is None:
+            raise TypeError("No GRIB path available for not-ready fetch result")
         return str(self.path)
 
     def __getattr__(self, name: str):
+        if self.path is None:
+            raise AttributeError(name)
         return getattr(self.path, name)
 
 
 def is_upstream_not_ready_message(message: str) -> bool:
-    text = message.lower()
-    patterns = [
-        "upstream not ready",
-        "grib2 file not found",
-        "herbie did not return a grib2 path",
-        "could not resolve latest hrrr cycle",
-    ]
-    return any(pattern in text for pattern in patterns)
+    return is_upstream_not_ready_error(message)
 
 
 def is_idx_missing_message(message: str) -> bool:
@@ -126,7 +106,7 @@ def is_idx_missing_message(message: str) -> bool:
 def is_upstream_not_ready(exc: BaseException) -> bool:
     if isinstance(exc, UpstreamNotReady):
         return True
-    return is_upstream_not_ready_message(str(exc))
+    return is_upstream_not_ready_error(exc)
 
 
 def _idx_path(herbie: Herbie) -> Path | None:
@@ -159,6 +139,17 @@ def _delete_cfgrib_index_files(grib_path: Path) -> None:
     except Exception:
         # Never fail the pipeline due to cleanup
         pass
+
+
+def _cleanup_partial_grib(path: Path | None) -> None:
+    if path is None:
+        return
+    try:
+        if path.exists() and not _is_readable_grib(path):
+            path.unlink()
+    except OSError:
+        pass
+    _delete_cfgrib_index_files(path)
 
 
 def _is_readable_grib(path: Path) -> bool:
@@ -323,7 +314,7 @@ def _cache_dir_for_run(base_dir: Path, run_dt: datetime) -> Path:
     return base_dir / run_dt.strftime("%Y%m%d") / run_dt.strftime("%H")
 
 
-def fetch_hrrr_grib(
+def _fetch_hrrr_grib_internal(
     *,
     run: str,
     fh: int,
@@ -364,7 +355,7 @@ def fetch_hrrr_grib(
             try:
                 has_grib = bool(H.grib)
             except Exception as exc:
-                if _is_http_404(exc):
+                if is_upstream_not_ready_error(exc):
                     continue
                 raise
             if has_grib:
@@ -432,6 +423,11 @@ def fetch_hrrr_grib(
 
     downloaded_full = False
     download_start = time.time()
+
+    def _cleanup_expected_paths() -> None:
+        _cleanup_partial_grib(expected_path)
+        _cleanup_partial_grib(expected_full_path)
+
     try:
         if search:
             downloaded = herbie.download(save_dir=target_dir, search=search)
@@ -439,8 +435,6 @@ def fetch_hrrr_grib(
             downloaded_full = True
             downloaded = herbie.download(save_dir=target_dir)
     except Exception as exc:
-        if _is_http_404(exc):
-            raise UpstreamNotReady("Upstream not ready (HTTP 404)") from exc
         message = str(exc)
         if search and is_idx_missing_message(message):
             if not ALLOW_FULL_GRIB_FALLBACK:
@@ -449,6 +443,7 @@ def fetch_hrrr_grib(
                     run_id,
                     fh,
                 )
+                _cleanup_expected_paths()
                 raise UpstreamNotReady("Index not ready for requested HRRR GRIB") from exc
             if not _wgrib2_available():
                 logger.info(
@@ -456,6 +451,7 @@ def fetch_hrrr_grib(
                     run_id,
                     fh,
                 )
+                _cleanup_expected_paths()
                 raise UpstreamNotReady("Index not ready for requested HRRR GRIB") from exc
             _log_idx_fallback(run_id, fh)
             herbie = Herbie(run_dt, model=model, product=product, fxx=fh)
@@ -464,13 +460,13 @@ def fetch_hrrr_grib(
             try:
                 downloaded = herbie.download(save_dir=target_dir)
             except Exception as inner_exc:
-                if _is_http_404(inner_exc):
-                    raise UpstreamNotReady("Upstream not ready (HTTP 404)") from inner_exc
                 inner_message = str(inner_exc)
-                if is_upstream_not_ready_message(inner_message):
+                if is_upstream_not_ready_error(inner_exc) or is_upstream_not_ready_message(inner_message):
+                    _cleanup_expected_paths()
                     raise UpstreamNotReady(inner_message) from inner_exc
                 raise RuntimeError(f"Herbie download failed: {inner_exc}") from inner_exc
-        elif is_upstream_not_ready_message(message):
+        elif is_upstream_not_ready_error(exc) or is_upstream_not_ready_message(message):
+            _cleanup_expected_paths()
             raise UpstreamNotReady(message) from exc
         else:
             raise RuntimeError(f"Herbie download failed: {exc}") from exc
@@ -479,6 +475,7 @@ def fetch_hrrr_grib(
         downloaded = downloaded[0] if downloaded else None
 
     if downloaded is None:
+        _cleanup_expected_paths()
         raise UpstreamNotReady("Herbie did not return a GRIB2 path")
 
     path = Path(downloaded)
@@ -492,6 +489,7 @@ def fetch_hrrr_grib(
         elif downloaded_full and expected_full_path.exists() and _is_readable_grib(expected_full_path):
             path = expected_full_path
         else:
+            _cleanup_expected_paths()
             raise UpstreamNotReady(
                 f"Downloaded GRIB2 not found for requested variable={normalized_var or 'full'} "
                 f"run={run_id} fh={fh:02d}; reported_path={path}"
@@ -511,6 +509,7 @@ def fetch_hrrr_grib(
             path.unlink()
         except OSError:
             pass
+        _cleanup_expected_paths()
         raise UpstreamNotReady(f"Downloaded GRIB2 is empty: {path}")
 
     target_path = expected_full_path if downloaded_full else expected_path
@@ -532,6 +531,7 @@ def fetch_hrrr_grib(
 
     if downloaded_full and want_subset:
         if not _wgrib2_available():
+            _cleanup_expected_paths()
             raise UpstreamNotReady("Index not ready for requested HRRR GRIB")
         _log_idx_fallback(run_id, fh)
         logger.info("Extracting subset GRIB with wgrib2: src=%s -> dst=%s match=%s", target_path, expected_path, search)
@@ -552,6 +552,7 @@ def fetch_hrrr_grib(
             except OSError:
                 pass
             _delete_cfgrib_index_files(expected_path)
+            _cleanup_expected_paths()
             raise UpstreamNotReady(
                 "Requested variables not available yet: "
                 f"var={normalized_var or 'full'} required={required_vars or []} run={run_id} fh={fh:02d}"
@@ -561,6 +562,7 @@ def fetch_hrrr_grib(
         return GribFetchResult(path=expected_path, is_full_file=False)
 
     if not target_path.exists() or target_path.stat().st_size == 0:
+        _cleanup_expected_paths()
         raise UpstreamNotReady(f"Expected GRIB2 not found after download: {target_path}")
 
     if want_subset and not downloaded_full:
@@ -580,6 +582,7 @@ def fetch_hrrr_grib(
             except OSError:
                 pass
             _delete_cfgrib_index_files(target_path)
+            _cleanup_expected_paths()
             raise UpstreamNotReady(
                 "Requested variables not available yet: "
                 f"var={normalized_var or 'full'} required={required_vars or []} run={run_id} fh={fh:02d}"
@@ -588,6 +591,38 @@ def fetch_hrrr_grib(
     _delete_cfgrib_index_files(target_path)
     logger.info("Cached GRIB: %s", target_path)
     return GribFetchResult(path=target_path, is_full_file=downloaded_full)
+
+
+def fetch_hrrr_grib(
+    *,
+    run: str,
+    fh: int,
+    product: str = "sfc",
+    model: str = "hrrr",
+    variable: str | None = None,
+    search_override: str | None = None,
+    cache_key: str | None = None,
+    required_vars: list[str] | None = None,
+    cache_cfg: HRRRCacheConfig | None = None,
+) -> GribFetchResult:
+    try:
+        return _fetch_hrrr_grib_internal(
+            run=run,
+            fh=fh,
+            product=product,
+            model=model,
+            variable=variable,
+            search_override=search_override,
+            cache_key=cache_key,
+            required_vars=required_vars,
+            cache_cfg=cache_cfg,
+        )
+    except UpstreamNotReady as exc:
+        return GribFetchResult(
+            path=None,
+            is_full_file=False,
+            not_ready_reason=str(exc),
+        )
 
 
 def ensure_latest_cycles(*, keep_cycles: int, cache_cfg: HRRRCacheConfig | None = None) -> dict[str, int]:

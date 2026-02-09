@@ -15,6 +15,7 @@ import xarray as xr
 
 from app.models import get_model
 from app.services.paths import default_gfs_cache_dir
+from app.services.upstream import is_upstream_not_ready_error
 
 logger = logging.getLogger(__name__)
 
@@ -33,13 +34,18 @@ class UpstreamNotReady(RuntimeError):
 
 @dataclass(frozen=True)
 class GribFetchResult:
-    path: Path
+    path: Path | None
     is_full_file: bool = False
+    not_ready_reason: str | None = None
 
     def __fspath__(self) -> str:
+        if self.path is None:
+            raise TypeError("No GRIB path available for not-ready fetch result")
         return str(self.path)
 
     def __getattr__(self, name: str):
+        if self.path is None:
+            raise AttributeError(name)
         return getattr(self.path, name)
 
 
@@ -51,6 +57,35 @@ def _is_readable_grib(path: Path) -> bool:
             return bool(handle.read(4))
     except OSError:
         return False
+
+
+def _delete_cfgrib_index_files(grib_path: Path) -> None:
+    try:
+        parent = grib_path.parent
+        for idx_file in parent.glob(grib_path.name + ".*.idx"):
+            try:
+                idx_file.unlink()
+            except OSError:
+                pass
+        direct_idx = grib_path.with_suffix(grib_path.suffix + ".idx")
+        if direct_idx.exists():
+            try:
+                direct_idx.unlink()
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+
+def _cleanup_partial_grib(path: Path | None) -> None:
+    if path is None:
+        return
+    try:
+        if path.exists() and not _is_readable_grib(path):
+            path.unlink()
+    except OSError:
+        pass
+    _delete_cfgrib_index_files(path)
 
 
 def _required_grib_vars_for_request(model_id: str, normalized_var: str) -> tuple[list[str], str]:
@@ -411,7 +446,7 @@ def _resolve_var_selectors(model_id: str, variable: str | None) -> object:
     return VarSelectors()
 
 
-def fetch_gfs_grib(
+def _fetch_gfs_grib_internal(
     *,
     run: str,
     fh: int,
@@ -458,7 +493,7 @@ def fetch_gfs_grib(
         selectors = _resolve_var_selectors(model, variable)
         search = _select_herbie_search(selectors)
     if not search:
-        raise UpstreamNotReady("Subset search required for GFS fetch")
+        raise RuntimeError("Subset search required for GFS fetch")
 
     logger.info(
         "Fetching GFS GRIB: run=%s fh=%02d model=%s product=%s variable=%s search=%s priority=%s timeout=%ss",
@@ -587,6 +622,9 @@ def fetch_gfs_grib(
                 "Immutable cache conflict: target GFS GRIB exists but is unreadable; "
                 f"refusing overwrite at {expected_path}"
             )
+    def _cleanup_expected_path() -> None:
+        _cleanup_partial_grib(expected_path)
+
     try:
         with _requests_guard(timeout_seconds, blocked_hosts):
             downloaded = herbie.download(search, save_dir=target_dir)
@@ -594,16 +632,22 @@ def fetch_gfs_grib(
         message = str(exc)
         if _is_idx_missing_message(message):
             _log_idx_missing(run_dt.strftime("%Y%m%d_%Hz"), fh)
+            _cleanup_expected_path()
             raise UpstreamNotReady("Index not ready for requested GFS GRIB") from exc
         if isinstance(exc, (requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout)):
+            _cleanup_expected_path()
             raise UpstreamNotReady(
                 f"Upstream timeout while probing GFS source: {exc}"
             ) from exc
+        if is_upstream_not_ready_error(exc):
+            _cleanup_expected_path()
+            raise UpstreamNotReady(str(exc)) from exc
         raise RuntimeError(f"Herbie download failed: {exc}") from exc
     if isinstance(downloaded, (list, tuple)):
         downloaded = downloaded[0] if downloaded else None
 
     if downloaded is None:
+        _cleanup_expected_path()
         raise UpstreamNotReady("Herbie did not return a GRIB2 path")
 
     path = Path(downloaded)
@@ -611,12 +655,14 @@ def fetch_gfs_grib(
         if expected_path.exists() and _is_readable_grib(expected_path):
             path = expected_path
         else:
+            _cleanup_expected_path()
             raise UpstreamNotReady(
                 f"Downloaded GRIB2 not found for requested variable={variable or 'subset'} "
                 f"run={run_dt.strftime('%Y%m%d_%Hz')} fh={fh:02d}; reported_path={path}"
             )
 
     if path.stat().st_size == 0:
+        _cleanup_expected_path()
         raise UpstreamNotReady(f"Downloaded GRIB2 is empty: {path}")
 
     if path.resolve() != expected_path.resolve():
@@ -659,6 +705,7 @@ def fetch_gfs_grib(
             expected_path.unlink()
         except OSError:
             pass
+        _cleanup_expected_path()
         raise UpstreamNotReady(
             "Requested variables not available yet: "
             f"var={variable or 'subset'} required={validate_vars or []} "
@@ -668,5 +715,41 @@ def fetch_gfs_grib(
     return GribFetchResult(path=expected_path, is_full_file=False)
 
 
+def fetch_gfs_grib(
+    *,
+    run: str,
+    fh: int,
+    product: str = "pgrb2.0p25",
+    model: str = "gfs",
+    variable: str | None = None,
+    search_override: str | None = None,
+    cache_key: str | None = None,
+    required_vars: list[str] | None = None,
+    cache_dir: Path | None = None,
+    **kwargs: object,
+) -> GribFetchResult:
+    try:
+        return _fetch_gfs_grib_internal(
+            run=run,
+            fh=fh,
+            product=product,
+            model=model,
+            variable=variable,
+            search_override=search_override,
+            cache_key=cache_key,
+            required_vars=required_vars,
+            cache_dir=cache_dir,
+            **kwargs,
+        )
+    except UpstreamNotReady as exc:
+        return GribFetchResult(
+            path=None,
+            is_full_file=False,
+            not_ready_reason=str(exc),
+        )
+
+
 def is_upstream_not_ready(exc: BaseException) -> bool:
-    return isinstance(exc, UpstreamNotReady)
+    if isinstance(exc, UpstreamNotReady):
+        return True
+    return is_upstream_not_ready_error(exc)

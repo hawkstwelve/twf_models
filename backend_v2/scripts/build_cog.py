@@ -13,6 +13,7 @@ import re
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Iterable
 from xml.sax.saxutils import escape
 
 # Add backend_v2 to path so app module can be found
@@ -30,6 +31,7 @@ from app.models import ModelPlugin, VarSpec, get_model
 from app.services.colormaps_v2 import RADAR_CONFIG, VAR_SPECS
 from app.services.fetch_engine import fetch_grib
 from app.services.grid import detect_latlon_names, normalize_latlon_coords
+from app.services.upstream import is_upstream_not_ready_error
 
 EPS = 1e-9
 logger = logging.getLogger(__name__)
@@ -51,6 +53,10 @@ TARGET_GRID_METERS_BY_MODEL_REGION: dict[tuple[str, str], tuple[float, float]] =
 }
 
 
+class UpstreamNotReadyError(RuntimeError):
+    pass
+
+
 def get_plugin_and_var(model_id: str, var_id: str) -> tuple[ModelPlugin, VarSpec]:
     try:
         plugin = get_model(model_id)
@@ -62,19 +68,34 @@ def get_plugin_and_var(model_id: str, var_id: str) -> tuple[ModelPlugin, VarSpec
     return plugin, var_spec
 
 
-def is_upstream_not_ready_message(message: str) -> bool:
-    text = message.lower()
-    patterns = [
-        "upstream not ready",
-        "grib2 file not found",
-        "herbie did not return a grib2 path",
-        "could not resolve latest hrrr cycle",
-    ]
-    return any(pattern in text for pattern in patterns)
+def _delete_cfgrib_index_files(grib_path: Path) -> None:
+    try:
+        parent = grib_path.parent
+        for idx_file in parent.glob(grib_path.name + ".*.idx"):
+            try:
+                idx_file.unlink()
+            except OSError:
+                pass
+        direct_idx = grib_path.with_suffix(grib_path.suffix + ".idx")
+        if direct_idx.exists():
+            try:
+                direct_idx.unlink()
+            except OSError:
+                pass
+    except Exception:
+        pass
 
 
-def is_upstream_not_ready(exc: BaseException) -> bool:
-    return is_upstream_not_ready_message(str(exc))
+def _cleanup_upstream_grib_paths(paths: Iterable[Path | None]) -> None:
+    for path in paths:
+        if path is None:
+            continue
+        try:
+            if path.exists():
+                path.unlink()
+        except OSError:
+            pass
+        _delete_cfgrib_index_files(path)
 
 
 def _collect_fill_values(da: xr.DataArray) -> list[float]:
@@ -143,6 +164,8 @@ def _open_cfgrib_dataset_strict(path: Path, var_spec: VarSpec | None) -> xr.Data
                 backend_kwargs={"filter_by_keys": filter_keys, "indexpath": ""},
             )
         except Exception as exc:  # pragma: no cover - retry path
+            if is_upstream_not_ready_error(exc):
+                raise UpstreamNotReadyError(str(exc)) from exc
             last_exc = exc
             continue
 
@@ -419,13 +442,17 @@ def _open_cfgrib_dataset(grib_path: object, var_spec: VarSpec | None) -> xr.Data
                 engine="cfgrib",
                 backend_kwargs={"filter_by_keys": filter_keys, "indexpath": ""},
             )
-        except Exception:
+        except Exception as exc:
+            if is_upstream_not_ready_error(exc):
+                raise UpstreamNotReadyError(str(exc)) from exc
             continue
 
     # Fallback for paths/vars where no filter keys are available.
     try:
         return xr.open_dataset(path, engine="cfgrib", backend_kwargs={"indexpath": ""})
     except Exception as exc:
+        if is_upstream_not_ready_error(exc):
+            raise UpstreamNotReadyError(str(exc)) from exc
         message = str(exc)
         retry_on_multi_key = "multiple values for key" in message or "multiple values for unique key" in message
         retry_on_type_hint = "typeOfLevel" in message
@@ -437,7 +464,9 @@ def _open_cfgrib_dataset(grib_path: object, var_spec: VarSpec | None) -> xr.Data
                         engine="cfgrib",
                         backend_kwargs={"filter_by_keys": {"stepType": step_type}, "indexpath": ""},
                     )
-                except Exception:
+                except Exception as inner_exc:
+                    if is_upstream_not_ready_error(inner_exc):
+                        raise UpstreamNotReadyError(str(inner_exc)) from inner_exc
                     continue
         raise
 
@@ -1381,6 +1410,29 @@ def _log_upstream_not_ready(args: argparse.Namespace, reason: str) -> None:
     )
 
 
+def _handle_upstream_not_ready(
+    args: argparse.Namespace,
+    reason: BaseException | str,
+    paths: Iterable[Path | None],
+) -> None:
+    _log_upstream_not_ready(args, str(reason))
+    _cleanup_upstream_grib_paths(paths)
+
+
+def _collect_fetch_paths(fetch_result: object | None) -> list[Path | None]:
+    if fetch_result is None:
+        return []
+    paths: list[Path | None] = []
+    grib_path = getattr(fetch_result, "grib_path", None)
+    if grib_path is not None:
+        paths.append(grib_path)
+    component_paths = getattr(fetch_result, "component_paths", None)
+    if isinstance(component_paths, dict):
+        for path in component_paths.values():
+            paths.append(path)
+    return paths
+
+
 def main() -> int:
     args = parse_args()
     normalized_run = _normalize_run_arg(args.run)
@@ -1463,7 +1515,7 @@ def main() -> int:
         _, var_spec = get_plugin_and_var(args.model, normalized_var)
     except Exception:
         logger.exception("Failed to resolve plugin var spec")
-        return 2
+        return 1
 
     derive_kind = str(var_spec.derive or "") if var_spec.derived else ""
 
@@ -1478,7 +1530,7 @@ def main() -> int:
                 cache_dir=cache_dir,
             )
             if fetch_result.not_ready_reason:
-                _log_upstream_not_ready(args, fetch_result.not_ready_reason)
+                _handle_upstream_not_ready(args, fetch_result.not_ready_reason, _collect_fetch_paths(fetch_result))
                 return 2
             if fetch_result.component_paths:
                 u_path, v_path = _resolve_uv_paths(fetch_result.component_paths)
@@ -1488,11 +1540,11 @@ def main() -> int:
             else:
                 raise RuntimeError("Missing GRIB source for wspd10m")
         except Exception as exc:
-            if is_upstream_not_ready(exc):
+            if is_upstream_not_ready_error(exc):
                 _log_upstream_not_ready(args, str(exc))
                 return 2
             logger.exception("Failed to fetch HRRR GRIB for wspd10m")
-            return 2
+            return 1
 
         if u_path is not None and v_path is not None:
             print(f"GRIB path (u10): {u_path}")
@@ -1510,7 +1562,7 @@ def main() -> int:
                 cache_dir=cache_dir,
             )
             if fetch_result.not_ready_reason:
-                _log_upstream_not_ready(args, fetch_result.not_ready_reason)
+                _handle_upstream_not_ready(args, fetch_result.not_ready_reason, _collect_fetch_paths(fetch_result))
                 return 2
             refl_component, rain_component, snow_component, sleet_component, frzr_component = (
                 _radar_blend_component_ids(var_spec)
@@ -1530,11 +1582,11 @@ def main() -> int:
             else:
                 raise RuntimeError("Missing GRIB source for radar_ptype_combo")
         except Exception as exc:
-            if is_upstream_not_ready(exc):
+            if is_upstream_not_ready_error(exc):
                 _log_upstream_not_ready(args, str(exc))
                 return 2
             logger.exception("Failed to fetch GRIB components for radar_ptype_combo")
-            return 2
+            return 1
         if all(path is not None for path in (refl_path, rain_path, snow_path, sleet_path, frzr_path)):
             print(f"GRIB path (reflectivity): {refl_path}")
             print(f"GRIB path (rain mask): {rain_path}")
@@ -1554,17 +1606,17 @@ def main() -> int:
                 cache_dir=cache_dir,
             )
             if fetch_result.not_ready_reason:
-                _log_upstream_not_ready(args, fetch_result.not_ready_reason)
+                _handle_upstream_not_ready(args, fetch_result.not_ready_reason, _collect_fetch_paths(fetch_result))
                 return 2
             grib_path = fetch_result.grib_path
             if grib_path is None:
                 raise RuntimeError("Missing GRIB path from fetch_engine")
         except Exception as exc:
-            if is_upstream_not_ready(exc):
+            if is_upstream_not_ready_error(exc):
                 _log_upstream_not_ready(args, str(exc))
                 return 2
             logger.exception("Failed to fetch HRRR GRIB")
-            return 2
+            return 1
 
         print(f"GRIB path: {grib_path}")
 
@@ -1670,6 +1722,8 @@ def main() -> int:
                     f"min={float(np.nanmin(da.values)):.2f} max={float(np.nanmax(da.values)):.2f}"
                 )
             except Exception as exc:
+                if isinstance(exc, UpstreamNotReadyError):
+                    raise
                 if args.debug and u_da is not None:
                     print(summarize_da("u_da", u_da))
                 if args.debug and v_da is not None:
@@ -1913,6 +1967,8 @@ def main() -> int:
                     ),
                 )
             except Exception as exc:
+                if isinstance(exc, UpstreamNotReadyError):
+                    raise
                 logger.exception("radar_ptype_combo derivation failed")
                 raise RuntimeError(
                     f"Failed to derive radar_ptype_combo: {type(exc).__name__}: {exc}"
@@ -1922,10 +1978,10 @@ def main() -> int:
                 open_dataset = _open_cfgrib_dataset_strict if args.model == "gfs" else _open_cfgrib_dataset
                 ds = open_dataset(grib_path, var_spec)
             except Exception as exc:
-                message = str(exc)
-                if is_upstream_not_ready_message(message):
-                    _log_upstream_not_ready(args, message)
+                if is_upstream_not_ready_error(exc):
+                    _handle_upstream_not_ready(args, exc, [grib_path])
                     return 2
+                message = str(exc)
                 if "multiple values for unique key" in message:
                     logger.exception(
                         "cfgrib index collision. Ensure subsetting worked for the requested variable."
@@ -1945,9 +2001,38 @@ def main() -> int:
                     normalized_var,
                 )
                 return 4
+    except UpstreamNotReadyError as exc:
+        _handle_upstream_not_ready(
+            args,
+            exc,
+            [
+                grib_path,
+                u_path,
+                v_path,
+                refl_path,
+                rain_path,
+                snow_path,
+                sleet_path,
+                frzr_path,
+            ],
+        )
+        return 2
     except RuntimeError as exc:
-        if is_upstream_not_ready(exc):
-            _log_upstream_not_ready(args, str(exc))
+        if is_upstream_not_ready_error(exc):
+            _handle_upstream_not_ready(
+                args,
+                exc,
+                [
+                    grib_path,
+                    u_path,
+                    v_path,
+                    refl_path,
+                    rain_path,
+                    snow_path,
+                    sleet_path,
+                    frzr_path,
+                ],
+            )
             return 2
         logger.exception("Runtime error during data selection")
         return 4
