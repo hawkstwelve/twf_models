@@ -381,8 +381,11 @@ export function MapCanvas({
         runCrossfade(map, previousActive, inactiveBuffer, opacity);
       } else {
         cancelCrossfade();
-        setLayerOpacity(map, layerId(previousActive), 0);
+        // Make swap atomic: set new layer visible first, then hide old on next frame
         setLayerOpacity(map, layerId(inactiveBuffer), opacity);
+        window.requestAnimationFrame(() => {
+          setLayerOpacity(map, layerId(previousActive), 0);
+        });
       }
 
       onTileReady?.(tileUrl);
@@ -395,8 +398,12 @@ export function MapCanvas({
       mode,
       finishSwap,
       () => {
+        // On timeout in scrub mode, do NOT swap to incomplete buffer.
+        // Keep the old buffer visible until the new one is ready.
         if (mode === "scrub") {
-          finishSwap();
+          // Optionally notify that frame settled even if swap didn't occur
+          onTileReady?.(tileUrl);
+          onFrameSettled?.(tileUrl);
         }
       }
     );

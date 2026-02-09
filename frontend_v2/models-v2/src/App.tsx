@@ -392,6 +392,12 @@ export default function App() {
 
       autoplayHoldMsRef.current = 0;
 
+      // For radar/ptype, do NOT skip ahead; hold on current frame until next is ready
+      if (variable === "radar_ptype") {
+        // Do not advance; stay on current frame and retry next tick
+        return;
+      }
+
       const searchDepth = Math.min(frameHours.length - 1, 6);
       for (let step = 2; step <= searchDepth; step += 1) {
         const candidateHour = frameHours[(currentIndex + step) % frameHours.length];
