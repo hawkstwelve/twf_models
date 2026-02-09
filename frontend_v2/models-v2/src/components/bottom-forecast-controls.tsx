@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Clock, Pause, Play } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -59,7 +59,10 @@ export function BottomForecastControls({
   runDateTimeISO,
   disabled,
 }: BottomForecastControlsProps) {
+  const DRAG_UPDATE_MS = 90;
   const [previewHour, setPreviewHour] = useState<number | null>(null);
+  const lastDragEmitAtRef = useRef(0);
+  const lastSentHourRef = useRef<number | null>(null);
 
   const validTime = useMemo(
     () => formatValidTime(runDateTimeISO, previewHour ?? forecastHour),
@@ -73,6 +76,23 @@ export function BottomForecastControls({
   useEffect(() => {
     setPreviewHour(null);
   }, [forecastHour]);
+
+  useEffect(() => {
+    lastSentHourRef.current = forecastHour;
+  }, [forecastHour]);
+
+  const emitForecastHour = (next: number, force: boolean) => {
+    const now = Date.now();
+    const shouldEmit =
+      force ||
+      (lastSentHourRef.current !== next && now - lastDragEmitAtRef.current >= DRAG_UPDATE_MS);
+    if (!shouldEmit) {
+      return;
+    }
+    lastDragEmitAtRef.current = now;
+    lastSentHourRef.current = next;
+    onForecastHourChange(next);
+  };
 
   return (
     <TooltipProvider delayDuration={300}>
@@ -118,13 +138,14 @@ export function BottomForecastControls({
                 const next = availableFrames[Math.round(value ?? 0)];
                 if (Number.isFinite(next)) {
                   setPreviewHour(next);
+                  emitForecastHour(next, false);
                 }
               }}
               onValueCommit={([value]) => {
                 const next = availableFrames[Math.round(value ?? 0)];
                 if (Number.isFinite(next)) {
                   setPreviewHour(null);
-                  onForecastHourChange(next);
+                  emitForecastHour(next, true);
                 }
               }}
               min={0}

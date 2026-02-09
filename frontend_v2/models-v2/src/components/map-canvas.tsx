@@ -25,7 +25,11 @@ const REGION_VIEWS: Record<string, { center: [number, number]; zoom: number }> =
   pnw: { center: [-120.8, 45.6], zoom: 6 },
 };
 
-function styleFor(overlayUrl: string, opacity: number): StyleSpecification {
+function styleFor(
+  overlayUrl: string,
+  opacity: number,
+  resampling: "nearest" | "linear"
+): StyleSpecification {
   return {
     version: 8,
     sources: {
@@ -39,6 +43,8 @@ function styleFor(overlayUrl: string, opacity: number): StyleSpecification {
         type: "raster",
         tiles: [overlayUrl],
         tileSize: 256,
+        minzoom: 3,
+        maxzoom: 11,
       },
       "twf-labels": {
         type: "raster",
@@ -58,7 +64,8 @@ function styleFor(overlayUrl: string, opacity: number): StyleSpecification {
         source: "twf-overlay",
         paint: {
           "raster-opacity": opacity,
-          "raster-resampling": "nearest",
+          "raster-resampling": resampling,
+          "raster-fade-duration": 0,
         },
       },
       {
@@ -74,9 +81,10 @@ type MapCanvasProps = {
   tileUrl: string;
   region: string;
   opacity: number;
+  resampling: "nearest" | "linear";
 };
 
-export function MapCanvas({ tileUrl, region, opacity }: MapCanvasProps) {
+export function MapCanvas({ tileUrl, region, opacity, resampling }: MapCanvasProps) {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
@@ -95,7 +103,7 @@ export function MapCanvas({ tileUrl, region, opacity }: MapCanvasProps) {
 
     const map = new maplibregl.Map({
       container: mapContainerRef.current,
-      style: styleFor(tileUrl, opacity),
+      style: styleFor(tileUrl, opacity, resampling),
       center: view.center,
       zoom: view.zoom,
       minZoom: 3,
@@ -136,6 +144,14 @@ export function MapCanvas({ tileUrl, region, opacity }: MapCanvasProps) {
     }
     map.setPaintProperty("twf-overlay", "raster-opacity", opacity);
   }, [opacity, isLoaded]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isLoaded || !map.getLayer("twf-overlay")) {
+      return;
+    }
+    map.setPaintProperty("twf-overlay", "raster-resampling", resampling);
+  }, [resampling, isLoaded]);
 
   useEffect(() => {
     const map = mapRef.current;

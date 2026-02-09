@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AlertCircle } from "lucide-react";
 
 import { BottomForecastControls } from "@/components/bottom-forecast-controls";
@@ -118,7 +118,6 @@ export default function App() {
   const [opacity, setOpacity] = useState(DEFAULTS.overlayOpacity);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const transitionTimerRef = useRef<number | null>(null);
 
   const frameHours = useMemo(() => frameRows.map((row) => Number(row.fh)).filter(Number.isFinite), [frameRows]);
 
@@ -127,6 +126,7 @@ export default function App() {
   }, [frameRows]);
 
   const currentFrame = frameByHour.get(forecastHour) ?? frameRows[0] ?? null;
+  const overlayResampling = variable === "radar_ptype" ? "nearest" : "linear";
 
   const runOptions = useMemo<Option[]>(() => {
     return [
@@ -323,33 +323,8 @@ export default function App() {
     if (nextTarget === forecastHour) {
       return;
     }
-
-    if (transitionTimerRef.current !== null) {
-      window.clearTimeout(transitionTimerRef.current);
-      transitionTimerRef.current = null;
-    }
-
-    transitionTimerRef.current = window.setTimeout(() => {
-      setForecastHour(nextTarget);
-      transitionTimerRef.current = null;
-    }, 120);
-
-    return () => {
-      if (transitionTimerRef.current !== null) {
-        window.clearTimeout(transitionTimerRef.current);
-        transitionTimerRef.current = null;
-      }
-    };
+    setForecastHour(nextTarget);
   }, [targetForecastHour, forecastHour, frameHours]);
-
-  useEffect(() => {
-    return () => {
-      if (transitionTimerRef.current !== null) {
-        window.clearTimeout(transitionTimerRef.current);
-        transitionTimerRef.current = null;
-      }
-    };
-  }, []);
 
   return (
     <div className="flex h-full flex-col">
@@ -374,6 +349,7 @@ export default function App() {
           tileUrl={tileUrl}
           region={region}
           opacity={opacity}
+          resampling={overlayResampling}
         />
 
         {error && (
