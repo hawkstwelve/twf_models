@@ -297,10 +297,11 @@ export default function App() {
     async function loadRunsAndVars() {
       setError(null);
       try {
-        const [runData, varData] = await Promise.all([
-          fetchRuns(model, region),
-          fetchVars(model, region, resolvedRunForRequests),
-        ]);
+        const runData = await fetchRuns(model, region);
+        if (cancelled) return;
+
+        const nextRun = run !== "latest" && runData.includes(run) ? run : "latest";
+        const varData = await fetchVars(model, region, nextRun);
         if (cancelled) return;
 
         setRuns(runData);
@@ -309,11 +310,7 @@ export default function App() {
         const variableOptions = filteredVars.map((id) => ({ value: id, label: makeVariableLabel(id) }));
         setVariables(variableOptions);
 
-        setRun((prev) => {
-          if (prev === "latest") return "latest";
-          if (runData.includes(prev)) return prev;
-          return "latest";
-        });
+        setRun(nextRun);
 
         const variableIds = variableOptions.map((opt) => opt.value);
         const nextVar = pickPreferred(variableIds, DEFAULTS.variable);
@@ -328,7 +325,13 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [model, region, run, resolvedRunForRequests]);
+  }, [model, region, run]);
+
+  useEffect(() => {
+    setFrameRows([]);
+    setForecastHour(0);
+    setTargetForecastHour(0);
+  }, [model, region]);
 
   useEffect(() => {
     if (!model || !region || !variable) return;
