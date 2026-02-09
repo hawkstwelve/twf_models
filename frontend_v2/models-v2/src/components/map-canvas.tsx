@@ -27,6 +27,7 @@ const REGION_VIEWS: Record<string, { center: [number, number]; zoom: number }> =
 
 const SCRUB_SWAP_TIMEOUT_MS = 650;
 const AUTOPLAY_SWAP_TIMEOUT_MS = 1500;
+const SETTLE_TIMEOUT_MS = 1200;
 const CONTINUOUS_CROSSFADE_MS = 120;
 const PREFETCH_BUFFER_COUNT = 4;
 
@@ -225,22 +226,53 @@ export function MapCanvas({
   }, []);
 
   const notifySettled = useCallback(
-    (map: maplibregl.Map, url: string) => {
-      // Wait for an idle cycle so we don't advance playback while tiles are still being drawn.
+    (map: maplibregl.Map, source: string, url: string) => {
+      let done = false;
+      let timeoutId: number | null = null;
+
+      const cleanup = () => {
+        map.off("sourcedata", onSourceData);
+        if (timeoutId !== null) {
+          window.clearTimeout(timeoutId);
+          timeoutId = null;
+        }
+      };
+
       const fire = () => {
+        if (done) return;
+        done = true;
+        cleanup();
         onTileReady?.(url);
         onFrameSettled?.(url);
       };
 
-      // If the map is already idle and tiles are loaded, notify immediately.
-      const tilesLoaded = typeof map.areTilesLoaded === "function" ? map.areTilesLoaded() : true;
-      if (tilesLoaded) {
-        // Ensure at least one render pass after any paint changes.
+      const onSourceData = (event: maplibregl.MapSourceDataEvent) => {
+        if (event.sourceId !== source) {
+          return;
+        }
+        if (map.isSourceLoaded(source)) {
+          window.requestAnimationFrame(() => fire());
+        }
+      };
+
+      if (map.isSourceLoaded(source)) {
         window.requestAnimationFrame(() => fire());
-        return;
+        return () => {
+          done = true;
+          cleanup();
+        };
       }
 
-      map.once("idle", () => fire());
+      map.on("sourcedata", onSourceData);
+      timeoutId = window.setTimeout(() => {
+        console.warn("[map] settle fallback timeout", { sourceId: source, tileUrl: url });
+        fire();
+      }, SETTLE_TIMEOUT_MS);
+
+      return () => {
+        done = true;
+        cleanup();
+      };
     },
     [onTileReady, onFrameSettled]
   );
@@ -303,7 +335,6 @@ export function MapCanvas({
 
       const cleanup = () => {
         map.off("sourcedata", onSourceData);
-        map.off("idle", onIdle);
         if (timeoutId !== null) {
           window.clearTimeout(timeoutId);
           timeoutId = null;
@@ -325,35 +356,31 @@ export function MapCanvas({
       };
 
       const readyForMode = () => {
-        const tilesLoaded = typeof map.areTilesLoaded === "function" ? map.areTilesLoaded() : true;
-        return map.isSourceLoaded(source) && tilesLoaded;
+        return map.isSourceLoaded(source);
+      };
+
+      const finishReadyAfterRender = () => {
+        if (done) return;
+        window.requestAnimationFrame(() => {
+          finishReady();
+        });
       };
 
       const onSourceData = (event: maplibregl.MapSourceDataEvent) => {
         if (event.sourceId !== source) {
           return;
         }
-        if (modeValue === "scrub" && readyForMode()) {
-          finishReady();
-        }
-      };
-
-      const onIdle = () => {
-        if (modeValue !== "autoplay") {
-          return;
-        }
         if (readyForMode()) {
-          finishReady();
+          finishReadyAfterRender();
         }
       };
 
       map.on("sourcedata", onSourceData);
-      map.on("idle", onIdle);
 
       timeoutId = window.setTimeout(() => finishTimeout(), timeoutMs);
 
-      if (modeValue === "scrub" && readyForMode()) {
-        finishReady();
+      if (readyForMode()) {
+        finishReadyAfterRender();
       }
 
       return () => {
@@ -399,11 +426,29 @@ export function MapCanvas({
     if (!map || !isLoaded) {
       return;
     }
+    let settledCleanup: (() => void) | undefined;
 
     if (tileUrl === activeTileUrlRef.current) {
-      return waitForSourceReady(map, sourceId(activeBufferRef.current), mode, () => {
-        notifySettled(map, tileUrl);
-      });
+      const source = sourceId(activeBufferRef.current);
+      const readyCleanup = waitForSourceReady(
+        map,
+        source,
+        mode,
+        () => {
+          settledCleanup = notifySettled(map, source, tileUrl);
+        },
+        () => {
+          if (mode === "autoplay") {
+            console.warn("[map] ready fallback timeout", { sourceId: source, tileUrl });
+            onTileReady?.(tileUrl);
+            onFrameSettled?.(tileUrl);
+          }
+        }
+      );
+      return () => {
+        readyCleanup?.();
+        settledCleanup?.();
+      };
     }
 
     const inactiveBuffer = otherBuffer(activeBufferRef.current);
@@ -416,8 +461,9 @@ export function MapCanvas({
 
     inactiveSource.setTiles([tileUrl]);
     const token = ++swapTokenRef.current;
+    console.debug("[map] swap start", { sourceId: sourceId(inactiveBuffer), tileUrl, mode, token });
 
-    const finishSwap = () => {
+    const finishSwap = (skipSettleNotify = false) => {
       if (token !== swapTokenRef.current) {
         return;
       }
@@ -437,11 +483,28 @@ export function MapCanvas({
           setLayerOpacity(map, layerId(previousActive), HIDDEN_OPACITY);
         });
       }
-
-      notifySettled(map, tileUrl);
+      console.debug("[map] swap end", { sourceId: sourceId(inactiveBuffer), tileUrl, mode, token });
+      if (!skipSettleNotify) {
+        settledCleanup = notifySettled(map, sourceId(inactiveBuffer), tileUrl);
+      }
     };
 
-    return waitForSourceReady(map, sourceId(inactiveBuffer), mode, finishSwap);
+    const readyCleanup = waitForSourceReady(map, sourceId(inactiveBuffer), mode, finishSwap, () => {
+      if (token !== swapTokenRef.current) {
+        return;
+      }
+      if (mode === "autoplay") {
+        console.warn("[map] swap fallback timeout", { sourceId: sourceId(inactiveBuffer), tileUrl, token });
+        onTileReady?.(tileUrl);
+        onFrameSettled?.(tileUrl);
+        finishSwap(true);
+      }
+    });
+
+    return () => {
+      readyCleanup?.();
+      settledCleanup?.();
+    };
   }, [
     tileUrl,
     isLoaded,
@@ -453,6 +516,8 @@ export function MapCanvas({
     cancelCrossfade,
     setLayerOpacity,
     notifySettled,
+    onTileReady,
+    onFrameSettled,
   ]);
 
   useEffect(() => {
