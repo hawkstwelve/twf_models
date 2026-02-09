@@ -126,7 +126,6 @@ export default function App() {
   }, [frameRows]);
 
   const currentFrame = frameByHour.get(forecastHour) ?? frameRows[0] ?? null;
-  const overlayResampling = variable === "radar_ptype" ? "nearest" : "linear";
 
   const runOptions = useMemo<Option[]>(() => {
     return [
@@ -349,7 +348,6 @@ export default function App() {
           tileUrl={tileUrl}
           region={region}
           opacity={opacity}
-          resampling={overlayResampling}
         />
 
         {error && (
