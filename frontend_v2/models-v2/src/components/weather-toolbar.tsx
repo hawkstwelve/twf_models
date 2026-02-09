@@ -48,8 +48,8 @@ function ToolbarSelect(props: {
         {label}
       </span>
       <Select value={value} onValueChange={onValueChange} disabled={disabled || options.length === 0}>
-        <SelectTrigger className="h-8 w-[140px] border-border/50 bg-secondary/40 text-xs font-medium text-foreground shadow-sm transition-all duration-150 hover:border-border hover:bg-secondary/60 focus:border-primary/50 focus:ring-1 focus:ring-primary/30">
-          <span className="truncate">{selectedLabel}</span>
+        <SelectTrigger className="h-8 w-fit min-w-[160px] border-border/50 bg-secondary/40 text-xs font-medium text-foreground shadow-sm transition-all duration-150 hover:border-border hover:bg-secondary/60 focus:border-primary/50 focus:ring-1 focus:ring-primary/30 [&>span]:line-clamp-none">
+          <span className="whitespace-nowrap pr-1">{selectedLabel}</span>
         </SelectTrigger>
         <SelectContent>
           {options.map((opt) => (
