@@ -548,14 +548,38 @@ export function MapCanvas({
       prefetchUrlsRef.current[idx] = url;
       source.setTiles([url]);
 
-      const cleanup = waitForSourceReady(map, prefetchSourceId(idx + 1), "scrub", () => {
-        if (token !== prefetchTokenRef.current) {
-          return;
+      const cleanup = waitForSourceReady(
+        map,
+        prefetchSourceId(idx + 1),
+        "scrub",
+        () => {
+          if (token !== prefetchTokenRef.current) {
+            return;
+          }
+          if (prefetchUrlsRef.current[idx] !== url) {
+            return;
+          }
+          // Important: App.tsx autoplay waits on URLs being marked ready.
+          // Prefetch sources should contribute to that readiness cache.
+          onTileReady?.(url);
+        },
+        () => {
+          if (token !== prefetchTokenRef.current) {
+            return;
+          }
+          if (prefetchUrlsRef.current[idx] !== url) {
+            return;
+          }
+          // Best-effort: don't let autoplay deadlock if MapLibre never reports
+          // the prefetch source as fully loaded within the timeout window.
+          console.warn("[map] prefetch ready fallback timeout", {
+            sourceId: prefetchSourceId(idx + 1),
+            tileUrl: url,
+            token,
+          });
+          onTileReady?.(url);
         }
-        if (prefetchUrlsRef.current[idx] !== url) {
-          return;
-        }
-      });
+      );
 
       if (cleanup) {
         cleanups.push(cleanup);
