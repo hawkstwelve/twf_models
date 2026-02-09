@@ -25,7 +25,8 @@ except Exception:  # pragma: no cover - dependency availability is environment-s
 try:
     from rio_tiler.errors import TileOutsideBounds  # type: ignore
 except Exception:  # pragma: no cover - dependency availability is environment-specific
-    TileOutsideBounds = None
+    class TileOutsideBounds(Exception):  # type: ignore[no-redef]
+        pass
 
 
 logger = logging.getLogger(__name__)
@@ -195,6 +196,21 @@ def _tile_response(
 
     try:
         tile_bytes = _render_tile_png(cog_path, var_key=var, z=z, x=x, y=y)
+    except TileOutsideBounds:
+        # Clipped regional COGs legitimately have no pixels for some world tiles.
+        logger.info(
+            "Tile outside bounds: model=%s region=%s run=%s var=%s fh=%s z=%s x=%s y=%s path=%s",
+            model,
+            region,
+            resolved_run,
+            var,
+            fh,
+            z,
+            x,
+            y,
+            cog_path,
+        )
+        return _unavailable_tile_response()
     except RuntimeError as exc:
         # Missing rio-tiler dependency should be explicit for ops triage.
         if "rio-tiler is not installed" in str(exc):
@@ -258,6 +274,14 @@ def _tile_response(
     return Response(content=tile_bytes, media_type="image/png", headers=headers)
 
 
+def _head_response_from_get(response: Response) -> Response:
+    return Response(
+        status_code=response.status_code,
+        headers=dict(response.headers),
+        media_type=response.media_type,
+    )
+
+
 @router.get("/tiles/{model}/{region}/{run}/{var}/{fh}/{z}/{x}/{y}.png")
 def tile_canonical(
     model: str,
@@ -269,7 +293,32 @@ def tile_canonical(
     x: int,
     y: int,
 ) -> Response:
-    return _tile_response(model=model, region=region, run=run, var=var, fh=fh, z=z, x=x, y=y)
+    return _tile_response(
+        model=model,
+        region=region,
+        run=run,
+        var=var,
+        fh=fh,
+        z=z,
+        x=x,
+        y=y,
+    )
+
+
+@router.head("/tiles/{model}/{region}/{run}/{var}/{fh}/{z}/{x}/{y}.png")
+def tile_canonical_head(
+    model: str,
+    region: str,
+    run: str,
+    var: str,
+    fh: int,
+    z: int,
+    x: int,
+    y: int,
+) -> Response:
+    return _head_response_from_get(
+        _tile_response(model=model, region=region, run=run, var=var, fh=fh, z=z, x=x, y=y)
+    )
 
 
 @router.get("/tiles/v2/{model}/{region}/{run}/{var}/{fh}/{z}/{x}/{y}.png")
@@ -284,7 +333,32 @@ def tile_legacy_v2_compat(
     y: int,
 ) -> Response:
     # Compatibility alias while nginx/frontends migrate from legacy V2 tile namespace.
-    return _tile_response(model=model, region=region, run=run, var=var, fh=fh, z=z, x=x, y=y)
+    return _tile_response(
+        model=model,
+        region=region,
+        run=run,
+        var=var,
+        fh=fh,
+        z=z,
+        x=x,
+        y=y,
+    )
+
+
+@router.head("/tiles/v2/{model}/{region}/{run}/{var}/{fh}/{z}/{x}/{y}.png")
+def tile_legacy_v2_compat_head(
+    model: str,
+    region: str,
+    run: str,
+    var: str,
+    fh: int,
+    z: int,
+    x: int,
+    y: int,
+) -> Response:
+    return _head_response_from_get(
+        _tile_response(model=model, region=region, run=run, var=var, fh=fh, z=z, x=x, y=y)
+    )
 
 
 @router.get("/tiles-titiler/{model}/{region}/{run}/{var}/{fh}/{z}/{x}/{y}.png")
@@ -299,7 +373,32 @@ def tile_parallel_path(
     y: int,
 ) -> Response:
     # Temporary shadow-validation route namespace.
-    return _tile_response(model=model, region=region, run=run, var=var, fh=fh, z=z, x=x, y=y)
+    return _tile_response(
+        model=model,
+        region=region,
+        run=run,
+        var=var,
+        fh=fh,
+        z=z,
+        x=x,
+        y=y,
+    )
+
+
+@router.head("/tiles-titiler/{model}/{region}/{run}/{var}/{fh}/{z}/{x}/{y}.png")
+def tile_parallel_path_head(
+    model: str,
+    region: str,
+    run: str,
+    var: str,
+    fh: int,
+    z: int,
+    x: int,
+    y: int,
+) -> Response:
+    return _head_response_from_get(
+        _tile_response(model=model, region=region, run=run, var=var, fh=fh, z=z, x=x, y=y)
+    )
 
 
 @app.get("/health", tags=["health"])
