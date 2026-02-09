@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import shutil
 import time
@@ -327,6 +328,11 @@ def _cache_dir_for_run(base_dir: Path, run_dt: datetime) -> Path:
     return base_dir / run_dt.strftime("%Y%m%d") / run_dt.strftime("%H")
 
 
+def floor_to_gfs_cycle(dt: datetime) -> datetime:
+    cycle_hour = (dt.hour // 6) * 6
+    return dt.replace(hour=cycle_hour, minute=0, second=0, microsecond=0)
+
+
 def _is_idx_missing_message(message: str) -> bool:
     text = message.lower()
     patterns = [
@@ -505,14 +511,24 @@ def _fetch_gfs_grib_internal(
     )
 
     if run_dt is None:
-        now = datetime.utcnow().replace(minute=0, second=0, microsecond=0)
+        now = datetime.utcnow()
+        cycle_anchor = floor_to_gfs_cycle(now)
         herbie = None
         start_ts = time.time()
+        probe_cycles = max(1, math.ceil(max(1, lookback_hours) / 6))
         with _requests_guard(timeout_seconds, blocked_hosts):
-            for i in range(0, max(1, lookback_hours)):
+            for i in range(0, probe_cycles):
                 if time.time() - start_ts > max_probe_seconds:
                     raise UpstreamNotReady("Could not resolve latest GFS cycle (probe timeout)")
-                candidate = now - timedelta(hours=i)
+                candidate = cycle_anchor - timedelta(hours=6 * i)
+                logger.info(
+                    "GFS latest probe attempt: cycle=%s fh=%02d model=%s product=%s priority=%s",
+                    candidate.strftime("%Y%m%d_%Hz"),
+                    fh,
+                    model,
+                    product,
+                    ",".join(priority) if priority else "default",
+                )
                 try:
                     H = Herbie(candidate, model=model, product=product, fxx=fh, priority=priority_arg)
                 except (requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout) as exc:

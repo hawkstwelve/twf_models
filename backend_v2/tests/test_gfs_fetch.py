@@ -130,3 +130,50 @@ def test_parse_herbie_priority_defaults_when_missing() -> None:
 
 def test_parse_herbie_priority_single_source() -> None:
     assert parse_herbie_priority("aws") == ["aws"]
+
+
+def test_latest_probe_uses_six_hour_cycles(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    seen_dates: list[datetime] = []
+
+    class _FixedDateTime(datetime):
+        @classmethod
+        def utcnow(cls) -> datetime:
+            return cls(2026, 2, 9, 23, 12, 0)
+
+    class _ProbeHerbie(_DummyHerbie):
+        def __init__(self, date: datetime, **kwargs: object) -> None:
+            super().__init__(date, **kwargs)
+            seen_dates.append(date)
+            self.grib = "dummy.grib2" if date.hour == 18 else None
+
+        def download(self, _search: str, save_dir: Path):
+            run_dt = self.date
+            target_dir = save_dir / run_dt.strftime("%Y%m%d") / run_dt.strftime("%H")
+            target_dir.mkdir(parents=True, exist_ok=True)
+            source = target_dir / "random_download_name.grib2"
+            source.write_bytes(b"GRIB")
+            return source
+
+    monkeypatch.setattr(gfs_fetch, "datetime", _FixedDateTime)
+    monkeypatch.setattr(gfs_fetch, "Herbie", _ProbeHerbie)
+    monkeypatch.setattr(
+        gfs_fetch,
+        "_subset_contains_required_variables",
+        lambda *args, **kwargs: (True, ["tmp2m"], []),
+    )
+
+    result = gfs_fetch.fetch_gfs_grib(
+        run="latest",
+        fh=0,
+        model="gfs",
+        product="pgrb2.0p25",
+        variable="t2m",
+        search_override=":TMP:2 m above ground:",
+        cache_dir=tmp_path,
+        lookback_hours=12,
+    )
+
+    assert result.path is not None
+    assert seen_dates
+    assert seen_dates[0].hour == 18
+    assert all(dt.hour in {0, 6, 12, 18} for dt in seen_dates)
