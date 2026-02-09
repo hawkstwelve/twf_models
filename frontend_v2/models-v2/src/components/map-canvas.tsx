@@ -30,6 +30,10 @@ const AUTOPLAY_SWAP_TIMEOUT_MS = 1500;
 const CONTINUOUS_CROSSFADE_MS = 120;
 const PREFETCH_BUFFER_COUNT = 4;
 
+// Keep hidden raster layers at a tiny opacity so MapLibre still requests/renders their tiles.
+// This helps avoid a one-frame "basemap flash" when swapping buffers.
+const HIDDEN_OPACITY = 0.001;
+
 type OverlayBuffer = "a" | "b";
 type PlaybackMode = "autoplay" | "scrub";
 
@@ -120,7 +124,7 @@ function styleFor(overlayUrl: string, opacity: number): StyleSpecification {
         type: "raster",
         source: sourceId("b"),
         paint: {
-          "raster-opacity": 0,
+          "raster-opacity": HIDDEN_OPACITY,
           "raster-resampling": "nearest",
           "raster-fade-duration": 0,
         },
@@ -130,7 +134,7 @@ function styleFor(overlayUrl: string, opacity: number): StyleSpecification {
         type: "raster",
         source: prefetchSourceId(1),
         paint: {
-          "raster-opacity": 0,
+          "raster-opacity": HIDDEN_OPACITY,
           "raster-resampling": "nearest",
           "raster-fade-duration": 0,
         },
@@ -140,7 +144,7 @@ function styleFor(overlayUrl: string, opacity: number): StyleSpecification {
         type: "raster",
         source: prefetchSourceId(2),
         paint: {
-          "raster-opacity": 0,
+          "raster-opacity": HIDDEN_OPACITY,
           "raster-resampling": "nearest",
           "raster-fade-duration": 0,
         },
@@ -150,7 +154,7 @@ function styleFor(overlayUrl: string, opacity: number): StyleSpecification {
         type: "raster",
         source: prefetchSourceId(3),
         paint: {
-          "raster-opacity": 0,
+          "raster-opacity": HIDDEN_OPACITY,
           "raster-resampling": "nearest",
           "raster-fade-duration": 0,
         },
@@ -160,7 +164,7 @@ function styleFor(overlayUrl: string, opacity: number): StyleSpecification {
         type: "raster",
         source: prefetchSourceId(4),
         paint: {
-          "raster-opacity": 0,
+          "raster-opacity": HIDDEN_OPACITY,
           "raster-resampling": "nearest",
           "raster-fade-duration": 0,
         },
@@ -220,6 +224,27 @@ export function MapCanvas({
     map.setPaintProperty(id, "raster-opacity", value);
   }, []);
 
+  const notifySettled = useCallback(
+    (map: maplibregl.Map, url: string) => {
+      // Wait for an idle cycle so we don't advance playback while tiles are still being drawn.
+      const fire = () => {
+        onTileReady?.(url);
+        onFrameSettled?.(url);
+      };
+
+      // If the map is already idle and tiles are loaded, notify immediately.
+      const tilesLoaded = typeof map.areTilesLoaded === "function" ? map.areTilesLoaded() : true;
+      if (tilesLoaded) {
+        // Ensure at least one render pass after any paint changes.
+        window.requestAnimationFrame(() => fire());
+        return;
+      }
+
+      map.once("idle", () => fire());
+    },
+    [onTileReady, onFrameSettled]
+  );
+
   const cancelCrossfade = useCallback(() => {
     fadeTokenRef.current += 1;
     if (fadeRafRef.current !== null) {
@@ -250,11 +275,15 @@ export function MapCanvas({
           return;
         }
 
+        // Leave the old buffer at a tiny opacity so its tiles remain warm.
+        setLayerOpacity(map, layerId(fromBuffer), HIDDEN_OPACITY);
+        setLayerOpacity(map, layerId(toBuffer), targetOpacity);
+
         fadeRafRef.current = null;
       };
 
       setLayerOpacity(map, layerId(fromBuffer), targetOpacity);
-      setLayerOpacity(map, layerId(toBuffer), 0);
+      setLayerOpacity(map, layerId(toBuffer), HIDDEN_OPACITY);
       fadeRafRef.current = window.requestAnimationFrame(tick);
     },
     [cancelCrossfade, setLayerOpacity]
@@ -373,8 +402,7 @@ export function MapCanvas({
 
     if (tileUrl === activeTileUrlRef.current) {
       return waitForSourceReady(map, sourceId(activeBufferRef.current), mode, () => {
-        onTileReady?.(tileUrl);
-        onFrameSettled?.(tileUrl);
+        notifySettled(map, tileUrl);
       });
     }
 
@@ -405,12 +433,12 @@ export function MapCanvas({
         // Make swap atomic: set new layer visible first, then hide old on next frame
         setLayerOpacity(map, layerId(inactiveBuffer), opacity);
         window.requestAnimationFrame(() => {
-          setLayerOpacity(map, layerId(previousActive), 0);
+          // Keep the old buffer barely-visible so its tiles stay resident and we avoid flashes on reuse.
+          setLayerOpacity(map, layerId(previousActive), HIDDEN_OPACITY);
         });
       }
 
-      onTileReady?.(tileUrl);
-      onFrameSettled?.(tileUrl);
+      notifySettled(map, tileUrl);
     };
 
     return waitForSourceReady(map, sourceId(inactiveBuffer), mode, finishSwap);
@@ -424,8 +452,7 @@ export function MapCanvas({
     runCrossfade,
     cancelCrossfade,
     setLayerOpacity,
-    onFrameSettled,
-    onTileReady,
+    notifySettled,
   ]);
 
   useEffect(() => {
@@ -489,9 +516,9 @@ export function MapCanvas({
     }
 
     setLayerOpacity(map, layerId(activeBuffer), opacity);
-    setLayerOpacity(map, layerId(inactiveBuffer), 0);
+    setLayerOpacity(map, layerId(inactiveBuffer), HIDDEN_OPACITY);
     for (let idx = 1; idx <= PREFETCH_BUFFER_COUNT; idx += 1) {
-      setLayerOpacity(map, prefetchLayerId(idx), 0);
+      setLayerOpacity(map, prefetchLayerId(idx), HIDDEN_OPACITY);
     }
   }, [opacity, isLoaded, crossfade, cancelCrossfade, setLayerOpacity]);
 
