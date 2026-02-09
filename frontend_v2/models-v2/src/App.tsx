@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle } from "lucide-react";
 
 import { BottomForecastControls } from "@/components/bottom-forecast-controls";
@@ -118,6 +118,8 @@ export default function App() {
   const [opacity, setOpacity] = useState(DEFAULTS.overlayOpacity);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [settledTileUrl, setSettledTileUrl] = useState<string | null>(null);
+  const latestTileUrlRef = useRef<string>("");
 
   const frameHours = useMemo(() => frameRows.map((row) => Number(row.fh)).filter(Number.isFinite), [frameRows]);
 
@@ -145,6 +147,7 @@ export default function App() {
       frameRow: currentFrame,
     });
   }, [model, region, run, variable, forecastHour, frameHours, currentFrame]);
+  const isCurrentFrameSettled = settledTileUrl === tileUrl;
 
   const legend = useMemo(() => {
     const meta = currentFrame?.meta?.meta ?? frameRows[0]?.meta?.meta ?? null;
@@ -153,6 +156,17 @@ export default function App() {
 
   const effectiveRunId = currentFrame?.run ?? (run !== "latest" ? run : runs[0] ?? null);
   const runDateTimeISO = runIdToIso(effectiveRunId);
+
+  useEffect(() => {
+    latestTileUrlRef.current = tileUrl;
+    setSettledTileUrl(null);
+  }, [tileUrl]);
+
+  const handleFrameSettled = useCallback((loadedTileUrl: string) => {
+    if (loadedTileUrl === latestTileUrlRef.current) {
+      setSettledTileUrl(loadedTileUrl);
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -294,18 +308,18 @@ export default function App() {
   }, [model, region, run, variable]);
 
   useEffect(() => {
-    if (!isPlaying || frameHours.length === 0) return;
+    if (!isPlaying || frameHours.length === 0 || !isCurrentFrameSettled) return;
 
-    const interval = window.setInterval(() => {
+    const timer = window.setTimeout(() => {
       setTargetForecastHour((prev) => {
         const index = frameHours.indexOf(prev);
         if (index < 0) return frameHours[0];
         return frameHours[(index + 1) % frameHours.length];
       });
-    }, 700);
+    }, 180);
 
-    return () => window.clearInterval(interval);
-  }, [isPlaying, frameHours]);
+    return () => window.clearTimeout(timer);
+  }, [isPlaying, frameHours, isCurrentFrameSettled, forecastHour]);
 
   useEffect(() => {
     if (frameHours.length === 0 && isPlaying) {
@@ -348,6 +362,7 @@ export default function App() {
           tileUrl={tileUrl}
           region={region}
           opacity={opacity}
+          onFrameSettled={handleFrameSettled}
         />
 
         {error && (
