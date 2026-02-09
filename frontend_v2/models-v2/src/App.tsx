@@ -128,7 +128,10 @@ export default function App() {
   const readyTileUrlsRef = useRef<Map<string, number>>(new Map());
   const autoplayHoldMsRef = useRef(0);
 
-  const frameHours = useMemo(() => frameRows.map((row) => Number(row.fh)).filter(Number.isFinite), [frameRows]);
+  const frameHours = useMemo(() => {
+    const hours = frameRows.map((row) => Number(row.fh)).filter(Number.isFinite);
+    return Array.from(new Set(hours)).sort((a, b) => a - b);
+  }, [frameRows]);
 
   const frameByHour = useMemo(() => {
     return new Map(frameRows.map((row) => [Number(row.fh), row]));
@@ -174,13 +177,22 @@ export default function App() {
     const start = currentIndex >= 0 ? currentIndex : 0;
     const isRadarLike = variable.includes("radar") || variable.includes("ptype");
     const prefetchCount = isPlaying && isRadarLike ? 4 : 2;
-    const nextHours = Array.from({ length: prefetchCount }, (_, idx) => frameHours[(start + idx + 1) % frameHours.length]);
+    const nextHours = Array.from({ length: prefetchCount }, (_, idx) => {
+      const i = start + idx + 1;
+      return i >= frameHours.length ? Number.NaN : frameHours[i];
+    });
     const dedup = Array.from(new Set(nextHours.filter((fh) => Number.isFinite(fh) && fh !== forecastHour)));
     return dedup.map((fh) => tileUrlForHour(fh));
   }, [frameHours, forecastHour, tileUrlForHour, variable, isPlaying]);
 
   const effectiveRunId = currentFrame?.run ?? (run !== "latest" ? run : runs[0] ?? null);
   const runDateTimeISO = runIdToIso(effectiveRunId);
+
+  useEffect(() => {
+    if (frameHours.length > 0) {
+      console.log("[frames] frameHours sorted:", frameHours);
+    }
+  }, [frameHours]);
 
   const markTileReady = useCallback((readyUrl: string) => {
     const now = Date.now();
@@ -377,12 +389,12 @@ export default function App() {
       if (currentIndex < 0) return;
 
       const isRadarLike = variable.includes("radar") || variable.includes("ptype");
-      if (isRadarLike && currentIndex === frameHours.length - 1) {
+      const nextIndex = currentIndex + 1;
+      if (nextIndex >= frameHours.length) {
         setIsPlaying(false);
         return;
       }
-
-      const nextHour = frameHours[(currentIndex + 1) % frameHours.length];
+      const nextHour = frameHours[nextIndex];
       const nextUrl = tileUrlForHour(nextHour);
       if (isTileReady(nextUrl)) {
         autoplayHoldMsRef.current = 0;
@@ -405,7 +417,11 @@ export default function App() {
 
       const searchDepth = Math.min(frameHours.length - 1, 6);
       for (let step = 2; step <= searchDepth; step += 1) {
-        const candidateHour = frameHours[(currentIndex + step) % frameHours.length];
+        const candidateIndex = currentIndex + step;
+        if (candidateIndex >= frameHours.length) {
+          break;
+        }
+        const candidateHour = frameHours[candidateIndex];
         const candidateUrl = tileUrlForHour(candidateHour);
         if (isTileReady(candidateUrl)) {
           setTargetForecastHour(candidateHour);
@@ -468,7 +484,7 @@ export default function App() {
           opacity={opacity}
           mode={isPlaying ? "autoplay" : "scrub"}
           prefetchTileUrls={prefetchTileUrls}
-          crossfade={variable !== "radar_ptype"}
+          crossfade={false}
           onFrameSettled={handleFrameSettled}
           onTileReady={handleTileReady}
         />
