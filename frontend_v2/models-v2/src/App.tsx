@@ -17,6 +17,11 @@ import {
 import { ALLOWED_VARIABLES, DEFAULTS, VARIABLE_LABELS } from "@/lib/config";
 import { buildTileUrlFromFrame } from "@/lib/tiles";
 
+const AUTOPLAY_TICK_MS = 400;
+const AUTOPLAY_MAX_HOLD_MS = 1000;
+const READY_URL_TTL_MS = 30_000;
+const READY_URL_LIMIT = 160;
+
 type Option = {
   value: string;
   label: string;
@@ -120,6 +125,8 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [settledTileUrl, setSettledTileUrl] = useState<string | null>(null);
   const latestTileUrlRef = useRef<string>("");
+  const readyTileUrlsRef = useRef<Map<string, number>>(new Map());
+  const autoplayHoldMsRef = useRef(0);
 
   const frameHours = useMemo(() => frameRows.map((row) => Number(row.fh)).filter(Number.isFinite), [frameRows]);
 
@@ -136,37 +143,93 @@ export default function App() {
     ];
   }, [runs]);
 
+  const tileUrlForHour = useCallback(
+    (fh: number): string => {
+      const fallbackFh = frameHours[0] ?? 0;
+      const resolvedFh = Number.isFinite(fh) ? fh : fallbackFh;
+      return buildTileUrlFromFrame({
+        model,
+        region,
+        run,
+        varKey: variable,
+        fh: resolvedFh,
+        frameRow: frameByHour.get(resolvedFh) ?? frameRows[0] ?? null,
+      });
+    },
+    [model, region, run, variable, frameHours, frameByHour, frameRows]
+  );
+
   const tileUrl = useMemo(() => {
-    const fallbackFh = frameHours[0] ?? 0;
-    return buildTileUrlFromFrame({
-      model,
-      region,
-      run,
-      varKey: variable,
-      fh: Number.isFinite(forecastHour) ? forecastHour : fallbackFh,
-      frameRow: currentFrame,
-    });
-  }, [model, region, run, variable, forecastHour, frameHours, currentFrame]);
-  const isCurrentFrameSettled = settledTileUrl === tileUrl;
+    return tileUrlForHour(forecastHour);
+  }, [tileUrlForHour, forecastHour]);
 
   const legend = useMemo(() => {
     const meta = currentFrame?.meta?.meta ?? frameRows[0]?.meta?.meta ?? null;
     return buildLegend(meta, opacity);
   }, [currentFrame, frameRows, opacity]);
 
+  const prefetchTileUrls = useMemo(() => {
+    if (frameHours.length < 2) return [];
+    const currentIndex = frameHours.indexOf(forecastHour);
+    const start = currentIndex >= 0 ? currentIndex : 0;
+    const nextHours = [
+      frameHours[(start + 1) % frameHours.length],
+      frameHours[(start + 2) % frameHours.length],
+    ];
+    const dedup = Array.from(new Set(nextHours.filter((fh) => Number.isFinite(fh) && fh !== forecastHour)));
+    return dedup.map((fh) => tileUrlForHour(fh));
+  }, [frameHours, forecastHour, tileUrlForHour]);
+
   const effectiveRunId = currentFrame?.run ?? (run !== "latest" ? run : runs[0] ?? null);
   const runDateTimeISO = runIdToIso(effectiveRunId);
 
+  const markTileReady = useCallback((readyUrl: string) => {
+    const now = Date.now();
+    const ready = readyTileUrlsRef.current;
+    ready.set(readyUrl, now);
+
+    for (const [url, ts] of ready) {
+      if (now - ts > READY_URL_TTL_MS) {
+        ready.delete(url);
+      }
+    }
+
+    if (ready.size > READY_URL_LIMIT) {
+      const entries = [...ready.entries()].sort((a, b) => a[1] - b[1]);
+      for (const [url] of entries.slice(0, ready.size - READY_URL_LIMIT)) {
+        ready.delete(url);
+      }
+    }
+  }, []);
+
+  const isTileReady = useCallback((url: string): boolean => {
+    const ts = readyTileUrlsRef.current.get(url);
+    if (!ts) return false;
+    if (Date.now() - ts > READY_URL_TTL_MS) {
+      readyTileUrlsRef.current.delete(url);
+      return false;
+    }
+    return true;
+  }, []);
+
   useEffect(() => {
     latestTileUrlRef.current = tileUrl;
-    setSettledTileUrl(null);
-  }, [tileUrl]);
+    setSettledTileUrl(isTileReady(tileUrl) ? tileUrl : null);
+  }, [tileUrl, isTileReady]);
 
   const handleFrameSettled = useCallback((loadedTileUrl: string) => {
+    markTileReady(loadedTileUrl);
     if (loadedTileUrl === latestTileUrlRef.current) {
       setSettledTileUrl(loadedTileUrl);
     }
-  }, []);
+  }, [markTileReady]);
+
+  const handleTileReady = useCallback((loadedTileUrl: string) => {
+    markTileReady(loadedTileUrl);
+    if (loadedTileUrl === latestTileUrlRef.current) {
+      setSettledTileUrl(loadedTileUrl);
+    }
+  }, [markTileReady]);
 
   useEffect(() => {
     let cancelled = false;
@@ -308,24 +371,54 @@ export default function App() {
   }, [model, region, run, variable]);
 
   useEffect(() => {
-    if (!isPlaying || frameHours.length === 0 || !isCurrentFrameSettled) return;
+    if (!isPlaying || frameHours.length === 0) return;
 
-    const timer = window.setTimeout(() => {
-      setTargetForecastHour((prev) => {
-        const index = frameHours.indexOf(prev);
-        if (index < 0) return frameHours[0];
-        return frameHours[(index + 1) % frameHours.length];
-      });
-    }, 180);
+    const interval = window.setInterval(() => {
+      const currentIndex = frameHours.indexOf(forecastHour);
+      if (currentIndex < 0) return;
 
-    return () => window.clearTimeout(timer);
-  }, [isPlaying, frameHours, isCurrentFrameSettled, forecastHour]);
+      const nextHour = frameHours[(currentIndex + 1) % frameHours.length];
+      const nextUrl = tileUrlForHour(nextHour);
+      if (isTileReady(nextUrl)) {
+        autoplayHoldMsRef.current = 0;
+        setTargetForecastHour(nextHour);
+        return;
+      }
+
+      autoplayHoldMsRef.current += AUTOPLAY_TICK_MS;
+      if (autoplayHoldMsRef.current < AUTOPLAY_MAX_HOLD_MS) {
+        return;
+      }
+
+      autoplayHoldMsRef.current = 0;
+
+      const searchDepth = Math.min(frameHours.length - 1, 6);
+      for (let step = 2; step <= searchDepth; step += 1) {
+        const candidateHour = frameHours[(currentIndex + step) % frameHours.length];
+        const candidateUrl = tileUrlForHour(candidateHour);
+        if (isTileReady(candidateUrl)) {
+          setTargetForecastHour(candidateHour);
+          return;
+        }
+      }
+
+      setTargetForecastHour(nextHour);
+    }, AUTOPLAY_TICK_MS);
+
+    return () => window.clearInterval(interval);
+  }, [isPlaying, frameHours, forecastHour, isTileReady, tileUrlForHour]);
 
   useEffect(() => {
     if (frameHours.length === 0 && isPlaying) {
       setIsPlaying(false);
     }
   }, [frameHours, isPlaying]);
+
+  useEffect(() => {
+    if (!isPlaying) {
+      autoplayHoldMsRef.current = 0;
+    }
+  }, [isPlaying]);
 
   useEffect(() => {
     if (frameHours.length === 0) {
@@ -362,7 +455,11 @@ export default function App() {
           tileUrl={tileUrl}
           region={region}
           opacity={opacity}
+          mode={isPlaying ? "autoplay" : "scrub"}
+          prefetchTileUrls={prefetchTileUrls}
+          crossfade={variable !== "radar_ptype"}
           onFrameSettled={handleFrameSettled}
+          onTileReady={handleTileReady}
         />
 
         {error && (
