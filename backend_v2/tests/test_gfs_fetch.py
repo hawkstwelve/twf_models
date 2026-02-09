@@ -7,6 +7,7 @@ import pytest
 import requests
 
 from app.services import gfs_fetch
+from app.services.herbie_priority import DEFAULT_HERBIE_PRIORITY, parse_herbie_priority
 
 
 class _DummyHerbie:
@@ -55,7 +56,13 @@ def test_fetch_moves_download_into_deterministic_path(
     source.write_bytes(b"GRIB")
     expected = target_dir / "gfs.t00z.pgrb2.0p25f00.t2m.grib2"
 
+    seen_priorities: list[object] = []
+
     class _DownloadHerbie(_DummyHerbie):
+        def __init__(self, date: datetime, **kwargs: object) -> None:
+            super().__init__(date, **kwargs)
+            seen_priorities.append(kwargs.get("priority"))
+
         def download(self, _search: str, save_dir: Path):
             assert save_dir == target_dir
             return source
@@ -80,6 +87,8 @@ def test_fetch_moves_download_into_deterministic_path(
     assert result.path == expected
     assert expected.exists()
     assert not source.exists()
+    assert seen_priorities
+    assert seen_priorities[0] == parse_herbie_priority(DEFAULT_HERBIE_PRIORITY)
 
 
 def test_parse_run_datetime_accepts_scheduler_run_id() -> None:
@@ -113,3 +122,11 @@ def test_fetch_timeout_returns_not_ready_result(
 
     assert result.path is None
     assert result.not_ready_reason is not None
+
+
+def test_parse_herbie_priority_defaults_when_missing() -> None:
+    assert parse_herbie_priority(None) == DEFAULT_HERBIE_PRIORITY.split(",")
+
+
+def test_parse_herbie_priority_single_source() -> None:
+    assert parse_herbie_priority("aws") == ["aws"]

@@ -14,6 +14,7 @@ import requests
 import xarray as xr
 
 from app.models import get_model
+from app.services.herbie_priority import DEFAULT_HERBIE_PRIORITY, parse_herbie_priority
 from app.services.paths import default_gfs_cache_dir
 from app.services.upstream import is_upstream_not_ready_error
 
@@ -21,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 IDX_FALLBACK_RATE_SECONDS = 300
 _IDX_FALLBACK_LOG_CACHE: dict[tuple[str, int], float] = {}
-TWF_GFS_PRIORITY = os.environ.get("TWF_GFS_PRIORITY", "aws")
+TWF_GFS_PRIORITY = os.environ.get("TWF_GFS_PRIORITY", DEFAULT_HERBIE_PRIORITY)
 TWF_GFS_HTTP_TIMEOUT_SECONDS = int(os.environ.get("TWF_GFS_HTTP_TIMEOUT_SECONDS", "5"))
 TWF_GFS_PROBE_LOOKBACK_HOURS = int(os.environ.get("TWF_GFS_PROBE_LOOKBACK_HOURS", "12"))
 TWF_GFS_MAX_PROBE_SECONDS = int(os.environ.get("TWF_GFS_MAX_PROBE_SECONDS", "10"))
@@ -350,13 +351,6 @@ def _log_idx_missing(run_id: str, fh: int) -> None:
     logger.info("IDX missing; deferring subset: run=%s fh=%02d", run_id, fh)
 
 
-def _parse_priority(value: str | None) -> list[str]:
-    raw = (value or "").strip()
-    if not raw:
-        return []
-    return [item.strip() for item in raw.split(",") if item.strip()]
-
-
 def _parse_blocked_hosts(value: str | None) -> set[str]:
     raw = (value or "").strip()
     if not raw:
@@ -467,7 +461,10 @@ def _fetch_gfs_grib_internal(
     except (TypeError, ValueError):
         timeout_seconds = TWF_GFS_HTTP_TIMEOUT_SECONDS
     priority_value = kwargs.get("priority", TWF_GFS_PRIORITY)
-    priority = _parse_priority(str(priority_value) if priority_value is not None else None)
+    if isinstance(priority_value, (list, tuple)):
+        priority = parse_herbie_priority(",".join(str(item) for item in priority_value))
+    else:
+        priority = parse_herbie_priority(str(priority_value) if priority_value is not None else None)
     priority_arg = priority if priority else None
     lookback_hours = kwargs.get("lookback_hours", TWF_GFS_PROBE_LOOKBACK_HOURS)
     try:

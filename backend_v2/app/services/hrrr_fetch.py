@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 from herbie import Herbie
 import xarray as xr
 
+from .herbie_priority import DEFAULT_HERBIE_PRIORITY, parse_herbie_priority
 from .hrrr_runs import HRRRCacheConfig, enforce_cycle_retention
 from .paths import default_hrrr_cache_dir
 from .variable_registry import herbie_search_for, normalize_api_variable, select_dataarray
@@ -36,6 +37,7 @@ FULL_GRIB_MAX_SECONDS = int(os.environ.get("TWF_FULL_GRIB_MAX_SECONDS", "900"))
 IDX_FALLBACK_RATE_SECONDS = 300
 IDX_FALLBACK_CACHE_TTL_SECONDS = 7200
 _IDX_FALLBACK_LOG_CACHE: dict[tuple[str, int], float] = {}
+TWF_HRRR_PRIORITY = os.environ.get("TWF_HRRR_PRIORITY", DEFAULT_HERBIE_PRIORITY)
 
 
 class UpstreamNotReady(RuntimeError):
@@ -328,6 +330,7 @@ def _fetch_hrrr_grib_internal(
 ) -> GribFetchResult:
     cfg = cache_cfg or HRRRCacheConfig(base_dir=default_hrrr_cache_dir(), keep_runs=1)
     run_dt = _parse_run_datetime(run)
+    priority = parse_herbie_priority(TWF_HRRR_PRIORITY)
 
     normalized_var = normalize_api_variable(variable) if variable else None
     if variable == "wspd10m":
@@ -336,13 +339,14 @@ def _fetch_hrrr_grib_internal(
     search = search_override if search_override is not None else _select_herbie_search(selectors)
 
     logger.info(
-        "Fetching HRRR GRIB: run=%s fh=%02d model=%s product=%s variable=%s search=%s",
+        "Fetching HRRR GRIB: run=%s fh=%02d model=%s product=%s variable=%s search=%s priority=%s",
         run,
         fh,
         model,
         product,
         normalized_var or "full",
         search or "(none)",
+        ",".join(priority),
     )
 
     if run_dt is None:
@@ -351,7 +355,7 @@ def _fetch_hrrr_grib_internal(
         herbie = None
         for i in range(0, 12):
             candidate = now - timedelta(hours=i)
-            H = Herbie(candidate, model=model, product=product, fxx=fh)
+            H = Herbie(candidate, model=model, product=product, fxx=fh, priority=priority)
             try:
                 has_grib = bool(H.grib)
             except Exception as exc:
@@ -366,7 +370,7 @@ def _fetch_hrrr_grib_internal(
         if herbie is None or run_dt is None:
             raise UpstreamNotReady("Could not resolve latest HRRR cycle in the last 12 hours")
     else:
-        herbie = Herbie(run_dt, model=model, product=product, fxx=fh)
+        herbie = Herbie(run_dt, model=model, product=product, fxx=fh, priority=priority)
 
     target_dir = _cache_dir_for_run(cfg.base_dir, run_dt)
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -454,7 +458,7 @@ def _fetch_hrrr_grib_internal(
                 _cleanup_expected_paths()
                 raise UpstreamNotReady("Index not ready for requested HRRR GRIB") from exc
             _log_idx_fallback(run_id, fh)
-            herbie = Herbie(run_dt, model=model, product=product, fxx=fh)
+            herbie = Herbie(run_dt, model=model, product=product, fxx=fh, priority=priority)
             downloaded_full = True
             download_start = time.time()
             try:
