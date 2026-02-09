@@ -28,6 +28,7 @@ const REGION_VIEWS: Record<string, { center: [number, number]; zoom: number }> =
 const SCRUB_SWAP_TIMEOUT_MS = 650;
 const AUTOPLAY_SWAP_TIMEOUT_MS = 1500;
 const CONTINUOUS_CROSSFADE_MS = 120;
+const PREFETCH_BUFFER_COUNT = 4;
 
 type OverlayBuffer = "a" | "b";
 type PlaybackMode = "autoplay" | "scrub";
@@ -82,6 +83,16 @@ function styleFor(overlayUrl: string, opacity: number): StyleSpecification {
         tiles: [overlayUrl],
         tileSize: 256,
       },
+      [prefetchSourceId(3)]: {
+        type: "raster",
+        tiles: [overlayUrl],
+        tileSize: 256,
+      },
+      [prefetchSourceId(4)]: {
+        type: "raster",
+        tiles: [overlayUrl],
+        tileSize: 256,
+      },
       "twf-labels": {
         type: "raster",
         tiles: CARTO_LIGHT_LABEL_TILES,
@@ -101,6 +112,7 @@ function styleFor(overlayUrl: string, opacity: number): StyleSpecification {
         paint: {
           "raster-opacity": opacity,
           "raster-resampling": "nearest",
+          "raster-fade-duration": 0,
         },
       },
       {
@@ -110,6 +122,7 @@ function styleFor(overlayUrl: string, opacity: number): StyleSpecification {
         paint: {
           "raster-opacity": 0,
           "raster-resampling": "nearest",
+          "raster-fade-duration": 0,
         },
       },
       {
@@ -119,6 +132,7 @@ function styleFor(overlayUrl: string, opacity: number): StyleSpecification {
         paint: {
           "raster-opacity": 0,
           "raster-resampling": "nearest",
+          "raster-fade-duration": 0,
         },
       },
       {
@@ -128,6 +142,27 @@ function styleFor(overlayUrl: string, opacity: number): StyleSpecification {
         paint: {
           "raster-opacity": 0,
           "raster-resampling": "nearest",
+          "raster-fade-duration": 0,
+        },
+      },
+      {
+        id: prefetchLayerId(3),
+        type: "raster",
+        source: prefetchSourceId(3),
+        paint: {
+          "raster-opacity": 0,
+          "raster-resampling": "nearest",
+          "raster-fade-duration": 0,
+        },
+      },
+      {
+        id: prefetchLayerId(4),
+        type: "raster",
+        source: prefetchSourceId(4),
+        paint: {
+          "raster-opacity": 0,
+          "raster-resampling": "nearest",
+          "raster-fade-duration": 0,
         },
       },
       {
@@ -167,7 +202,7 @@ export function MapCanvas({
   const activeTileUrlRef = useRef(tileUrl);
   const swapTokenRef = useRef(0);
   const prefetchTokenRef = useRef(0);
-  const prefetchUrlsRef = useRef<[string, string]>(["", ""]);
+  const prefetchUrlsRef = useRef<string[]>(Array.from({ length: PREFETCH_BUFFER_COUNT }, () => ""));
   const fadeTokenRef = useRef(0);
   const fadeRafRef = useRef<number | null>(null);
 
@@ -428,7 +463,7 @@ export function MapCanvas({
     }
 
     const token = ++prefetchTokenRef.current;
-    const urls: [string, string] = [prefetchTileUrls[0] ?? "", prefetchTileUrls[1] ?? ""];
+    const urls = Array.from({ length: PREFETCH_BUFFER_COUNT }, (_, idx) => prefetchTileUrls[idx] ?? "");
     const cleanups: Array<() => void> = [];
 
     urls.forEach((url, idx) => {
@@ -489,8 +524,9 @@ export function MapCanvas({
 
     setLayerOpacity(map, layerId(activeBuffer), opacity);
     setLayerOpacity(map, layerId(inactiveBuffer), 0);
-    setLayerOpacity(map, prefetchLayerId(1), 0);
-    setLayerOpacity(map, prefetchLayerId(2), 0);
+    for (let idx = 1; idx <= PREFETCH_BUFFER_COUNT; idx += 1) {
+      setLayerOpacity(map, prefetchLayerId(idx), 0);
+    }
   }, [opacity, isLoaded, crossfade, cancelCrossfade, setLayerOpacity]);
 
   useEffect(() => {

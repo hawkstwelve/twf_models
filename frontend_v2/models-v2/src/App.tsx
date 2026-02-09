@@ -172,13 +172,12 @@ export default function App() {
     if (frameHours.length < 2) return [];
     const currentIndex = frameHours.indexOf(forecastHour);
     const start = currentIndex >= 0 ? currentIndex : 0;
-    const nextHours = [
-      frameHours[(start + 1) % frameHours.length],
-      frameHours[(start + 2) % frameHours.length],
-    ];
+    const isRadarLike = variable.includes("radar") || variable.includes("ptype");
+    const prefetchCount = isPlaying && isRadarLike ? 4 : 2;
+    const nextHours = Array.from({ length: prefetchCount }, (_, idx) => frameHours[(start + idx + 1) % frameHours.length]);
     const dedup = Array.from(new Set(nextHours.filter((fh) => Number.isFinite(fh) && fh !== forecastHour)));
     return dedup.map((fh) => tileUrlForHour(fh));
-  }, [frameHours, forecastHour, tileUrlForHour]);
+  }, [frameHours, forecastHour, tileUrlForHour, variable, isPlaying]);
 
   const effectiveRunId = currentFrame?.run ?? (run !== "latest" ? run : runs[0] ?? null);
   const runDateTimeISO = runIdToIso(effectiveRunId);
@@ -392,8 +391,9 @@ export default function App() {
 
       autoplayHoldMsRef.current = 0;
 
+      const isRadarLike = variable.includes("radar") || variable.includes("ptype");
       // For radar/ptype, do NOT skip ahead; hold on current frame until next is ready
-      if (variable === "radar_ptype") {
+      if (isRadarLike) {
         // Do not advance; stay on current frame and retry next tick
         return;
       }
@@ -412,7 +412,7 @@ export default function App() {
     }, AUTOPLAY_TICK_MS);
 
     return () => window.clearInterval(interval);
-  }, [isPlaying, frameHours, forecastHour, isTileReady, tileUrlForHour]);
+  }, [isPlaying, frameHours, forecastHour, isTileReady, tileUrlForHour, variable]);
 
   useEffect(() => {
     if (frameHours.length === 0 && isPlaying) {
