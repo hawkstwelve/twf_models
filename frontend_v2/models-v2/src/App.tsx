@@ -376,6 +376,12 @@ export default function App() {
       const currentIndex = frameHours.indexOf(forecastHour);
       if (currentIndex < 0) return;
 
+      const isRadarLike = variable.includes("radar") || variable.includes("ptype");
+      if (isRadarLike && currentIndex === frameHours.length - 1) {
+        setIsPlaying(false);
+        return;
+      }
+
       const nextHour = frameHours[(currentIndex + 1) % frameHours.length];
       const nextUrl = tileUrlForHour(nextHour);
       if (isTileReady(nextUrl)) {
@@ -391,7 +397,6 @@ export default function App() {
 
       autoplayHoldMsRef.current = 0;
 
-      const isRadarLike = variable.includes("radar") || variable.includes("ptype");
       // For radar/ptype, do NOT skip ahead; hold on current frame until next is ready
       if (isRadarLike) {
         // Do not advance; stay on current frame and retry next tick

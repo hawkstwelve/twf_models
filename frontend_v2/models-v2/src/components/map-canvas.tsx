@@ -296,11 +296,8 @@ export function MapCanvas({
       };
 
       const readyForMode = () => {
-        if (modeValue === "autoplay") {
-          // For autoplay, prefer waiting until the map reports an idle cycle after source updates.
-          return map.isSourceLoaded(source);
-        }
-        return map.isSourceLoaded(source);
+        const tilesLoaded = typeof map.areTilesLoaded === "function" ? map.areTilesLoaded() : true;
+        return map.isSourceLoaded(source) && tilesLoaded;
       };
 
       const onSourceData = (event: maplibregl.MapSourceDataEvent) => {
@@ -375,21 +372,10 @@ export function MapCanvas({
     }
 
     if (tileUrl === activeTileUrlRef.current) {
-      return waitForSourceReady(
-        map,
-        sourceId(activeBufferRef.current),
-        mode,
-        () => {
-          onTileReady?.(tileUrl);
-          onFrameSettled?.(tileUrl);
-        },
-        () => {
-          if (mode === "scrub") {
-            onTileReady?.(tileUrl);
-            onFrameSettled?.(tileUrl);
-          }
-        }
-      );
+      return waitForSourceReady(map, sourceId(activeBufferRef.current), mode, () => {
+        onTileReady?.(tileUrl);
+        onFrameSettled?.(tileUrl);
+      });
     }
 
     const inactiveBuffer = otherBuffer(activeBufferRef.current);
@@ -427,21 +413,7 @@ export function MapCanvas({
       onFrameSettled?.(tileUrl);
     };
 
-    return waitForSourceReady(
-      map,
-      sourceId(inactiveBuffer),
-      mode,
-      finishSwap,
-      () => {
-        // On timeout in scrub mode, do NOT swap to incomplete buffer.
-        // Keep the old buffer visible until the new one is ready.
-        if (mode === "scrub") {
-          // Optionally notify that frame settled even if swap didn't occur
-          onTileReady?.(tileUrl);
-          onFrameSettled?.(tileUrl);
-        }
-      }
-    );
+    return waitForSourceReady(map, sourceId(inactiveBuffer), mode, finishSwap);
   }, [
     tileUrl,
     isLoaded,
@@ -484,20 +456,14 @@ export function MapCanvas({
       prefetchUrlsRef.current[idx] = url;
       source.setTiles([url]);
 
-      const cleanup = waitForSourceReady(
-        map,
-        prefetchSourceId(idx + 1),
-        "scrub",
-        () => {
-          if (token !== prefetchTokenRef.current) {
-            return;
-          }
-          if (prefetchUrlsRef.current[idx] !== url) {
-            return;
-          }
-          onTileReady?.(url);
+      const cleanup = waitForSourceReady(map, prefetchSourceId(idx + 1), "scrub", () => {
+        if (token !== prefetchTokenRef.current) {
+          return;
         }
-      );
+        if (prefetchUrlsRef.current[idx] !== url) {
+          return;
+        }
+      });
 
       if (cleanup) {
         cleanups.push(cleanup);
