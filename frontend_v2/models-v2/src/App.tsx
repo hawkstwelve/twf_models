@@ -15,6 +15,7 @@ import {
   fetchVars,
 } from "@/lib/api";
 import { ALLOWED_VARIABLES, DEFAULTS, VARIABLE_LABELS } from "@/lib/config";
+import { buildRunOptions } from "@/lib/run-options";
 import { buildTileUrlFromFrame } from "@/lib/tiles";
 
 const AUTOPLAY_TICK_MS = 400;
@@ -40,14 +41,6 @@ function makeRegionLabel(id: string): string {
 
 function makeVariableLabel(id: string): string {
   return VARIABLE_LABELS[id] ?? id;
-}
-
-function latestRunLabel(runId: string | null): string {
-  if (!runId) {
-    return "Latest";
-  }
-  const match = runId.match(/_(\d{2})z$/i);
-  return match ? `Latest (${match[1]}z)` : "Latest";
 }
 
 function nearestFrame(frames: number[], current: number): number {
@@ -138,13 +131,12 @@ export default function App() {
   }, [frameRows]);
 
   const currentFrame = frameByHour.get(forecastHour) ?? frameRows[0] ?? null;
+  const latestRunId = frameRows[0]?.run ?? runs[0] ?? null;
+  const resolvedRunForRequests = run === "latest" ? (latestRunId ?? "latest") : run;
 
   const runOptions = useMemo<Option[]>(() => {
-    return [
-      { value: "latest", label: latestRunLabel(runs[0] ?? null) },
-      ...runs.map((runId) => ({ value: runId, label: runId })),
-    ];
-  }, [runs]);
+    return buildRunOptions(runs, latestRunId);
+  }, [runs, latestRunId]);
 
   const tileUrlForHour = useCallback(
     (fh: number): string => {
@@ -153,13 +145,13 @@ export default function App() {
       return buildTileUrlFromFrame({
         model,
         region,
-        run,
+        run: resolvedRunForRequests,
         varKey: variable,
         fh: resolvedFh,
         frameRow: frameByHour.get(resolvedFh) ?? frameRows[0] ?? null,
       });
     },
-    [model, region, run, variable, frameHours, frameByHour, frameRows]
+    [model, region, resolvedRunForRequests, variable, frameHours, frameByHour, frameRows]
   );
 
   const tileUrl = useMemo(() => {
@@ -185,7 +177,7 @@ export default function App() {
     return dedup.map((fh) => tileUrlForHour(fh));
   }, [frameHours, forecastHour, tileUrlForHour, variable, isPlaying]);
 
-  const effectiveRunId = currentFrame?.run ?? (run !== "latest" ? run : runs[0] ?? null);
+  const effectiveRunId = currentFrame?.run ?? (run !== "latest" ? run : latestRunId);
   const runDateTimeISO = runIdToIso(effectiveRunId);
 
   useEffect(() => {
@@ -305,7 +297,10 @@ export default function App() {
     async function loadRunsAndVars() {
       setError(null);
       try {
-        const [runData, varData] = await Promise.all([fetchRuns(model, region), fetchVars(model, region, run)]);
+        const [runData, varData] = await Promise.all([
+          fetchRuns(model, region),
+          fetchVars(model, region, resolvedRunForRequests),
+        ]);
         if (cancelled) return;
 
         setRuns(runData);
@@ -333,7 +328,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [model, region, run]);
+  }, [model, region, run, resolvedRunForRequests]);
 
   useEffect(() => {
     if (!model || !region || !variable) return;
@@ -342,7 +337,7 @@ export default function App() {
     async function loadFrames() {
       setError(null);
       try {
-        const rows = await fetchFrames(model, region, run, variable);
+        const rows = await fetchFrames(model, region, resolvedRunForRequests, variable);
         if (cancelled) return;
         setFrameRows(rows);
         const frames = rows.map((row) => Number(row.fh)).filter(Number.isFinite);
@@ -359,14 +354,14 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [model, region, run, variable]);
+  }, [model, region, run, variable, resolvedRunForRequests]);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
       if (document.hidden || !model || !region || !variable) {
         return;
       }
-      fetchFrames(model, region, run, variable)
+      fetchFrames(model, region, resolvedRunForRequests, variable)
         .then((rows) => {
           setFrameRows(rows);
           const frames = rows.map((row) => Number(row.fh)).filter(Number.isFinite);
@@ -379,7 +374,7 @@ export default function App() {
     }, 30000);
 
     return () => window.clearInterval(interval);
-  }, [model, region, run, variable]);
+  }, [model, region, run, variable, resolvedRunForRequests]);
 
   useEffect(() => {
     if (!isPlaying || frameHours.length === 0) return;
