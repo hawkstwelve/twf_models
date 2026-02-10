@@ -454,11 +454,29 @@ def fetch_grib(
             return _not_ready(run, not_ready_reason)
         path = _fetch_path_or_raise(result, context="GFS fetch")
         run_id = _normalize_run_id(run, path)
+        component_paths: dict[str, Path] | None = None
+        if bundle_key == "precip_ptype":
+            # In shared-source mode, all precip+ptype components live in the same subset GRIB.
+            # Provide a component_paths mapping so build_cog.py can open/select the component
+            # fields (CRAIN/CSNOW/CICEP/CFRZR) instead of treating them as missing.
+            precip_spec = plugin.get_var("precip_ptype") or var_spec
+            prate_var, rain_var, snow_var, sleet_var, frzr_var = _resolve_precip_ptype_component_vars(
+                precip_spec,
+                ("precip_ptype", "crain", "csnow", "cicep", "cfrzr"),
+            )
+            component_paths = {
+                prate_var: path,
+                rain_var: path,
+                snow_var: path,
+                sleet_var: path,
+                frzr_var: path,
+            }
+
         return FetchResult(
             upstream_run_id=run_id,
             is_full_download=result.is_full_file,
             grib_path=path,
-            component_paths=None,
+            component_paths=component_paths,
         )
 
     if not var_spec.derived:
