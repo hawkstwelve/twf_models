@@ -37,8 +37,8 @@ Thumbs.db
 ############################
 
 # Root-level runtime caches
-grib_cache/
-herbie_cache/
+/grib_cache/
+/herbie_cache/
 
 ############################
 # Python virtual environments
@@ -63,3 +63,4 @@ ROADMAP.md
 **/vite.config.js
 **/vite.config.d.ts
 .github/
+.pytest_cache/
