@@ -1090,7 +1090,6 @@ def _write_vrt(
   <VRTRasterBand dataType=\"Byte\" band=\"1\" subClass=\"VRTRawRasterBand\">
     <Description>intensity</Description>
     <ColorInterp>Gray</ColorInterp>
-        <NoDataValue>255</NoDataValue>
     <SourceFilename relativeToVRT=\"0\">{band1_path}</SourceFilename>
     <ImageOffset>0</ImageOffset>
     <PixelOffset>1</PixelOffset>
@@ -2882,6 +2881,10 @@ def main() -> int:
                     geotransform=geotransform,
                     srs_wkt=srs_wkt,
                 )
+                # Debug: check alpha immediately after writing warped_tif
+                _info = gdalinfo_json(warped_tif)
+                _alpha_min, _alpha_max = _band_min_max(_info, 2)
+                print(f"Debug: warped_tif alpha after write: min={_alpha_min} max={_alpha_max}")
                 if args.debug:
                     print(
                         "Warp debug: "
@@ -2962,7 +2965,17 @@ def main() -> int:
             )
 
             # Add internal overviews per band (band 1 uses average/nearest depending on var; band 2 (alpha) always nearest).
+            # Debug: check alpha before adding overviews
+            _info_before = gdalinfo_json(ovr_tif)
+            _alpha_min_before, _alpha_max_before = _band_min_max(_info_before, 2)
+            print(f"Debug: ovr_tif alpha before gdaladdo: min={_alpha_min_before} max={_alpha_max_before}")
+            
             run_gdaladdo_overviews(ovr_tif, addo_resampling, "nearest")
+            
+            # Debug: check alpha after adding overviews
+            _info_after = gdalinfo_json(ovr_tif)
+            _alpha_min_after, _alpha_max_after = _band_min_max(_info_after, 2)
+            print(f"Debug: ovr_tif alpha after gdaladdo: min={_alpha_min_after} max={_alpha_max_after}")
 
             # Now build the final COG and copy the already-built overviews.
             print(f"Writing COG: {cog_path}")
