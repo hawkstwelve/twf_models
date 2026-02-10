@@ -1763,7 +1763,16 @@ def _band_min_max(info: dict, band_index: int) -> tuple[float | None, float | No
     return min_val, max_val
 
 
-def _assert_precip_ptype_alpha_stats(path: Path) -> None:
+def _assert_precip_ptype_alpha_stats(path: Path, meta: dict | None = None) -> None:
+    # If meta indicates no visible pixels, skip validation (all-transparent is valid)
+    if meta is not None:
+        visible_pixels = meta.get("visible_pixels", -1)
+        if visible_pixels == 0:
+            logger.info(
+                "precip_ptype alpha validation skipped: no visible pixels (no precipitation above threshold)"
+            )
+            return
+
     require_gdal("gdalinfo")
     output = run_cmd_output(["gdalinfo", "-stats", str(path)])
     section_match = re.search(r"Band\s+2\b([\s\S]*?)(?:\nBand\s+\d+\b|$)", output, flags=re.IGNORECASE)
@@ -3026,7 +3035,7 @@ def main() -> int:
                 assert_single_internal_overview_cog(cog_path)
 
             if args.model == "gfs" and derive_kind == "precip_ptype_blend":
-                _assert_precip_ptype_alpha_stats(cog_path)
+                _assert_precip_ptype_alpha_stats(cog_path, meta=meta)
 
             if args.debug:
                 cog_info = gdalinfo_json(cog_path)
