@@ -396,7 +396,7 @@ def _radar_blend_component_ids(var_spec: VarSpec) -> tuple[str, str, str, str, s
 
 def _precip_ptype_component_ids(var_spec: VarSpec) -> tuple[str, str, str, str, str]:
     selectors = var_spec.selectors
-    prate_key = selectors.hints.get("prate_component") or "precip_ptype"
+    prate_key = selectors.hints.get("prate_component") or "prate"
     rain_key = selectors.hints.get("rain_component") or "crain"
     snow_key = selectors.hints.get("snow_component") or "csnow"
     sleet_key = selectors.hints.get("sleet_component") or "cicep"
