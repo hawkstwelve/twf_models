@@ -817,7 +817,7 @@ def _encode_precip_ptype_blend(
     prate = np.asarray(prate_values, dtype=np.float32)
     prate = np.where(np.isfinite(prate), prate, np.nan)
     prate_mmhr = prate * 3600.0
-    visible_mask = np.isfinite(prate) & (prate >= alpha_threshold)
+    visible_mask = np.isfinite(prate_mmhr) & (prate_mmhr >= alpha_threshold)
 
     flat_colors = list(spec.get("colors", []))
     ptype_breaks = {
