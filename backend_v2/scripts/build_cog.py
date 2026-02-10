@@ -1675,7 +1675,7 @@ def run_gdaladdo_overviews(
 
     try:
         _run(band1_resampling, ["-b", "1"])
-        _run(band2_resampling, ["-b", "2"])
+        _run("nearest", ["-b", "2"])
     except RuntimeError as exc:
         if not _is_external_overview_conflict(exc):
             raise
