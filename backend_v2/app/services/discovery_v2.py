@@ -89,7 +89,7 @@ def build_tile_url_template(
     var: str,
     fh: int,
 ) -> str:
-    return f"/tiles/{model}/{region}/{run}/{var}/{fh}/{{z}}/{{x}}/{{y}}.png"
+    return f"/tiles/v2/{model}/{region}/{run}/{var}/{fh}/{{z}}/{{x}}/{{y}}.png"
 
 
 def list_models() -> list[dict[str, str]]:
