@@ -542,6 +542,7 @@ export default function App() {
           region={region}
           opacity={opacity}
           mode={isPlaying ? "autoplay" : "scrub"}
+          variable={variable}
           prefetchTileUrls={prefetchTileUrls}
           crossfade={false}
           onFrameSettled={handleFrameSettled}

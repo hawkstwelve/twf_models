@@ -58,7 +58,17 @@ function prefetchLayerId(index: number): string {
   return `twf-prefetch-${index}`;
 }
 
-function styleFor(overlayUrl: string, opacity: number): StyleSpecification {
+function getResamplingMode(variable?: string): "nearest" | "linear" | "cubic" {
+  // radar_ptype needs bilinear/linear for better clarity
+  // All other variables use nearest to preserve discrete data
+  if (variable && (variable.includes("radar") || variable.includes("ptype"))) {
+    return "linear";
+  }
+  return "nearest";
+}
+
+function styleFor(overlayUrl: string, opacity: number, variable?: string): StyleSpecification {
+  const resamplingMode = getResamplingMode(variable);
   return {
     version: 8,
     sources: {
@@ -116,7 +126,7 @@ function styleFor(overlayUrl: string, opacity: number): StyleSpecification {
         source: sourceId("a"),
         paint: {
           "raster-opacity": opacity,
-          "raster-resampling": "nearest",
+          "raster-resampling": resamplingMode,
           "raster-fade-duration": 0,
         },
       },
@@ -126,7 +136,7 @@ function styleFor(overlayUrl: string, opacity: number): StyleSpecification {
         source: sourceId("b"),
         paint: {
           "raster-opacity": HIDDEN_OPACITY,
-          "raster-resampling": "nearest",
+          "raster-resampling": resamplingMode,
           "raster-fade-duration": 0,
         },
       },
@@ -136,7 +146,7 @@ function styleFor(overlayUrl: string, opacity: number): StyleSpecification {
         source: prefetchSourceId(1),
         paint: {
           "raster-opacity": HIDDEN_OPACITY,
-          "raster-resampling": "nearest",
+          "raster-resampling": resamplingMode,
           "raster-fade-duration": 0,
         },
       },
@@ -146,7 +156,7 @@ function styleFor(overlayUrl: string, opacity: number): StyleSpecification {
         source: prefetchSourceId(2),
         paint: {
           "raster-opacity": HIDDEN_OPACITY,
-          "raster-resampling": "nearest",
+          "raster-resampling": resamplingMode,
           "raster-fade-duration": 0,
         },
       },
@@ -156,7 +166,7 @@ function styleFor(overlayUrl: string, opacity: number): StyleSpecification {
         source: prefetchSourceId(3),
         paint: {
           "raster-opacity": HIDDEN_OPACITY,
-          "raster-resampling": "nearest",
+          "raster-resampling": resamplingMode,
           "raster-fade-duration": 0,
         },
       },
@@ -166,7 +176,7 @@ function styleFor(overlayUrl: string, opacity: number): StyleSpecification {
         source: prefetchSourceId(4),
         paint: {
           "raster-opacity": HIDDEN_OPACITY,
-          "raster-resampling": "nearest",
+          "raster-resampling": resamplingMode,
           "raster-fade-duration": 0,
         },
       },
@@ -184,6 +194,7 @@ type MapCanvasProps = {
   region: string;
   opacity: number;
   mode: PlaybackMode;
+  variable?: string;
   prefetchTileUrls?: string[];
   crossfade?: boolean;
   onFrameSettled?: (tileUrl: string) => void;
@@ -195,6 +206,7 @@ export function MapCanvas({
   region,
   opacity,
   mode,
+  variable,
   prefetchTileUrls = [],
   crossfade = false,
   onFrameSettled,
@@ -398,7 +410,7 @@ export function MapCanvas({
 
     const map = new maplibregl.Map({
       container: mapContainerRef.current,
-      style: styleFor(tileUrl, opacity),
+      style: styleFor(tileUrl, opacity, variable),
       center: view.center,
       zoom: view.zoom,
       minZoom: 3,
@@ -476,10 +488,14 @@ export function MapCanvas({
         runCrossfade(map, previousActive, inactiveBuffer, opacity);
       } else {
         cancelCrossfade();
-        // Make swap atomic: set new layer visible first, then hide old on next frame
-        setLayerOpacity(map, layerId(inactiveBuffer), opacity);
+        // Wait for next render frame to ensure new tiles are painted before swap
         window.requestAnimationFrame(() => {
-          // Keep the old buffer barely-visible so its tiles stay resident and we avoid flashes on reuse.
+          // Check if this swap is still current
+          if (token !== swapTokenRef.current) {
+            return;
+          }
+          // Atomic swap: show new layer and hide old layer simultaneously
+          setLayerOpacity(map, layerId(inactiveBuffer), opacity);
           setLayerOpacity(map, layerId(previousActive), HIDDEN_OPACITY);
         });
       }
