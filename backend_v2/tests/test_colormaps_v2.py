@@ -130,13 +130,19 @@ def test_precip_ptype_spec_discrete_with_ptype_breaks() -> None:
     assert spec["type"] == "discrete"
     assert spec["units"] == "in/hr"
     assert isinstance(spec["levels"], list)
-    assert len(spec["levels"]) > 0
+    assert len(spec["levels"]) == 256
     assert isinstance(spec["colors"], list)
-    assert len(spec["colors"]) > 0
+    assert len(spec["colors"]) == 256
+    assert spec["range"] == (0.0, 1.0)
+    assert spec["bins_per_ptype"] == 64
     assert spec["display_name"] == "Precipitation Intensity"
     assert spec["legend_title"] == "Precipitation Rate (in/hr)"
     assert spec["ptype_order"] == ["frzr", "sleet", "snow", "rain"]
     assert set(spec["ptype_breaks"].keys()) == {"frzr", "sleet", "snow", "rain"}
+    assert spec["ptype_breaks"]["frzr"] == {"offset": 0, "count": 64}
+    assert spec["ptype_breaks"]["sleet"] == {"offset": 64, "count": 64}
+    assert spec["ptype_breaks"]["snow"] == {"offset": 128, "count": 64}
+    assert spec["ptype_breaks"]["rain"] == {"offset": 192, "count": 64}
 
 
 def test_encode_precip_ptype_is_discrete() -> None:

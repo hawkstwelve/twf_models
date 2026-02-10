@@ -47,25 +47,61 @@ PRECIP_CONFIG = {
 }
 
 PRECIP_PTYPE_ORDER = ("frzr", "sleet", "snow", "rain")
+PRECIP_PTYPE_BINS_PER_TYPE = 64
+PRECIP_PTYPE_RANGE = (0.0, 1.0)
+
+
+def _hex_to_rgb(hex_color: str) -> np.ndarray:
+    hex_str = hex_color.strip().lstrip("#")
+    return np.array(
+        [
+            int(hex_str[0:2], 16),
+            int(hex_str[2:4], 16),
+            int(hex_str[4:6], 16),
+        ],
+        dtype=np.float64,
+    )
+
+
+def _rgb_to_hex(rgb: np.ndarray) -> str:
+    r, g, b = np.clip(np.rint(rgb), 0, 255).astype(np.uint8).tolist()
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def _expand_hex_ramp(colors_hex: list[str], n: int) -> list[str]:
+    if not colors_hex:
+        raise ValueError("colors_hex must not be empty")
+    if len(colors_hex) == 1:
+        return [colors_hex[0]] * n
+
+    anchors = np.stack([_hex_to_rgb(color) for color in colors_hex], axis=0)
+    stop_positions = np.linspace(0.0, 1.0, num=len(colors_hex), dtype=np.float64)
+    target_positions = np.linspace(0.0, 1.0, num=n, dtype=np.float64)
+
+    r = np.interp(target_positions, stop_positions, anchors[:, 0])
+    g = np.interp(target_positions, stop_positions, anchors[:, 1])
+    b = np.interp(target_positions, stop_positions, anchors[:, 2])
+    return [_rgb_to_hex(np.array([rr, gg, bb], dtype=np.float64)) for rr, gg, bb in zip(r, g, b)]
 
 
 def _build_precip_ptype_flat_palette() -> tuple[list[float], list[str], dict[str, dict[str, int]]]:
-    levels: list[float] = []
     colors: list[str] = []
     breaks: dict[str, dict[str, int]] = {}
-    offset = 0
-    for key in PRECIP_PTYPE_ORDER:
+    for idx, key in enumerate(PRECIP_PTYPE_ORDER):
         cfg = PRECIP_CONFIG[key]
-        type_colors = list(cfg["colors"])
+        type_colors = _expand_hex_ramp(list(cfg["colors"]), PRECIP_PTYPE_BINS_PER_TYPE)
+        offset = idx * PRECIP_PTYPE_BINS_PER_TYPE
         colors.extend(type_colors)
         breaks[key] = {
             "offset": offset,
-            "count": len(type_colors),
+            "count": PRECIP_PTYPE_BINS_PER_TYPE,
         }
-        offset += len(type_colors)
-    if colors:
-        # Keep spec-level bins monotonic for generic discrete encoding paths.
-        levels = np.linspace(0.0, 2.0, num=len(colors), dtype=float).tolist()
+    levels = np.linspace(
+        PRECIP_PTYPE_RANGE[0],
+        PRECIP_PTYPE_RANGE[1],
+        num=len(colors),
+        dtype=float,
+    ).tolist()
     return levels, colors, breaks
 
 
@@ -324,6 +360,8 @@ VAR_SPECS = {
         "units": "in/hr",
         "levels": PRECIP_PTYPE_LEVELS,
         "colors": PRECIP_PTYPE_COLORS,
+        "range": PRECIP_PTYPE_RANGE,
+        "bins_per_ptype": PRECIP_PTYPE_BINS_PER_TYPE,
         "display_name": "Precipitation Intensity",
         "legend_title": "Precipitation Rate (in/hr)",
         "ptype_order": list(PRECIP_PTYPE_ORDER),

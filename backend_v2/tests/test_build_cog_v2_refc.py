@@ -254,12 +254,18 @@ def test_encode_precip_ptype_blend_priority_and_metadata() -> None:
     rain_offset = int(meta["ptype_breaks"]["rain"]["offset"])
 
     assert meta["ptype_order"] == ["frzr", "sleet", "snow", "rain"]
+    assert meta["bins_per_ptype"] == 64
+    assert meta["range"] == [0.0, 1.0]
+    assert meta["ptype_breaks"]["frzr"] == {"offset": 0, "count": 64}
+    assert meta["ptype_breaks"]["sleet"] == {"offset": 64, "count": 64}
+    assert meta["ptype_breaks"]["snow"] == {"offset": 128, "count": 64}
+    assert meta["ptype_breaks"]["rain"] == {"offset": 192, "count": 64}
     assert "ptype_breaks" in meta
     assert np.all(alpha == 255)
-    assert int(byte_band[0, 0]) >= frzr_offset and int(byte_band[0, 0]) < sleet_offset  # tie -> frzr
-    assert int(byte_band[0, 1]) >= snow_offset and int(byte_band[0, 1]) < rain_offset
-    assert int(byte_band[0, 2]) >= sleet_offset and int(byte_band[0, 2]) < snow_offset
-    assert int(byte_band[0, 3]) >= frzr_offset and int(byte_band[0, 3]) < sleet_offset
+    assert int(byte_band[0, 0]) == frzr_offset + 63  # tie -> frzr, max intensity bin
+    assert int(byte_band[0, 1]) == snow_offset + 63
+    assert int(byte_band[0, 2]) == sleet_offset + 63
+    assert int(byte_band[0, 3]) == frzr_offset + 63
 
 
 def test_encode_precip_ptype_blend_falls_back_to_rain_without_type_signal() -> None:
@@ -280,7 +286,28 @@ def test_encode_precip_ptype_blend_falls_back_to_rain_without_type_signal() -> N
 
     rain_offset = int(meta["ptype_breaks"]["rain"]["offset"])
     assert int(alpha[0, 0]) == 255
-    assert int(byte_band[0, 0]) >= rain_offset
+    assert int(byte_band[0, 0]) == rain_offset + 32
+
+
+def test_encode_precip_ptype_blend_masks_below_visibility_threshold() -> None:
+    prate = np.array([[0.009]], dtype=np.float32)
+    rain = np.array([[1.0]], dtype=np.float32)
+    zeros = np.zeros((1, 1), dtype=np.float32)
+
+    byte_band, alpha, _ = _encode_precip_ptype_blend(
+        requested_var="precip_ptype",
+        normalized_var="precip_ptype",
+        prate_values=prate,
+        ptype_values={
+            "crain": rain,
+            "csnow": zeros,
+            "cicep": zeros,
+            "cfrzr": zeros,
+        },
+    )
+
+    assert int(alpha[0, 0]) == 0
+    assert int(byte_band[0, 0]) == 0
 
 
 def test_encode_with_nodata_qpf6h_uses_fixed_range() -> None:

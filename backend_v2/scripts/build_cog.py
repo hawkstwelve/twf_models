@@ -764,6 +764,9 @@ def _encode_precip_ptype_blend(
 
     # Tie-break priority (highest to lowest): frzr > sleet > snow > rain.
     ptype_order = ("frzr", "sleet", "snow", "rain")
+    bins_per_ptype = 64
+    range_min = 0.0
+    range_max = 1.0
     type_to_component = {
         "rain": "crain",
         "snow": "csnow",
@@ -771,24 +774,22 @@ def _encode_precip_ptype_blend(
         "frzr": "cfrzr",
     }
 
-    byte_band = np.full(prate_values.shape, 255, dtype=np.uint8)
+    byte_band = np.zeros(prate_values.shape, dtype=np.uint8)
     alpha = np.zeros(prate_values.shape, dtype=np.uint8)
     prate = np.asarray(prate_values, dtype=np.float32)
     prate = np.where(np.isfinite(prate), prate, np.nan)
-    visible_mask = np.isfinite(prate) & (prate > 0.0)
+    visible_mask = np.isfinite(prate) & (prate >= 0.01)
 
-    flat_colors: list[str] = []
-    ptype_breaks: dict[str, dict[str, int]] = {}
-    ptype_levels: dict[str, list[float]] = {}
-    color_offset = 0
-    for ptype in ptype_order:
-        cfg = PRECIP_CONFIG[ptype]
-        levels_in_per_hour = [float(level) / 25.4 for level in cfg["levels"]]
-        colors = list(cfg["colors"])
-        ptype_levels[ptype] = levels_in_per_hour
-        ptype_breaks[ptype] = {"offset": color_offset, "count": len(colors)}
-        flat_colors.extend(colors)
-        color_offset += len(colors)
+    spec = VAR_SPECS.get("precip_ptype", {})
+    flat_colors = list(spec.get("colors", []))
+    ptype_breaks = {
+        ptype: {"offset": idx * bins_per_ptype, "count": bins_per_ptype}
+        for idx, ptype in enumerate(ptype_order)
+    }
+    ptype_levels = {
+        ptype: np.linspace(range_min, range_max, num=bins_per_ptype, dtype=np.float32).tolist()
+        for ptype in ptype_order
+    }
 
     ptype_scale: dict[str, str] = {}
     ptype_stack = []
@@ -809,25 +810,27 @@ def _encode_precip_ptype_blend(
     winner_idx = np.argmax(stack, axis=0)
     max_conf = np.max(stack, axis=0)
     has_type_info = max_conf > 0.0
-    idx_map = {ptype: idx for idx, ptype in enumerate(ptype_order)}
+    rain_index = int(ptype_order.index("rain"))
 
-    ptype_pixel_counts: dict[str, int] = {}
-    for ptype in ptype_order:
-        levels = ptype_levels[ptype]
-        colors = list(PRECIP_CONFIG[ptype]["colors"])
-        offset = int(ptype_breaks[ptype]["offset"])
+    prate_capped = np.clip(prate, range_min, range_max)
+    denom = range_max - range_min
+    if denom <= 0:
+        raise RuntimeError("Invalid precip_ptype blend intensity range")
+    norm = np.clip((prate_capped - range_min) / denom, 0.0, 1.0)
+    intensity_bin = np.minimum((norm * bins_per_ptype).astype(np.int16), bins_per_ptype - 1).astype(np.uint8)
 
-        if ptype == "rain":
-            type_mask = visible_mask & ((~has_type_info) | (winner_idx == idx_map[ptype]))
-        else:
-            type_mask = visible_mask & has_type_info & (winner_idx == idx_map[ptype])
+    ptype_index = np.where(has_type_info, winner_idx, rain_index).astype(np.uint8)
+    encoded = (
+        ptype_index.astype(np.uint16) * np.uint16(bins_per_ptype)
+        + intensity_bin.astype(np.uint16)
+    ).astype(np.uint8)
+    byte_band[visible_mask] = encoded[visible_mask]
+    alpha[visible_mask] = 255
 
-        if np.any(type_mask):
-            bins = np.digitize(prate, levels, right=False) - 1
-            bins = np.clip(bins, 0, len(colors) - 1).astype(np.uint8)
-            byte_band[type_mask] = (offset + bins[type_mask]).astype(np.uint8)
-            alpha[type_mask] = 255
-        ptype_pixel_counts[ptype] = int(np.count_nonzero(type_mask))
+    ptype_pixel_counts = {
+        ptype: int(np.count_nonzero(visible_mask & (ptype_index == idx)))
+        for idx, ptype in enumerate(ptype_order)
+    }
 
     meta = {
         "var_key": requested_var,
@@ -839,6 +842,8 @@ def _encode_precip_ptype_blend(
         "ptype_order": list(ptype_order),
         "ptype_breaks": ptype_breaks,
         "ptype_levels": ptype_levels,
+        "range": [range_min, range_max],
+        "bins_per_ptype": bins_per_ptype,
         "ptype_priority": list(ptype_order),
         "ptype_noinfo_fallback": "rain",
         "ptype_scale": ptype_scale,
