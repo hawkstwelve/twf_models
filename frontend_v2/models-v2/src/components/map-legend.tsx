@@ -55,16 +55,22 @@ function isRadarPtypeLegend(legend: LegendPayload): boolean {
 }
 
 function groupRadarEntries(entries: LegendEntry[]): LegendEntry[][] {
+  // UI displays entries in reverse order (highest first). Apply grouping on the
+  // displayed order so zero-delimiters split the visible list correctly.
+  const displayed = entries.slice().reverse();
+
+  const isZero = (value: number) => Math.abs(value) < 1e-9;
+
   const groups: LegendEntry[][] = [];
   let current: LegendEntry[] = [];
 
-  for (const entry of entries) {
-    if (entry.value === 0) {
+  for (const entry of displayed) {
+    if (isZero(entry.value)) {
       if (current.length > 0) {
         groups.push(current);
         current = [];
       }
-      continue;
+      continue; // skip delimiter row
     }
     current.push(entry);
   }
@@ -73,7 +79,7 @@ function groupRadarEntries(entries: LegendEntry[]): LegendEntry[][] {
     groups.push(current);
   }
 
-  return groups.map((group) => group.slice().reverse());
+  return groups;
 }
 
 type MapLegendProps = {
@@ -120,7 +126,7 @@ export function MapLegend({ legend, onOpacityChange }: MapLegendProps) {
   return (
     <div
       className={cn(
-        "fixed z-40 flex w-[200px] flex-col overflow-hidden rounded-md border border-border/50 bg-[hsl(var(--toolbar))]/95 shadow-xl backdrop-blur-md transition-all duration-200",
+        "fixed z-40 flex w-[120px] flex-col max-h-[70vh] overflow-hidden rounded-md border border-border/50 bg-[hsl(var(--toolbar))]/95 shadow-xl backdrop-blur-md transition-all duration-200",
         isSmallScreen ? "bottom-24 right-4" : "right-4 top-20"
       )}
       role="complementary"
@@ -129,7 +135,7 @@ export function MapLegend({ legend, onOpacityChange }: MapLegendProps) {
       <button
         type="button"
         onClick={() => setCollapsed((value) => !value)}
-        className="flex w-full items-center justify-between gap-1.5 border-b border-border/30 px-2 py-1.5 text-left transition-all duration-150 hover:bg-secondary/30 active:bg-secondary/50"
+        className="flex w-full items-center justify-between gap-1.5 border-b border-border/30 px-1.5 py-1 text-left transition-all duration-150 hover:bg-secondary/30 active:bg-secondary/50"
         aria-expanded={!collapsed}
         aria-controls="legend-body"
       >
@@ -151,60 +157,57 @@ export function MapLegend({ legend, onOpacityChange }: MapLegendProps) {
         className={cn("grid transition-[grid-template-rows] duration-200 ease-out", collapsed ? "grid-rows-[0fr]" : "grid-rows-[1fr]")}
       >
         <div className="overflow-hidden">
-          <div key={fadeKey} className="flex flex-col gap-2 px-2 py-2 animate-in fade-in duration-200">
-            <div className="max-h-[320px] space-y-px overflow-y-auto scroll-smooth">
+          <div key={fadeKey} className="flex flex-col gap-1.5 px-1.5 py-1.5 animate-in fade-in duration-200">
+            <div className="max-h-[45vh] space-y-px overflow-y-auto scroll-smooth">
               {showGroupedRadar
                 ? groupedRadarEntries.map((group, groupIndex) => (
                     <div
                       key={`group-${groupIndex}`}
                       className={cn(groupIndex > 0 ? "mt-2 border-t border-border/20 pt-2" : "")}
                     >
-                      <div className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/85">
+                      <div className="mb-1 px-0.5 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground/85">
                         {radarGroupLabel(groupIndex)}
                       </div>
                       {group.map((entry, index) => (
                         <div
                           key={`${entry.value}-${entry.color}-${groupIndex}-${index}`}
                           className={cn(
-                            "flex items-center gap-2 rounded-[2px] px-1 py-1 transition-colors duration-150",
+                            "flex items-center gap-1.5 rounded-[2px] px-0.5 py-0.5 transition-colors duration-150",
                             index % 2 === 0 ? "bg-secondary/20" : "bg-transparent"
                           )}
                         >
                           <span
-                            className="h-3 w-4 shrink-0 rounded-[2px] border border-border/30 shadow-sm"
+                            className="h-3 w-3 shrink-0 rounded-[2px] border border-border/30 shadow-sm"
                             style={{ backgroundColor: entry.color }}
                           />
-                          <span className="font-mono text-[11px] font-medium leading-none tabular-nums tracking-tight text-foreground/95">
+                          <span className="font-mono text-[10px] font-medium leading-none tabular-nums tracking-tight text-foreground/95">
                             {formatValue(entry.value)}
                           </span>
                         </div>
                       ))}
                     </div>
                   ))
-                : legend.entries
-                    .slice()
-                    .reverse()
-                    .map((entry, index) => (
-                      <div
-                        key={`${entry.value}-${entry.color}-${index}`}
-                        className={cn(
-                          "flex items-center gap-2 rounded-[2px] px-1 py-1 transition-colors duration-150",
-                          index % 2 === 0 ? "bg-secondary/20" : "bg-transparent"
-                        )}
-                      >
-                        <span
-                          className="h-3 w-4 shrink-0 rounded-[2px] border border-border/30 shadow-sm"
-                          style={{ backgroundColor: entry.color }}
-                        />
-                        <span className="font-mono text-[11px] font-medium leading-none tabular-nums tracking-tight text-foreground/95">
-                          {formatValue(entry.value)}
-                        </span>
-                      </div>
-                    ))}
+                : legend.entries.slice().reverse().map((entry, index) => (
+                    <div
+                      key={`${entry.value}-${entry.color}-${index}`}
+                      className={cn(
+                        "flex items-center gap-1.5 rounded-[2px] px-0.5 py-0.5 transition-colors duration-150",
+                        index % 2 === 0 ? "bg-secondary/20" : "bg-transparent"
+                      )}
+                    >
+                      <span
+                        className="h-3 w-3 shrink-0 rounded-[2px] border border-border/30 shadow-sm"
+                        style={{ backgroundColor: entry.color }}
+                      />
+                      <span className="font-mono text-[10px] font-medium leading-none tabular-nums tracking-tight text-foreground/95">
+                        {formatValue(entry.value)}
+                      </span>
+                    </div>
+                  ))}
             </div>
 
-            <div className="border-t border-border/30 pt-2">
-              <div className="mb-1.5 flex items-center justify-between">
+            <div className="border-t border-border/30 pt-1.5">
+              <div className="mb-1 flex items-center justify-between">
                 <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
                   Opacity
                 </span>
