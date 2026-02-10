@@ -50,3 +50,18 @@ def test_scheduled_targets_skip_gfs_qpf6h_fh0() -> None:
     assert ("tmp2m", 0) in targets
     assert ("qpf6h", 0) not in targets
     assert ("qpf6h", 6) in targets
+
+
+def test_scheduled_targets_filter_unsupported_radar_ptype_for_gfs_but_keep_hrrr() -> None:
+    gfs = get_model("gfs")
+    hrrr = get_model("hrrr")
+    shared_vars = ["tmp2m", "wspd10m", "refc", "qpf6h", "precip_ptype", "radar_ptype"]
+
+    gfs_targets = _scheduled_targets_for_cycle(gfs, shared_vars, 6)
+    gfs_vars = {var for var, _fh in gfs_targets}
+    assert "radar_ptype" not in gfs_vars
+    assert {"tmp2m", "wspd10m", "refc", "qpf6h", "precip_ptype"} <= gfs_vars
+
+    hrrr_targets = _scheduled_targets_for_cycle(hrrr, shared_vars, 6)
+    hrrr_vars = {var for var, _fh in hrrr_targets}
+    assert "radar_ptype" in hrrr_vars

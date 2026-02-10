@@ -300,11 +300,15 @@ def _scheduled_targets_for_cycle(
     model_id = str(getattr(plugin, "id", "")).lower()
     targets: list[tuple[str, int]] = []
     for var in vars_to_build:
-        min_fh = 6 if model_id == "gfs" and var == "qpf6h" else 0
+        normalized_var = plugin.normalize_var_id(var)
+        # Guard enqueueing against unsupported shared/global vars.
+        if plugin.get_var(normalized_var) is None:
+            continue
+        min_fh = 6 if model_id == "gfs" and normalized_var == "qpf6h" else 0
         for fh in base_fhs:
             if fh < min_fh:
                 continue
-            targets.append((var, fh))
+            targets.append((normalized_var, fh))
     return targets
 
 
@@ -502,8 +506,27 @@ def run_scheduler(
     script_path = _build_script_path_for_model(model)
     if not script_path.exists():
         raise ConfigError(f"Build script not found for model={model}: {script_path}")
-    vars_to_build = _dedupe_preserve_order([plugin.normalize_var_id(v) for v in vars])
-    primary_vars = _dedupe_preserve_order([plugin.normalize_var_id(v) for v in primary_vars])
+    plugin_supported_vars = {
+        plugin.normalize_var_id(var_id)
+        for var_id in plugin.vars.keys()
+        if plugin.get_var(plugin.normalize_var_id(var_id)) is not None
+    }
+    vars_to_build = _dedupe_preserve_order(
+        [
+            plugin.normalize_var_id(v)
+            for v in vars
+            if plugin.normalize_var_id(v) in plugin_supported_vars
+        ]
+    )
+    primary_vars = _dedupe_preserve_order(
+        [
+            plugin.normalize_var_id(v)
+            for v in primary_vars
+            if plugin.get_var(plugin.normalize_var_id(v)) is not None
+        ]
+    )
+    if not vars_to_build:
+        raise ConfigError(f"No supported vars to schedule for model={model}; requested={vars}")
     probe_var = primary_vars[0] if primary_vars else plugin.normalize_var_id(PRIMARY_VAR_DEFAULT)
     latest_path = _latest_pointer_path(out_root, model, region)
 
