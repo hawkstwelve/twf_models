@@ -54,7 +54,7 @@ venv/
 backend_v2/.python-version
 venv_v2/
 docs/V2_RENDERING_MIGRATION_PLAN.md
-ROADMAP V1.md
+ROADMAP.md
 **/node_modules/
 **/dist/
 **/.next/
@@ -62,3 +62,4 @@ ROADMAP V1.md
 **/*.tsbuildinfo
 **/vite.config.js
 **/vite.config.d.ts
+.github/

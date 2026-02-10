@@ -1,91 +1,213 @@
 # TWF Models (V2)
 
-V2 weather model pipeline and frontend.
+Filesystem-backed weather model artifact pipeline + tile serving stack.
 
-## Current Architecture
+This repo contains a V2 backend that builds immutable raster artifacts (Cloud-Optimized GeoTIFFs + JSON sidecars) and serves:
+- a **metadata discovery API** (`/api/v2/...`) for listing models/regions/runs/vars/frames
+- a **PNG tile service** (`/tiles/...`) that renders map tiles from prebuilt COGs
 
-- Builder: `backend_v2/scripts/build_cog.py`
-- Metadata API: `backend_v2/app` (FastAPI)
-- Tile service: `backend_v2/titiler_service`
-- Frontend source/build root: `frontend_v2/models-v2`
-- Frontend build output: `frontend_v2/models-v2/dist`
+A V2 frontend (Vite + React + MapLibre) consumes those endpoints to render and animate forecast frames.
 
-V1 backend/frontend code and legacy tile-serving paths were retired in Phase 7.
+> Note: V1 and V2 may coexist. New work should target **V2** (`backend_v2/` + `frontend_v2/`).
 
-## Production Services
+## Technology Stack
 
-- `twf-models-api-v2.service` (metadata API on port 8099)
-- `twf-hrrr-v2-scheduler.service`
-- `twf-gfs-v2-scheduler.service`
-- TiTiler service (separate FastAPI process/unit in production)
+**Backend (V2)**
+- Python 3.10+
+- FastAPI `0.110.0`, Uvicorn `0.29.0`, Pydantic `2.6.4`
+- Data processing: `xarray`, `cfgrib`, `numpy`, `scipy`
+- Geo/raster: `rasterio`, `pyproj`
 
-## Key URLs
+**Tile service (V2)**
+- FastAPI + `rio-tiler` (via `backend_v2/requirements-titiler.txt`)
 
-- Frontend: `https://sodakweather.com/models-v2/`
-- API root: `https://api.sodakweather.com/api/v2/`
-- Canonical tiles: `https://api.sodakweather.com/tiles/v2/...`
-- TiTiler shadow route: `https://api.sodakweather.com/tiles-titiler/...`
+**Frontend (V2)**
+- React `19.1.1`, TypeScript `5.9.2`, Vite `7.1.7`
+- MapLibre GL `4.7.1`
+- Tailwind CSS `3.4.17` + Radix UI primitives
 
-## Repo Layout
+Details: `.github/copilot/technology_stack.md`
 
-```text
-twf_models/
-├── backend_v2/
-│   ├── app/
-│   ├── scripts/
-│   │   └── build_cog.py
-│   ├── tests/
-│   └── titiler_service/
-├── frontend_v2/
-│   └── models-v2/              # React/Vite app (source + dist output)
-├── deployment/
-│   └── systemd/
-├── scripts/
-│   └── v2/
-└── V2_RENDERING_MIGRATION_PLAN.md
+## Project Architecture
+
+High-level idea:
+- **Schedulers / scripts** fetch upstream GRIB2 and build immutable artifacts under `TWF_DATA_V2_ROOT`
+- **Metadata API** scans the filesystem and exposes discovery endpoints under `/api/v2`
+- **Tile service** reads COGs and renders `256×256` PNG tiles under `/tiles/...`
+- **Frontend** drives discovery and swaps tile sources to animate frames
+
+```mermaid
+flowchart LR
+  U[User Browser] --> F[Frontend (React/Vite)]
+  F -->|HTTP JSON| A[Metadata API (FastAPI)\n/api/v2/...]
+  F -->|HTTP PNG tiles| T[Tile Service (FastAPI)\n/tiles/...]
+
+  S1[GFS Scheduler] -->|build artifacts| FS[(TWF_DATA_V2_ROOT)]
+  S2[HRRR Scheduler] -->|build artifacts| FS
+
+  A -->|scan/list| FS
+  T -->|read COG + render tile| FS
 ```
 
-## Local Development
+More detail: `.github/copilot/architecture.md`
 
-### Backend tests
+## Getting Started
+
+### Prerequisites
+
+- Python (virtualenv recommended)
+- Node.js + npm (for the frontend)
+- Native geo deps may be required for `rasterio` / GDAL / PROJ depending on your machine
+
+### Configure data root
+
+The backend and tile service both read artifacts from `TWF_DATA_V2_ROOT`.
+
+For local dev:
 
 ```bash
-cd /Users/brianaustin/twf_models
-/Users/brianaustin/twf_models/venv/bin/python -m pytest -q backend_v2/tests
+export TWF_DATA_V2_ROOT="$PWD/.data/v2"
+mkdir -p "$TWF_DATA_V2_ROOT"
 ```
 
-### Frontend build
+Optional (used by some code paths):
 
 ```bash
-cd /Users/brianaustin/twf_models/frontend_v2/models-v2
-npm ci
-npm run build
+export TWF_MBTILES_ROOT="$PWD/.data/mbtiles"
+mkdir -p "$TWF_MBTILES_ROOT"
 ```
 
-### Sync build artifacts into canonical frontend path
+### Backend setup (metadata API)
+
+From repo root:
 
 ```bash
-cd /Users/brianaustin/twf_models
-bash scripts/v2/phase5_cutover_sync_frontend.sh
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -U pip
+python -m pip install -r backend_v2/requirements.txt
 ```
 
-## Validation
-
-Run the V2 cutover/health check script:
+Run:
 
 ```bash
-cd /Users/brianaustin/twf_models
-bash scripts/v2/phase5_shadow_validate.sh
+cd backend_v2
+python -m uvicorn app.main:app --reload --port 8099
 ```
 
-Optional shadow frontend check (only if you still host a parallel path):
+- Health: `GET http://127.0.0.1:8099/health`
+- API base: `http://127.0.0.1:8099/api/v2`
+
+### Tile service setup
+
+Install tile extras (adds `rio-tiler`):
 
 ```bash
-SHADOW_FRONTEND_PATH=models-v2-shadow bash scripts/v2/phase5_shadow_validate.sh
+python -m pip install -r backend_v2/requirements-titiler.txt
 ```
 
-## Notes
+Run:
 
-- COGs are immutable artifacts under `/opt/twf_models/data/v2` in production.
-- Builder, API, and TiTiler should run with pinned compatible GDAL/PROJ majors.
-- Discovery endpoints drive frontend frame/layer selection.
+```bash
+cd backend_v2
+python -m uvicorn titiler_service.main:app --reload --port 8101
+```
+
+- Health: `GET http://127.0.0.1:8101/health`
+- Tiles: `GET /tiles/{model}/{region}/{run}/{var}/{fh}/{z}/{x}/{y}.png`
+
+Behavior notes:
+- Path segments are validated against `^[a-z0-9_-]+$`.
+- Missing/unavailable tiles typically return `204` with a short cache TTL.
+- If `rio-tiler` is not installed, tile requests may return `503` with an explicit message.
+
+### Frontend setup
+
+```bash
+cd frontend_v2/models-v2
+npm install
+npm run dev
+```
+
+The UI is designed to target local services when served from `localhost/127.0.0.1`.
+
+## Project Structure
+
+- `backend_v2/` — V2 Python services + pipeline
+  - `app/` — metadata API (`/api/v2`)
+  - `titiler_service/` — PNG tile service (`/tiles/...`)
+  - `scripts/` — CLI-like tools (build/debug)
+  - `tests/` — pytest suite
+- `frontend_v2/models-v2/` — V2 web UI (Vite + React + MapLibre)
+- `deployment/systemd/` — example systemd units for schedulers
+- `docs/` — roadmap + migration notes
+
+More detail: `.github/copilot/project_folder_structure.md`
+
+## Key Features
+
+- Filesystem-backed artifact contract for deterministic, cacheable tile rendering
+- Discovery API for models → regions → runs → vars → frames
+- Tile rendering from COGs with stable caching semantics (ETag / immutable where applicable)
+- Long-running schedulers that build artifacts, update `LATEST.json`, and enforce retention
+
+## Artifact Contract (V2)
+
+Artifacts live under `TWF_DATA_V2_ROOT`:
+
+- COG: `{root}/{model}/{region}/{run_id}/{var}/fhNNN.cog.tif`
+- Sidecar JSON: `{root}/{model}/{region}/{run_id}/{var}/fhNNN.json`
+- Latest pointer: `{root}/{model}/{region}/LATEST.json`
+
+`run=latest` is resolved via `LATEST.json` when present/valid; otherwise by scanning run directories.
+
+## Building Artifacts (manual)
+
+Example: build one HRRR frame into your local data root:
+
+```bash
+python backend_v2/scripts/build_cog.py \
+  --model hrrr --region pnw \
+  --run latest --fh 6 --var tmp2m \
+  --out-root "$TWF_DATA_V2_ROOT"
+```
+
+## Development Workflow
+
+- Keep V1 and V2 isolated; new work should target `backend_v2/` and `frontend_v2/`.
+- For backend endpoints, keep route logic thin and put logic in `backend_v2/app/services/`.
+- Preserve path segment validation (`^[a-z0-9_-]+$`) for any new route params.
+- Avoid new dependencies unless necessary (geo deps are fragile).
+
+Representative workflows: `.github/copilot/workflow_analysis.md`
+
+## Coding Standards (practical)
+
+- Prefer type hints and small, testable functions.
+- Use `pathlib.Path` and keep filesystem roots anchored at `TWF_DATA_V2_ROOT`.
+- Use `fastapi.HTTPException` for client-facing errors with clear `status_code` + `detail`.
+- Keep the tile service behaviors stable (204 for unavailable, 503 when optional deps missing).
+
+## Testing
+
+Backend tests use `pytest` and live in `backend_v2/tests/`.
+
+```bash
+python -m pip install -U pytest
+pytest -q backend_v2/tests
+```
+
+Target a subset:
+
+```bash
+pytest -q backend_v2/tests -k "discovery"
+```
+
+## Contributing
+
+- Follow the V2 patterns described in:
+  - `.github/copilot/copilot-instructions.md`
+  - `.github/copilot/architecture.md`
+  - `.github/copilot/workflow_analysis.md`
+- Add/extend pytest coverage for backend/service changes.
+- Keep changes minimal and consistent with surrounding code.
