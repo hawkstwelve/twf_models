@@ -19,6 +19,7 @@ export type LegendMeta = {
   ptype_breaks?: Record<string, { offset: number; count: number }>;
   ptype_levels?: Record<string, number[]>;
   range?: [number, number];
+  bins_per_ptype?: number;
 };
 
 export type FrameRow = {

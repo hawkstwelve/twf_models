@@ -27,11 +27,12 @@ export const DEFAULTS = {
   overlayOpacity: 0.85,
 };
 
-export const ALLOWED_VARIABLES = new Set(["tmp2m", "wspd10m", "radar_ptype", "qpf6h"]);
+export const ALLOWED_VARIABLES = new Set(["tmp2m", "wspd10m", "radar_ptype", "precip_ptype", "qpf6h"]);
 
 export const VARIABLE_LABELS: Record<string, string> = {
   tmp2m: "Surface Temperature",
   wspd10m: "Wind Speed",
   radar_ptype: "Composite Reflectivity + P-Type",
+  precip_ptype: "Precip + Type",
   qpf6h: "6-hr Precip",
 };

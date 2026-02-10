@@ -41,6 +41,9 @@ function makeRegionLabel(id: string): string {
 }
 
 function makeVariableLabel(id: string, preferredLabel?: string | null): string {
+  if (id === "precip_ptype") {
+    return VARIABLE_LABELS.precip_ptype;
+  }
   if (preferredLabel && preferredLabel.trim()) {
     return preferredLabel.trim();
   }
@@ -89,16 +92,37 @@ function runIdToIso(runId: string | null): string | null {
   return new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), 0, 0)).toISOString();
 }
 
+function isPrecipPtypeLegendMeta(
+  meta: LegendMeta & { var_key?: string; spec_key?: string; id?: string }
+): boolean {
+  const kind = String(meta.kind ?? "").toLowerCase();
+  const id = String(meta.var_key ?? meta.spec_key ?? meta.id ?? "").toLowerCase();
+  return kind.includes("precip_ptype") || id === "precip_ptype";
+}
+
+function withPrecipRateUnits(title: string, units?: string): string {
+  const resolvedUnits = (units ?? "").trim().toLowerCase();
+  if (resolvedUnits !== "in/hr") {
+    return title;
+  }
+  return title.toLowerCase().includes("(in/hr)") ? title : `${title} (in/hr)`;
+}
+
 function buildLegend(meta: LegendMeta | null | undefined, opacity: number): LegendPayload | null {
   if (!meta) {
     return null;
   }
   const metaWithIds = meta as LegendMeta & { var_key?: string; spec_key?: string; id?: string };
+  const isPrecipPtype = isPrecipPtypeLegendMeta(metaWithIds);
+  const baseTitle = meta.legend_title ?? meta.display_name ?? "Legend";
+  const title = isPrecipPtype ? withPrecipRateUnits(baseTitle, meta.units) : baseTitle;
+  const units = isPrecipPtype ? "in/hr" : meta.units;
   const legendMetadata = {
     kind: metaWithIds.kind,
     id: metaWithIds.var_key ?? metaWithIds.spec_key ?? metaWithIds.id,
     ptype_breaks: metaWithIds.ptype_breaks,
     ptype_order: metaWithIds.ptype_order,
+    bins_per_ptype: metaWithIds.bins_per_ptype,
   };
 
   if (Array.isArray(meta.legend_stops) && meta.legend_stops.length > 0) {
@@ -109,15 +133,24 @@ function buildLegend(meta: LegendMeta | null | undefined, opacity: number): Lege
       return null;
     }
     return {
-      title: meta.legend_title ?? meta.display_name ?? "Legend",
-      units: meta.units,
+      title,
+      units,
       entries,
       opacity,
       ...legendMetadata,
     };
   }
 
-  if (Array.isArray(meta.colors) && meta.colors.length > 1 && Array.isArray(meta.range) && meta.range.length === 2) {
+  const hasPtypeSegments =
+    Array.isArray(meta.ptype_order) && Boolean(meta.ptype_breaks) && Boolean(meta.ptype_levels);
+
+  if (
+    Array.isArray(meta.colors) &&
+    meta.colors.length > 1 &&
+    Array.isArray(meta.range) &&
+    meta.range.length === 2 &&
+    !hasPtypeSegments
+  ) {
     const [min, max] = meta.range;
     const entries = meta.colors.map((color, index) => {
       const denom = Math.max(1, meta.colors!.length - 1);
@@ -125,8 +158,8 @@ function buildLegend(meta: LegendMeta | null | undefined, opacity: number): Lege
       return { value, color };
     });
     return {
-      title: meta.legend_title ?? meta.display_name ?? "Legend",
-      units: meta.units,
+      title,
+      units,
       entries,
       opacity,
       ...legendMetadata,
@@ -174,8 +207,8 @@ function buildLegend(meta: LegendMeta | null | undefined, opacity: number): Lege
 
     if (entries.length > 0) {
       return {
-        title: meta.legend_title ?? meta.display_name ?? "Legend",
-        units: meta.units,
+        title,
+        units,
         entries,
         opacity,
         ...legendMetadata,
@@ -436,7 +469,7 @@ export default function App() {
         setFrameRows(rows);
         const frameMeta = extractLegendMeta(rows[0] ?? null);
         const variableDisplayName = frameMeta?.display_name?.trim();
-        if (variableDisplayName) {
+        if (variableDisplayName && variable !== "precip_ptype") {
           setVariables((prev) =>
             prev.map((option) =>
               option.value === variable ? { ...option, label: makeVariableLabel(option.value, variableDisplayName) } : option
