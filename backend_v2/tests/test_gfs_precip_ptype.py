@@ -19,7 +19,7 @@ def test_gfs_precip_ptype_varspec_is_prate_based_and_primary() -> None:
     assert spec.derive == "precip_ptype_blend"
     assert spec.selectors.search == [":PRATE:surface:"]
     assert spec.selectors.hints.get("kind") == "precip_ptype"
-    assert spec.selectors.hints.get("units") == "in/hr"
+    assert spec.selectors.hints.get("units") == "mm/hr"
     assert spec.selectors.hints.get("prate_component") == "precip_ptype"
     assert spec.selectors.hints.get("rain_component") == "crain"
     assert spec.selectors.hints.get("snow_component") == "csnow"
@@ -28,7 +28,7 @@ def test_gfs_precip_ptype_varspec_is_prate_based_and_primary() -> None:
     assert hrrr.get_var("precip_ptype") is None
 
 
-def test_gfs_precip_ptype_normalizes_prate_to_in_per_hour() -> None:
+def test_gfs_precip_ptype_normalizes_prate_to_mm_per_hour() -> None:
     gfs = get_model("gfs")
     ds = xr.Dataset(
         {
@@ -48,6 +48,15 @@ def test_gfs_precip_ptype_normalizes_prate_to_in_per_hour() -> None:
     selected = gfs.select_dataarray(ds, "precip_ptype")
     assert isinstance(selected, xr.DataArray)
     assert selected.name == "precip_ptype"
-    assert selected.attrs.get("GRIB_units") == "in/hr"
-    assert selected.attrs.get("units") == "in/hr"
-    assert np.isclose(float(selected.values[0, 0]), 0.001 * (3600.0 / 25.4), rtol=1e-6)
+    assert selected.attrs.get("GRIB_units") == "mm/hr"
+    assert selected.attrs.get("units") == "mm/hr"
+    assert np.isclose(float(selected.values[0, 0]), 0.001 * 3600.0, rtol=1e-6)
+
+
+def test_gfs_precip_ptype_conversion_helper_mm_per_s_to_mm_per_hr() -> None:
+    gfs = get_model("gfs")
+    values = np.array([[0.001]], dtype=np.float32)
+
+    converted = gfs._prate_mm_per_s_to_mm_per_hr(values)
+
+    assert np.isclose(float(converted[0, 0]), 3.6, rtol=1e-6)

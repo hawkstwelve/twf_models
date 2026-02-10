@@ -266,7 +266,7 @@ def test_warp_to_3857_can_disable_alpha(monkeypatch) -> None:
 
 
 def test_encode_precip_ptype_blend_priority_and_metadata() -> None:
-    prate = np.array([[1.0, 1.0, 1.0, 1.0]], dtype=np.float32)
+    prate = np.array([[24.0, 24.0, 24.0, 24.0]], dtype=np.float32)
     rain = np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32)
     snow = np.array([[1.0, 1.0, 0.0, 0.0]], dtype=np.float32)
     sleet = np.array([[1.0, 0.0, 1.0, 0.0]], dtype=np.float32)
@@ -291,12 +291,14 @@ def test_encode_precip_ptype_blend_priority_and_metadata() -> None:
 
     assert meta["ptype_order"] == ["frzr", "sleet", "snow", "rain"]
     assert meta["bins_per_ptype"] == 64
-    assert meta["range"] == [0.0, 1.0]
+    assert meta["range"] == [0.0, 24.0]
+    assert meta["units"] == "mm/hr"
     assert meta["ptype_breaks"]["frzr"] == {"offset": 0, "count": 64}
     assert meta["ptype_breaks"]["sleet"] == {"offset": 64, "count": 64}
     assert meta["ptype_breaks"]["snow"] == {"offset": 128, "count": 64}
     assert meta["ptype_breaks"]["rain"] == {"offset": 192, "count": 64}
     assert "ptype_breaks" in meta
+    assert int(meta["visible_pixels"]) > 0
     assert np.all(alpha == 255)
     assert int(byte_band[0, 0]) == frzr_offset + 63  # tie -> frzr, max intensity bin
     assert int(byte_band[0, 1]) == snow_offset + 63
@@ -321,8 +323,14 @@ def test_encode_precip_ptype_blend_falls_back_to_rain_without_type_signal() -> N
     )
 
     rain_offset = int(meta["ptype_breaks"]["rain"]["offset"])
+    expected_bin = int(
+        min(
+            ((prate[0, 0] - meta["range"][0]) / (meta["range"][1] - meta["range"][0])) * meta["bins_per_ptype"],
+            meta["bins_per_ptype"] - 1,
+        )
+    )
     assert int(alpha[0, 0]) == 255
-    assert int(byte_band[0, 0]) == rain_offset + 32
+    assert int(byte_band[0, 0]) == rain_offset + expected_bin
 
 
 def test_encode_precip_ptype_blend_masks_below_visibility_threshold() -> None:

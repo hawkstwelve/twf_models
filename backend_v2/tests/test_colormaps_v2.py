@@ -128,15 +128,15 @@ def test_encode_qpf6h_includes_range_and_legend_stops() -> None:
 def test_precip_ptype_spec_discrete_with_ptype_breaks() -> None:
     spec = VAR_SPECS["precip_ptype"]
     assert spec["type"] == "discrete"
-    assert spec["units"] == "in/hr"
+    assert spec["units"] == "mm/hr"
     assert isinstance(spec["levels"], list)
     assert len(spec["levels"]) == 256
     assert isinstance(spec["colors"], list)
     assert len(spec["colors"]) == 256
-    assert spec["range"] == (0.0, 1.0)
+    assert spec["range"] == (0.0, 24.0)
     assert spec["bins_per_ptype"] == 64
     assert spec["display_name"] == "Precipitation Intensity"
-    assert spec["legend_title"] == "Precipitation Rate (in/hr)"
+    assert spec["legend_title"] == "Precipitation Rate (mm/hr)"
     assert spec["ptype_order"] == ["frzr", "sleet", "snow", "rain"]
     assert set(spec["ptype_breaks"].keys()) == {"frzr", "sleet", "snow", "rain"}
     assert spec["ptype_breaks"]["frzr"] == {"offset": 0, "count": 64}
@@ -146,7 +146,7 @@ def test_precip_ptype_spec_discrete_with_ptype_breaks() -> None:
     assert set(spec["ptype_levels"].keys()) == {"frzr", "sleet", "snow", "rain"}
     assert len(spec["ptype_levels"]["frzr"]) == 64
     assert float(spec["ptype_levels"]["frzr"][0]) == 0.0
-    assert float(spec["ptype_levels"]["frzr"][-1]) == 1.0
+    assert float(spec["ptype_levels"]["frzr"][-1]) == 24.0
 
 
 def test_encode_precip_ptype_is_discrete() -> None:
@@ -156,9 +156,9 @@ def test_encode_precip_ptype_is_discrete() -> None:
     assert byte_band.shape == values.shape
     assert alpha.shape == values.shape
     assert meta["kind"] == "discrete"
-    assert meta["units"] == "in/hr"
+    assert meta["units"] == "mm/hr"
     assert "levels" in meta
     assert meta["ptype_order"] == ["frzr", "sleet", "snow", "rain"]
     assert meta["ptype_breaks"]["frzr"] == {"offset": 0, "count": 64}
-    assert meta["range"] == [0.0, 1.0]
+    assert meta["range"] == [0.0, 24.0]
     assert meta["bins_per_ptype"] == 64

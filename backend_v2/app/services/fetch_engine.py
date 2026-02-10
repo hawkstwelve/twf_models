@@ -203,6 +203,14 @@ def _join_search_terms(terms: list[str]) -> str | None:
     return "|".join(ordered)
 
 
+def _gfs_precip_ptype_prate_search(fh: int) -> str:
+    if fh >= 6:
+        return f":PRATE:surface:{fh - 6}-{fh} hour ave fcst:"
+    if fh == 0:
+        return ":PRATE:surface:0 hour fcst:"
+    return f":PRATE:surface:{fh} hour fcst:"
+
+
 def _supports_radar_ptype(plugin: object) -> bool:
     getter = getattr(plugin, "get_var", None)
     if not callable(getter):
@@ -272,6 +280,7 @@ def _resolve_gfs_subset_bundle(
     *,
     var_norm: str,
     var_spec: object,
+    fh: int,
 ) -> tuple[str, str | None, str, list[str]]:
     # Deterministic bundle keys per run+fh for GFS subsets.
     if var_norm == "tmp2m":
@@ -306,6 +315,9 @@ def _resolve_gfs_subset_bundle(
         search_terms = []
         for comp in comps:
             comp_spec = plugin.get_var(comp)
+            if comp == prate_var:
+                search_terms.append(_gfs_precip_ptype_prate_search(fh))
+                continue
             if comp_spec is not None:
                 comp_search = _select_search(comp_spec.selectors)
                 if comp_search:
@@ -408,6 +420,7 @@ def fetch_grib(
             plugin,
             var_norm=var_norm,
             var_spec=var_spec,
+            fh=fh,
         )
         try:
             result = fetch_gfs_grib(
@@ -497,16 +510,19 @@ def fetch_grib(
     derive_kind = str(getattr(var_spec, "derive", "") or "")
     if derive_kind == "wspd10m":
         components = _resolve_component_vars(var_spec, ("10u", "10v"))
+        precip_prate_component = None
     elif model == "gfs" and derive_kind == "precip_ptype_blend":
         components = _resolve_precip_ptype_component_vars(
             var_spec,
             ("precip_ptype", "crain", "csnow", "cicep", "cfrzr"),
         )
+        precip_prate_component = components[0]
     elif model == "hrrr" and derive_kind == "radar_ptype_combo":
         components = _resolve_radar_blend_component_vars(
             var_spec,
             ("refc", "crain", "csnow", "cicep", "cfrzr"),
         )
+        precip_prate_component = None
     else:
         raise HTTPException(
             status_code=501,
@@ -518,7 +534,10 @@ def fetch_grib(
     gfs_component_run = run
     for component_var in components:
         component_spec = plugin.get_var(component_var)
-        search = _select_search(component_spec.selectors) if component_spec else None
+        if model == "gfs" and derive_kind == "precip_ptype_blend" and component_var == precip_prate_component:
+            search = _gfs_precip_ptype_prate_search(fh)
+        else:
+            search = _select_search(component_spec.selectors) if component_spec else None
         if model == "gfs":
             try:
                 result = fetch_gfs_grib(

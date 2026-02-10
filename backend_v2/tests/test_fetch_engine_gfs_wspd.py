@@ -176,8 +176,54 @@ def test_gfs_precip_ptype_uses_prate_plus_ptype_bundle(
     assert result.grib_path.name.endswith(".precip_ptype.grib2")
     assert seen["cache_key"] == "precip_ptype"
     assert seen["required_vars"] == ["precip_ptype", "crain", "csnow", "cicep", "cfrzr"]
-    assert ":PRATE:surface:" in str(seen["search_override"])
+    assert ":PRATE:surface:0 hour fcst:" in str(seen["search_override"])
     assert ":CRAIN:surface:" in str(seen["search_override"])
     assert ":CSNOW:surface:" in str(seen["search_override"])
     assert ":CICEP:surface:" in str(seen["search_override"])
     assert ":CFRZR:surface:" in str(seen["search_override"])
+
+
+def test_gfs_precip_ptype_uses_6h_avg_prate_search_for_fh24(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    day_dir = tmp_path / "20260206" / "06"
+    day_dir.mkdir(parents=True, exist_ok=True)
+    seen: dict[str, object] = {}
+
+    def fake_fetch_gfs_grib(
+        *,
+        run: str,
+        variable: str | None = None,
+        search_override: str | None = None,
+        cache_key: str | None = None,
+        required_vars: list[str] | None = None,
+        **kwargs,
+    ):
+        del kwargs
+        assert run == "latest"
+        assert variable == "precip_ptype"
+        seen["search_override"] = search_override
+        seen["cache_key"] = cache_key
+        seen["required_vars"] = required_vars
+        return SimpleNamespace(
+            path=day_dir / "gfs.t06z.pgrb2.0p25f24.precip_ptype.grib2",
+            is_full_file=False,
+        )
+
+    monkeypatch.setattr(fetch_engine, "fetch_gfs_grib", fake_fetch_gfs_grib)
+
+    result = fetch_engine.fetch_grib(
+        model="gfs",
+        run="latest",
+        fh=24,
+        var="precip_ptype",
+        region="pnw",
+    )
+
+    assert result.not_ready_reason is None
+    assert result.grib_path is not None
+    assert result.grib_path.name.endswith(".precip_ptype.grib2")
+    assert seen["cache_key"] == "precip_ptype"
+    assert seen["required_vars"] == ["precip_ptype", "crain", "csnow", "cicep", "cfrzr"]
+    assert ":PRATE:surface:18-24 hour ave fcst:" in str(seen["search_override"])

@@ -762,11 +762,24 @@ def _encode_precip_ptype_blend(
                 f"P-type component shape mismatch for {key}: prate={prate_values.shape} ptype={values.shape}"
             )
 
+    spec = VAR_SPECS.get("precip_ptype", {})
+
     # Tie-break priority (highest to lowest): frzr > sleet > snow > rain.
     ptype_order = ("frzr", "sleet", "snow", "rain")
-    bins_per_ptype = 64
+    bins_per_ptype = int(spec.get("bins_per_ptype", 64))
+    if bins_per_ptype <= 0:
+        bins_per_ptype = 64
     range_min = 0.0
-    range_max = 1.0
+    spec_range = spec.get("range")
+    if (
+        isinstance(spec_range, (list, tuple))
+        and len(spec_range) == 2
+        and all(isinstance(item, (int, float)) for item in spec_range)
+    ):
+        range_max = float(spec_range[1])
+    else:
+        range_max = float(max(PRECIP_CONFIG["rain"]["levels"]))
+    alpha_threshold = float(PRECIP_CONFIG["rain"]["levels"][0])
     type_to_component = {
         "rain": "crain",
         "snow": "csnow",
@@ -778,9 +791,8 @@ def _encode_precip_ptype_blend(
     alpha = np.zeros(prate_values.shape, dtype=np.uint8)
     prate = np.asarray(prate_values, dtype=np.float32)
     prate = np.where(np.isfinite(prate), prate, np.nan)
-    visible_mask = np.isfinite(prate) & (prate >= 0.01)
+    visible_mask = np.isfinite(prate) & (prate >= alpha_threshold)
 
-    spec = VAR_SPECS.get("precip_ptype", {})
     flat_colors = list(spec.get("colors", []))
     ptype_breaks = {
         ptype: {"offset": idx * bins_per_ptype, "count": bins_per_ptype}
@@ -837,13 +849,14 @@ def _encode_precip_ptype_blend(
         "source_var": normalized_var,
         "spec_key": "precip_ptype",
         "kind": "discrete",
-        "units": "in/hr",
+        "units": "mm/hr",
         "colors": flat_colors,
         "ptype_order": list(ptype_order),
         "ptype_breaks": ptype_breaks,
         "ptype_levels": ptype_levels,
         "range": [range_min, range_max],
         "bins_per_ptype": bins_per_ptype,
+        "alpha_threshold": alpha_threshold,
         "ptype_priority": list(ptype_order),
         "ptype_noinfo_fallback": "rain",
         "ptype_scale": ptype_scale,
@@ -2636,7 +2649,7 @@ def main() -> int:
             alpha_band = np.zeros(values.shape, dtype=np.uint8)
             meta = {
                 "kind": "discrete",
-                "units": "in/hr",
+                "units": "mm/hr",
                 "spec_key": "precip_ptype",
             }
             valid_mask = np.isfinite(values)

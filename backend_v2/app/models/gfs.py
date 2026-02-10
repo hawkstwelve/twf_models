@@ -12,7 +12,7 @@ from .base import BaseModelPlugin, RegionSpec, VarSelectors, VarSpec
 
 
 class GFSPlugin(BaseModelPlugin):
-    _PRATE_TO_IN_PER_HOUR = 3600.0 / 25.4
+    _PRATE_TO_MM_PER_HOUR = 3600.0
     _STRICT_SELECTION_VARS = {
         "tmp2m",
         "10u",
@@ -28,6 +28,10 @@ class GFSPlugin(BaseModelPlugin):
     def target_fhs(self, cycle_hour: int) -> list[int]:
         del cycle_hour
         return list(GFS_INITIAL_FHS)
+
+    @classmethod
+    def _prate_mm_per_s_to_mm_per_hr(cls, values: np.ndarray) -> np.ndarray:
+        return values * cls._PRATE_TO_MM_PER_HOUR
 
     def normalize_var_id(self, var_id: str) -> str:
         normalized = normalize_api_variable(var_id)
@@ -139,11 +143,11 @@ class GFSPlugin(BaseModelPlugin):
                 or prate_da.attrs.get("units")
                 or ""
             ).strip().lower()
-            convert = "in/hr" not in source_units and "inch" not in source_units
+            convert = "mm/hr" not in source_units and "mm h-1" not in source_units
 
             values = np.asarray(prate_da.values, dtype=np.float32)
             if convert:
-                values = values * self._PRATE_TO_IN_PER_HOUR
+                values = self._prate_mm_per_s_to_mm_per_hr(values)
 
             coords = {
                 dim: prate_da.coords[dim]
@@ -157,8 +161,8 @@ class GFSPlugin(BaseModelPlugin):
                 name="precip_ptype",
             )
             precip_da.attrs = dict(prate_da.attrs)
-            precip_da.attrs["GRIB_units"] = "in/hr"
-            precip_da.attrs["units"] = "in/hr"
+            precip_da.attrs["GRIB_units"] = "mm/hr"
+            precip_da.attrs["units"] = "mm/hr"
             return precip_da
         if normalized == "wspd10m":
             u_da = self._select_from_spec(ds, "10u")
@@ -307,7 +311,7 @@ GFS_VARS: dict[str, VarSpec] = {
                 "cf_var": "prate",
                 "short_name": "prate",
                 "kind": "precip_ptype",
-                "units": "in/hr",
+                "units": "mm/hr",
                 "prate_component": "precip_ptype",
                 "rain_component": "crain",
                 "snow_component": "csnow",
@@ -318,7 +322,7 @@ GFS_VARS: dict[str, VarSpec] = {
         primary=True,
         derived=True,
         derive="precip_ptype_blend",
-        normalize_units="in/hr",
+        normalize_units="mm/hr",
     ),
     "crain": VarSpec(
         id="crain",

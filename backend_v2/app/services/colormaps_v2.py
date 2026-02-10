@@ -48,7 +48,17 @@ PRECIP_CONFIG = {
 
 PRECIP_PTYPE_ORDER = ("frzr", "sleet", "snow", "rain")
 PRECIP_PTYPE_BINS_PER_TYPE = 64
-PRECIP_PTYPE_RANGE = (0.0, 1.0)
+PRECIP_PTYPE_RANGE = (
+    0.0,
+    float(
+        max(
+            max(PRECIP_CONFIG["rain"]["levels"]),
+            max(PRECIP_CONFIG["snow"]["levels"]),
+            max(PRECIP_CONFIG["sleet"]["levels"]),
+            max(PRECIP_CONFIG["frzr"]["levels"]),
+        )
+    ),
+)
 
 
 def _hex_to_rgb(hex_color: str) -> np.ndarray:
@@ -374,13 +384,13 @@ VAR_SPECS = {
     },
     "precip_ptype": {
         "type": "discrete",
-        "units": "in/hr",
+        "units": "mm/hr",
         "levels": PRECIP_PTYPE_LEVELS,
         "colors": PRECIP_PTYPE_COLORS,
         "range": PRECIP_PTYPE_RANGE,
         "bins_per_ptype": PRECIP_PTYPE_BINS_PER_TYPE,
         "display_name": "Precipitation Intensity",
-        "legend_title": "Precipitation Rate (in/hr)",
+        "legend_title": "Precipitation Rate (mm/hr)",
         "ptype_order": list(PRECIP_PTYPE_ORDER),
         "ptype_breaks": PRECIP_PTYPE_BREAKS,
         "ptype_levels": PRECIP_PTYPE_LEVELS_BY_TYPE,
