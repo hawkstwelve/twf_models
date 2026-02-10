@@ -47,7 +47,6 @@ Thumbs.db
 venv/
 .venv/
 .env
-
 .data/
 
 ## Additional ignores for specific directories
@@ -64,3 +63,4 @@ ROADMAP.md
 **/vite.config.d.ts
 .github/
 .pytest_cache/
+data/
