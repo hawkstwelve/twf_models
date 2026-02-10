@@ -36,6 +36,10 @@ BACKOFF_INITIAL_SECONDS = 60
 BACKOFF_MAX_SECONDS = 600
 SLEEP_JITTER_RATIO = 0.1
 
+COMPONENT_ONLY_VARS_BY_MODEL: dict[str, set[str]] = {
+    "gfs": {"10u", "10v", "crain", "csnow", "cicep", "cfrzr"},
+}
+
 
 class RunResolutionError(RuntimeError):
     pass
@@ -312,6 +316,22 @@ def _scheduled_targets_for_cycle(
     return targets
 
 
+def _vars_to_schedule(plugin) -> list[str]:
+    model_id = str(getattr(plugin, "id", "")).lower()
+    excluded = COMPONENT_ONLY_VARS_BY_MODEL.get(model_id, set())
+    scheduled: list[str] = []
+    for var_id, var_spec in plugin.vars.items():
+        normalized_var = plugin.normalize_var_id(var_id)
+        if plugin.get_var(normalized_var) is None:
+            continue
+        if not (bool(getattr(var_spec, "primary", False)) or bool(getattr(var_spec, "derived", False))):
+            continue
+        if normalized_var in excluded:
+            continue
+        scheduled.append(normalized_var)
+    return _dedupe_preserve_order(scheduled)
+
+
 def _is_under_root(path: Path, root: Path) -> bool:
     try:
         path.resolve().relative_to(root.resolve())
@@ -506,18 +526,7 @@ def run_scheduler(
     script_path = _build_script_path_for_model(model)
     if not script_path.exists():
         raise ConfigError(f"Build script not found for model={model}: {script_path}")
-    plugin_supported_vars = {
-        plugin.normalize_var_id(var_id)
-        for var_id in plugin.vars.keys()
-        if plugin.get_var(plugin.normalize_var_id(var_id)) is not None
-    }
-    vars_to_build = _dedupe_preserve_order(
-        [
-            plugin.normalize_var_id(v)
-            for v in vars
-            if plugin.normalize_var_id(v) in plugin_supported_vars
-        ]
-    )
+    vars_to_build = _vars_to_schedule(plugin)
     primary_vars = _dedupe_preserve_order(
         [
             plugin.normalize_var_id(v)

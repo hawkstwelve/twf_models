@@ -11,6 +11,7 @@ from app.services.model_scheduler_v2 import (
     _promotion_fhs_for_cycle,
     _resolve_regions_for_cli,
     _scheduled_targets_for_cycle,
+    _vars_to_schedule,
 )
 
 
@@ -65,3 +66,26 @@ def test_scheduled_targets_filter_unsupported_radar_ptype_for_gfs_but_keep_hrrr(
     hrrr_targets = _scheduled_targets_for_cycle(hrrr, shared_vars, 6)
     hrrr_vars = {var for var, _fh in hrrr_targets}
     assert "radar_ptype" in hrrr_vars
+
+
+def test_vars_to_schedule_gfs_includes_precip_ptype_and_excludes_radar_ptype() -> None:
+    gfs = get_model("gfs")
+
+    vars_to_schedule = _vars_to_schedule(gfs)
+
+    assert "precip_ptype" in vars_to_schedule
+    assert "radar_ptype" not in vars_to_schedule
+    assert "10u" not in vars_to_schedule
+    assert "10v" not in vars_to_schedule
+    assert "crain" not in vars_to_schedule
+    assert "csnow" not in vars_to_schedule
+    assert "cicep" not in vars_to_schedule
+    assert "cfrzr" not in vars_to_schedule
+
+
+def test_vars_to_schedule_hrrr_still_includes_radar_ptype() -> None:
+    hrrr = get_model("hrrr")
+
+    vars_to_schedule = _vars_to_schedule(hrrr)
+
+    assert "radar_ptype" in vars_to_schedule
