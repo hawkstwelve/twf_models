@@ -58,7 +58,7 @@ function prefetchLayerId(index: number): string {
   return `twf-prefetch-${index}`;
 }
 
-function getResamplingMode(variable?: string): "nearest" | "linear" | "cubic" {
+function getResamplingMode(variable?: string): "nearest" | "linear" {
   // radar_ptype needs bilinear/linear for better clarity
   // All other variables use nearest to preserve discrete data
   if (variable && (variable.includes("radar") || variable.includes("ptype"))) {
