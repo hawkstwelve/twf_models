@@ -492,7 +492,12 @@ def _fetch_gfs_grib_internal(
     normalized_var = plugin.normalize_var_id(variable) if variable else None
 
     search = search_override
-    if not search:
+    if normalized_var == "qpf6h":
+        if fh < 6:
+            raise UpstreamNotReady("qpf6h not available before fh6")
+        start = fh - 6
+        search = f":APCP:surface:{start}-{fh} hour acc fcst:"
+    elif not search:
         selectors = _resolve_var_selectors(model, variable)
         search = _select_herbie_search(selectors)
     if not search:
@@ -664,6 +669,18 @@ def _fetch_gfs_grib_internal(
         raise UpstreamNotReady("Herbie did not return a GRIB2 path")
 
     path = Path(downloaded)
+    if not path.exists():
+        candidates: list[Path] = []
+        if path.suffix == "":
+            candidates = [Path(str(path) + ".grib2"), Path(str(path) + ".grb2")]
+        elif path.suffix.lower() not in {".grib2", ".grb2"}:
+            # Some Herbie responses omit the GRIB extension even when the basename
+            # contains dots (e.g., "...pgrb2.0p25f090").
+            candidates = [Path(str(path) + ".grib2"), Path(str(path) + ".grb2")]
+        for candidate in candidates:
+            if candidate.exists():
+                path = candidate
+                break
     if not path.exists():
         if expected_path.exists() and _is_readable_grib(expected_path):
             path = expected_path

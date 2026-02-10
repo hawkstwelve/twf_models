@@ -17,10 +17,6 @@ class GFSPlugin(BaseModelPlugin):
         "10u",
         "10v",
         "refc",
-        "crain",
-        "csnow",
-        "cicep",
-        "cfrzr",
     }
 
     def target_fhs(self, cycle_hour: int) -> list[int]:
@@ -39,12 +35,8 @@ class GFSPlugin(BaseModelPlugin):
             return "10u"
         if normalized == "10v":
             return "10v"
-        if normalized in {"crain", "csnow", "cicep", "cfrzr"}:
-            return normalized
-        if normalized == "radar_ptype_combo":
-            return "radar_ptype"
-        if normalized == "radar_ptype":
-            return "radar_ptype"
+        if normalized == "qpf6h":
+            return "qpf6h"
         return normalized
 
     def _score_candidate(self, da: xr.DataArray, var_spec: VarSpec) -> int:
@@ -252,21 +244,6 @@ GFS_VARS: dict[str, VarSpec] = {
         derived=True,
         derive="wspd10m",
     ),
-    "radar_ptype_combo": VarSpec(
-        id="radar_ptype_combo",
-        name="Composite Reflectivity + P-Type",
-        selectors=VarSelectors(
-            hints={
-                "refl_component": "refc",
-                "rain_component": "crain",
-                "snow_component": "csnow",
-                "sleet_component": "cicep",
-                "frzr_component": "cfrzr",
-            }
-        ),
-        derived=True,
-        derive="radar_ptype_combo",
-    ),
     "refc": VarSpec(
         id="refc",
         name="Composite Reflectivity",
@@ -282,80 +259,17 @@ GFS_VARS: dict[str, VarSpec] = {
             },
         ),
     ),
-    "crain": VarSpec(
-        id="crain",
-        name="Categorical Rain",
+    "qpf6h": VarSpec(
+        id="qpf6h",
+        name="6-hr Precip",
         selectors=VarSelectors(
-            search=[":CRAIN:surface:"],
-            filter_by_keys={
-                "shortName": "crain",
-                "typeOfLevel": "surface",
-            },
+            search=[":APCP:surface:"],
             hints={
-                "upstream_var": "crain",
-                "short_name": "crain",
-            },
-        ),
-    ),
-    "csnow": VarSpec(
-        id="csnow",
-        name="Categorical Snow",
-        selectors=VarSelectors(
-            search=[":CSNOW:surface:"],
-            filter_by_keys={
-                "shortName": "csnow",
-                "typeOfLevel": "surface",
-            },
-            hints={
-                "upstream_var": "csnow",
-                "short_name": "csnow",
-            },
-        ),
-    ),
-    "cicep": VarSpec(
-        id="cicep",
-        name="Categorical Sleet",
-        selectors=VarSelectors(
-            search=[":CICEP:surface:"],
-            filter_by_keys={
-                "shortName": "cicep",
-                "typeOfLevel": "surface",
-            },
-            hints={
-                "upstream_var": "cicep",
-                "short_name": "cicep",
-            },
-        ),
-    ),
-    "cfrzr": VarSpec(
-        id="cfrzr",
-        name="Categorical Freezing Rain",
-        selectors=VarSelectors(
-            search=[":CFRZR:surface:"],
-            filter_by_keys={
-                "shortName": "cfrzr",
-                "typeOfLevel": "surface",
-            },
-            hints={
-                "upstream_var": "cfrzr",
-                "short_name": "cfrzr",
-            },
-        ),
-    ),
-    "radar_ptype": VarSpec(
-        id="radar_ptype",
-        name="Composite Reflectivity + P-Type",
-        selectors=VarSelectors(
-            hints={
-                "refl_component": "refc",
-                "rain_component": "crain",
-                "snow_component": "csnow",
-                "sleet_component": "cicep",
-                "frzr_component": "cfrzr",
+                "kind": "apcp_rolling_6h",
+                "apcp_window_hours": "6",
             }
         ),
-        derived=True,
-        derive="radar_ptype_combo",
+        primary=True,
     ),
 }
 

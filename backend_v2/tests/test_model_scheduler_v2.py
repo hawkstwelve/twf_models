@@ -10,6 +10,7 @@ from app.services.model_scheduler_v2 import (
     _build_script_path_for_model,
     _promotion_fhs_for_cycle,
     _resolve_regions_for_cli,
+    _scheduled_targets_for_cycle,
 )
 
 
@@ -39,3 +40,13 @@ def test_promotion_fhs_follow_model_policy() -> None:
 
     assert _promotion_fhs_for_cycle(gfs, 6) == [0, 6, 12]
     assert _promotion_fhs_for_cycle(hrrr, 18) == [0, 1, 2]
+
+
+def test_scheduled_targets_skip_gfs_qpf6h_fh0() -> None:
+    gfs = get_model("gfs")
+
+    targets = _scheduled_targets_for_cycle(gfs, ["tmp2m", "qpf6h"], 6)
+
+    assert ("tmp2m", 0) in targets
+    assert ("qpf6h", 0) not in targets
+    assert ("qpf6h", 6) in targets

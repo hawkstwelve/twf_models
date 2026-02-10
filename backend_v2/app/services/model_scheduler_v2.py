@@ -287,6 +287,27 @@ def _promotion_fhs_for_cycle(plugin, cycle_hour: int | None) -> list[int]:
     return fhs[: min(3, len(fhs))]
 
 
+def _scheduled_targets_for_cycle(
+    plugin,
+    vars_to_build: Iterable[str],
+    cycle_hour: int,
+) -> list[tuple[str, int]]:
+    try:
+        base_fhs = list(plugin.target_fhs(cycle_hour))
+    except Exception:
+        return []
+
+    model_id = str(getattr(plugin, "id", "")).lower()
+    targets: list[tuple[str, int]] = []
+    for var in vars_to_build:
+        min_fh = 6 if model_id == "gfs" and var == "qpf6h" else 0
+        for fh in base_fhs:
+            if fh < min_fh:
+                continue
+            targets.append((var, fh))
+    return targets
+
+
 def _is_under_root(path: Path, root: Path) -> bool:
     try:
         path.resolve().relative_to(root.resolve())
@@ -614,33 +635,31 @@ def run_scheduler(
                 time.sleep(sleep_seconds)
                 continue
 
-            fhs = plugin.target_fhs(active_cycle_hour)
-            total = len(vars_to_build) * len(fhs)
+            scheduled_targets = _scheduled_targets_for_cycle(plugin, vars_to_build, active_cycle_hour)
+            total = len(scheduled_targets)
             pending: list[tuple[str, int]] = []
             completed = 0
 
-            for var in vars_to_build:
-                for fh in fhs:
+            for var, fh in scheduled_targets:
+                out_path = _task_output_path(out_root, model, region, active_run_id, var, fh)
+                if out_path.exists():
+                    completed += 1
+                else:
+                    pending.append((var, fh))
+
+            if not pending and active_run_id != newest_run_id:
+                active_run_id = newest_run_id
+                active_cycle_hour = newest_cycle_hour
+                scheduled_targets = _scheduled_targets_for_cycle(plugin, vars_to_build, active_cycle_hour)
+                total = len(scheduled_targets)
+                pending = []
+                completed = 0
+                for var, fh in scheduled_targets:
                     out_path = _task_output_path(out_root, model, region, active_run_id, var, fh)
                     if out_path.exists():
                         completed += 1
                     else:
                         pending.append((var, fh))
-
-            if not pending and active_run_id != newest_run_id:
-                active_run_id = newest_run_id
-                active_cycle_hour = newest_cycle_hour
-                fhs = plugin.target_fhs(active_cycle_hour)
-                total = len(vars_to_build) * len(fhs)
-                pending = []
-                completed = 0
-                for var in vars_to_build:
-                    for fh in fhs:
-                        out_path = _task_output_path(out_root, model, region, active_run_id, var, fh)
-                        if out_path.exists():
-                            completed += 1
-                        else:
-                            pending.append((var, fh))
 
             latest_pointer_run = _read_latest_pointer(latest_path)
             newest_promotion_fhs = _promotion_fhs_for_cycle(plugin, newest_cycle_hour)
