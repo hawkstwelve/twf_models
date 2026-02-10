@@ -183,7 +183,7 @@ def test_gfs_precip_ptype_uses_prate_plus_ptype_bundle(
     assert ":CFRZR:surface:0 hour fcst:" in str(seen["search_override"])
 
 
-def test_gfs_precip_ptype_uses_6h_avg_prate_search_for_fh24(
+def test_gfs_precip_ptype_uses_instant_prate_search_for_fh24(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -226,18 +226,24 @@ def test_gfs_precip_ptype_uses_6h_avg_prate_search_for_fh24(
     assert result.grib_path.name.endswith(".precip_ptype.grib2")
     assert seen["cache_key"] == "precip_ptype"
     assert seen["required_vars"] == ["precip_ptype"]
-    assert ":PRATE:surface:18-24 hour ave fcst:" in str(seen["search_override"])
+    assert ":PRATE:surface:24 hour fcst:" in str(seen["search_override"])
     assert ":CRAIN:surface:24 hour fcst:" in str(seen["search_override"])
-    assert ":CRAIN:surface:18-24 hour ave fcst:" in str(seen["search_override"])
+    assert "hour ave fcst" not in str(seen["search_override"])
 
 
-def test_gfs_precip_ptype_fh54_ptype_search_supports_fcst_and_avg_patterns(
+def test_gfs_precip_ptype_prefers_instant_fh_record_when_avg_also_exists(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     day_dir = tmp_path / "20260206" / "06"
     day_dir.mkdir(parents=True, exist_ok=True)
     seen: dict[str, object] = {}
+    inventory_records = [
+        ":PRATE:surface:12 hour fcst:",
+        ":PRATE:surface:6-12 hour ave fcst:",
+    ]
+    subset_path = day_dir / "gfs.t06z.pgrb2.0p25f12.precip_ptype.grib2"
+    subset_path.write_bytes(b"GRIB")
 
     def fake_fetch_gfs_grib(
         *,
@@ -251,11 +257,14 @@ def test_gfs_precip_ptype_fh54_ptype_search_supports_fcst_and_avg_patterns(
         del kwargs
         assert run == "latest"
         assert variable == "precip_ptype"
+        # Simulate inventory containing both instantaneous and average PRATE records.
+        assert ":PRATE:surface:12 hour fcst:" in inventory_records
+        assert ":PRATE:surface:6-12 hour ave fcst:" in inventory_records
         seen["search_override"] = search_override
         seen["cache_key"] = cache_key
         seen["required_vars"] = required_vars
         return SimpleNamespace(
-            path=day_dir / "gfs.t06z.pgrb2.0p25f54.precip_ptype.grib2",
+            path=subset_path,
             is_full_file=False,
         )
 
@@ -264,7 +273,7 @@ def test_gfs_precip_ptype_fh54_ptype_search_supports_fcst_and_avg_patterns(
     result = fetch_engine.fetch_grib(
         model="gfs",
         run="latest",
-        fh=54,
+        fh=12,
         var="precip_ptype",
         region="pnw",
     )
@@ -272,14 +281,14 @@ def test_gfs_precip_ptype_fh54_ptype_search_supports_fcst_and_avg_patterns(
     assert result.not_ready_reason is None
     assert result.grib_path is not None
     assert result.grib_path.name.endswith(".precip_ptype.grib2")
+    assert result.grib_path.exists()
+    assert result.grib_path.stat().st_size > 0
     assert seen["cache_key"] == "precip_ptype"
     assert seen["required_vars"] == ["precip_ptype"]
     search = str(seen["search_override"])
-    assert ":CRAIN:surface:54 hour fcst:" in search
-    assert ":CRAIN:surface:48-54 hour ave fcst:" in search
-    assert ":CSNOW:surface:54 hour fcst:" in search
-    assert ":CSNOW:surface:48-54 hour ave fcst:" in search
-    assert ":CICEP:surface:54 hour fcst:" in search
-    assert ":CICEP:surface:48-54 hour ave fcst:" in search
-    assert ":CFRZR:surface:54 hour fcst:" in search
-    assert ":CFRZR:surface:48-54 hour ave fcst:" in search
+    assert ":PRATE:surface:12 hour fcst:" in search
+    assert ":CRAIN:surface:12 hour fcst:" in search
+    assert ":CSNOW:surface:12 hour fcst:" in search
+    assert ":CICEP:surface:12 hour fcst:" in search
+    assert ":CFRZR:surface:12 hour fcst:" in search
+    assert "hour ave fcst" not in search

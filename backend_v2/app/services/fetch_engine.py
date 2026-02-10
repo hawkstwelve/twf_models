@@ -204,10 +204,6 @@ def _join_search_terms(terms: list[str]) -> str | None:
 
 
 def _gfs_precip_ptype_prate_search(fh: int) -> str:
-    if fh >= 6:
-        return f":PRATE:surface:{fh - 6}-{fh} hour ave fcst:"
-    if fh == 0:
-        return ":PRATE:surface:0 hour fcst:"
     return f":PRATE:surface:{fh} hour fcst:"
 
 
@@ -218,10 +214,7 @@ def _gfs_precip_ptype_component_search(component_var: str, fh: int) -> str:
         "cicep": "CICEP",
         "cfrzr": "CFRZR",
     }.get(component_var.strip().lower(), component_var.strip().upper())
-    terms = [f":{short_name}:surface:{fh} hour fcst:"]
-    if fh >= 6:
-        terms.append(f":{short_name}:surface:{fh - 6}-{fh} hour ave fcst:")
-    return _join_search_terms(terms) or terms[0]
+    return f":{short_name}:surface:{fh} hour fcst:"
 
 
 def _supports_radar_ptype(plugin: object) -> bool:

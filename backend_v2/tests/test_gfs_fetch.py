@@ -166,7 +166,7 @@ def test_fetch_precip_ptype_accepts_subset_path_without_extension(
         model="gfs",
         product="pgrb2.0p25",
         variable="precip_ptype",
-        search_override=":PRATE:surface:0-6 hour ave fcst:",
+        search_override=":PRATE:surface:6 hour fcst:",
         cache_key="precip_ptype",
         required_vars=["precip_ptype"],
         cache_dir=tmp_path,
