@@ -560,7 +560,7 @@ export default function App() {
         )}
 
         {showZoomHint && (
-          <div className="absolute right-4 top-4 z-40 flex items-center gap-2 rounded-md border border-blue-500/50 bg-blue-500/10 px-3 py-2 text-xs text-blue-700 shadow-lg backdrop-blur-md">
+          <div className="absolute left-1/2 top-4 z-40 flex -translate-x-1/2 items-center gap-2 rounded-md border border-border/50 bg-[hsl(var(--toolbar))]/95 px-3 py-2 text-xs shadow-xl backdrop-blur-md">
             <AlertCircle className="h-3.5 w-3.5" />
             GFS is low-resolution at this zoom. Switch to HRRR for sharper detail.
           </div>
