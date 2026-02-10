@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import argparse
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import xarray as xr
@@ -373,3 +376,138 @@ def test_encode_with_nodata_qpf6h_uses_fixed_range() -> None:
     assert meta["range_source"] == "spec"
     assert stats["scale_min"] == 0.0
     assert stats["scale_max"] == 6.0
+
+
+def test_build_cog_precip_ptype_succeeds_with_missing_ptype_components(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    out_root = tmp_path / "out"
+    grib_path = tmp_path / "cache" / "20260206" / "06" / "gfs.t06z.pgrb2.0p25f54.precip_ptype.grib2"
+    grib_path.parent.mkdir(parents=True, exist_ok=True)
+    grib_path.touch()
+
+    args = argparse.Namespace(
+        cache_dir=None,
+        model="gfs",
+        region="pnw",
+        out_root=str(out_root),
+        run="latest",
+        fh=54,
+        var="precip_ptype",
+        debug=False,
+        smooth=False,
+        keep_cycles=None,
+        bbox=None,
+        no_clip=True,
+        allow_range_fallback=False,
+        target_grid_meters=None,
+    )
+
+    prate_ds = xr.Dataset(
+        {
+            "prate": xr.DataArray(
+                np.array([[0.2, 0.4], [0.8, 1.2]], dtype=np.float32),
+                dims=("latitude", "longitude"),
+                coords={
+                    "latitude": np.array([45.0, 44.0], dtype=np.float32),
+                    "longitude": np.array([-123.0, -122.0], dtype=np.float32),
+                },
+                attrs={
+                    "GRIB_cfVarName": "prate",
+                    "GRIB_shortName": "prate",
+                    "GRIB_typeOfLevel": "surface",
+                    "GRIB_units": "kg m**-2 s**-1",
+                },
+            )
+        }
+    )
+
+    def fake_open_cfgrib_dataset_strict(path: Path, var_spec):
+        del path
+        if getattr(var_spec, "id", "") == "precip_ptype":
+            return prate_ds
+        raise RuntimeError("component missing")
+
+    def fake_fetch_grib(**kwargs):
+        del kwargs
+        return SimpleNamespace(
+            upstream_run_id="20260206_06z",
+            is_full_download=False,
+            grib_path=grib_path,
+            component_paths=None,
+            not_ready_reason=None,
+        )
+
+    def fake_write_float_geotiff_from_array(da, float_band, out_tif):
+        del da, float_band
+        out_tif.parent.mkdir(parents=True, exist_ok=True)
+        out_tif.touch()
+        return out_tif, True
+
+    def fake_warp_to_3857(src_tif, dst_tif, **kwargs):
+        del src_tif, kwargs
+        dst_tif.parent.mkdir(parents=True, exist_ok=True)
+        dst_tif.touch()
+
+    def fake_read_geotiff_band_float32(path: Path) -> np.ndarray:
+        if ".prate." in path.name:
+            return np.array([[0.2, 0.4], [0.8, 1.2]], dtype=np.float32)
+        return np.zeros((2, 2), dtype=np.float32)
+
+    def fake_extract_raster_georef(path: Path):
+        del path
+        return 2, 2, (0.0, 1.0, 0.0, 2.0, 0.0, -1.0), "EPSG:3857"
+
+    def fake_write_byte_geotiff_from_georef(*, byte_band, alpha_band, out_tif, geotransform, srs_wkt):
+        del byte_band, alpha_band, geotransform, srs_wkt
+        out_tif.parent.mkdir(parents=True, exist_ok=True)
+        out_tif.touch()
+
+    def fake_run_cmd(args_list: list[str]) -> None:
+        output_path = Path(args_list[-1])
+        if output_path.suffix.lower() == ".tif":
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.touch()
+
+    def fake_gdalinfo_json(path: Path) -> dict:
+        del path
+        return {
+            "bands": [
+                {"band": 1, "overviews": [{}], "mask": {"overviews": [{}]}},
+                {"band": 2, "overviews": [{}], "mask": {"overviews": [{}]}},
+            ],
+            "cornerCoordinates": {
+                "lowerLeft": [0.0, 0.0],
+                "upperRight": [2.0, 2.0],
+            },
+            "files": [],
+        }
+
+    monkeypatch.setattr(build_cog, "parse_args", lambda: args)
+    monkeypatch.setattr(build_cog, "assert_gdal_proj_version_pins", lambda: None)
+    monkeypatch.setattr(build_cog, "fetch_grib", fake_fetch_grib)
+    monkeypatch.setattr(build_cog, "_open_cfgrib_dataset_strict", fake_open_cfgrib_dataset_strict)
+    monkeypatch.setattr(build_cog, "write_float_geotiff_from_array", fake_write_float_geotiff_from_array)
+    monkeypatch.setattr(build_cog, "warp_to_3857", fake_warp_to_3857)
+    monkeypatch.setattr(build_cog, "_read_geotiff_band_float32", fake_read_geotiff_band_float32)
+    monkeypatch.setattr(build_cog, "_extract_raster_georef", fake_extract_raster_georef)
+    monkeypatch.setattr(build_cog, "write_byte_geotiff_from_georef", fake_write_byte_geotiff_from_georef)
+    monkeypatch.setattr(build_cog, "require_gdal", lambda _cmd: None)
+    monkeypatch.setattr(build_cog, "run_cmd", fake_run_cmd)
+    monkeypatch.setattr(build_cog, "gdalinfo_json", fake_gdalinfo_json)
+    monkeypatch.setattr(build_cog, "assert_alpha_present", lambda _info: None)
+    monkeypatch.setattr(build_cog, "log_warped_info", lambda _path, _info: None)
+    monkeypatch.setattr(build_cog, "run_gdaladdo_overviews", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(build_cog, "assert_single_internal_overview_cog", lambda _path: None)
+
+    rc = build_cog.main()
+    assert rc == 0
+
+    sidecar_path = out_root / "gfs" / "pnw" / "20260206_06z" / "precip_ptype" / "fh054.json"
+    assert sidecar_path.exists()
+    payload = json.loads(sidecar_path.read_text())
+    meta = payload["meta"]
+    assert meta["ptype_data_mode"] == "prate_only_fallback"
+    assert meta["ptype_noinfo_fallback"] == "rain"
+    assert sorted(meta["ptype_missing_components"]) == ["cfrzr", "cicep", "crain", "csnow"]

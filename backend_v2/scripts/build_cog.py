@@ -509,6 +509,30 @@ def _open_cfgrib_dataset(grib_path: object, var_spec: VarSpec | None) -> xr.Data
         raise
 
 
+def _open_gfs_precip_ptype_component_optional(
+    *,
+    plugin: ModelPlugin,
+    component_id: str,
+    source_path: Path | None,
+) -> xr.DataArray | None:
+    if source_path is None:
+        return None
+    component_spec = plugin.get_var(component_id)
+    try:
+        ds = _open_cfgrib_dataset_strict(source_path, component_spec)
+        if len(getattr(ds, "data_vars", {})) == 0:
+            return None
+        selected = plugin.select_dataarray(ds, component_id)
+    except Exception:
+        return None
+    if "time" in selected.dims:
+        selected = selected.isel(time=0)
+    selected = selected.squeeze()
+    if selected.ndim != 2 or selected.shape[0] == 0 or selected.shape[1] == 0:
+        return None
+    return selected
+
+
 def _encode_with_nodata(
     values: np.ndarray,
     *,
@@ -2028,14 +2052,16 @@ def main() -> int:
                 _precip_ptype_component_ids(var_spec)
             )
             if fetch_result.component_paths:
-                prate_path, rain_path, snow_path, sleet_path, frzr_path = _resolve_precip_ptype_component_paths(
-                    fetch_result.component_paths,
-                    prate_key=prate_component,
-                    rain_key=rain_component,
-                    snow_key=snow_component,
-                    sleet_key=sleet_component,
-                    frzr_key=frzr_component,
-                )
+                prate_path = fetch_result.component_paths.get(prate_component)
+                if prate_path is None:
+                    available = sorted(fetch_result.component_paths.keys())
+                    raise RuntimeError(
+                        f"Missing precip_ptype PRATE component file: expected={prate_component} have={available}"
+                    )
+                rain_path = fetch_result.component_paths.get(rain_component)
+                snow_path = fetch_result.component_paths.get(snow_component)
+                sleet_path = fetch_result.component_paths.get(sleet_component)
+                frzr_path = fetch_result.component_paths.get(frzr_component)
                 grib_path = prate_path
             elif fetch_result.grib_path is not None:
                 grib_path = fetch_result.grib_path
@@ -2047,14 +2073,11 @@ def main() -> int:
                 return 2
             logger.exception("Failed to fetch GRIB components for precip_ptype_blend")
             return 1
-        if all(path is not None for path in (prate_path, rain_path, snow_path, sleet_path, frzr_path)):
-            print(f"GRIB path (prate): {prate_path}")
-            print(f"GRIB path (rain mask): {rain_path}")
-            print(f"GRIB path (snow mask): {snow_path}")
-            print(f"GRIB path (sleet mask): {sleet_path}")
-            print(f"GRIB path (frzr mask): {frzr_path}")
-        else:
-            print(f"GRIB path (shared): {grib_path}")
+        print(f"GRIB path (prate): {prate_path or grib_path}")
+        print(f"GRIB path (rain mask): {rain_path or 'missing'}")
+        print(f"GRIB path (snow mask): {snow_path or 'missing'}")
+        print(f"GRIB path (sleet mask): {sleet_path or 'missing'}")
+        print(f"GRIB path (frzr mask): {frzr_path or 'missing'}")
     else:
         try:
             fetch_result = fetch_grib(
@@ -2091,6 +2114,7 @@ def main() -> int:
     ds_frzr: xr.Dataset | None = None
     pre_encoded: tuple[np.ndarray, np.ndarray, dict] | None = None
     precip_ptype_components: dict[str, np.ndarray] | None = None
+    precip_ptype_fallback_components: list[str] = []
     try:
         if derive_kind == "wspd10m":
             try:
@@ -2450,43 +2474,55 @@ def main() -> int:
                     raise RuntimeError("Missing GRIB source path for precip_ptype components")
 
                 ds_prate = _open_cfgrib_dataset_strict(prate_source, plugin.get_var(prate_component))
-                ds_rain = _open_cfgrib_dataset_strict(rain_source, plugin.get_var(rain_component))
-                ds_snow = _open_cfgrib_dataset_strict(snow_source, plugin.get_var(snow_component))
-                ds_sleet = _open_cfgrib_dataset_strict(sleet_source, plugin.get_var(sleet_component))
-                ds_frzr = _open_cfgrib_dataset_strict(frzr_source, plugin.get_var(frzr_component))
-
                 prate_da = plugin.select_dataarray(ds_prate, prate_component)
-                rain_da = plugin.select_dataarray(ds_rain, rain_component)
-                snow_da = plugin.select_dataarray(ds_snow, snow_component)
-                sleet_da = plugin.select_dataarray(ds_sleet, sleet_component)
-                frzr_da = plugin.select_dataarray(ds_frzr, frzr_component)
-
-                arrays = [prate_da, rain_da, snow_da, sleet_da, frzr_da]
-                arrays = [arr.isel(time=0) if "time" in arr.dims else arr for arr in arrays]
-                prate_da, rain_da, snow_da, sleet_da, frzr_da = [arr.squeeze() for arr in arrays]
+                if "time" in prate_da.dims:
+                    prate_da = prate_da.isel(time=0)
+                prate_da = prate_da.squeeze()
 
                 prate_da, lat_name, lon_name = _normalize_latlon_dataarray(prate_da)
-                rain_da, _, _ = _normalize_latlon_dataarray(rain_da)
-                snow_da, _, _ = _normalize_latlon_dataarray(snow_da)
-                sleet_da, _, _ = _normalize_latlon_dataarray(sleet_da)
-                frzr_da, _, _ = _normalize_latlon_dataarray(frzr_da)
 
-                if not np.array_equal(rain_da.coords[lat_name].values, prate_da.coords[lat_name].values) or not np.array_equal(
-                    rain_da.coords[lon_name].values, prate_da.coords[lon_name].values
-                ):
-                    rain_da = rain_da.reindex_like(prate_da, method=None)
-                if not np.array_equal(snow_da.coords[lat_name].values, prate_da.coords[lat_name].values) or not np.array_equal(
-                    snow_da.coords[lon_name].values, prate_da.coords[lon_name].values
-                ):
-                    snow_da = snow_da.reindex_like(prate_da, method=None)
-                if not np.array_equal(sleet_da.coords[lat_name].values, prate_da.coords[lat_name].values) or not np.array_equal(
-                    sleet_da.coords[lon_name].values, prate_da.coords[lon_name].values
-                ):
-                    sleet_da = sleet_da.reindex_like(prate_da, method=None)
-                if not np.array_equal(frzr_da.coords[lat_name].values, prate_da.coords[lat_name].values) or not np.array_equal(
-                    frzr_da.coords[lon_name].values, prate_da.coords[lon_name].values
-                ):
-                    frzr_da = frzr_da.reindex_like(prate_da, method=None)
+                optional_sources = {
+                    rain_component: rain_source,
+                    snow_component: snow_source,
+                    sleet_component: sleet_source,
+                    frzr_component: frzr_source,
+                }
+                optional_arrays: dict[str, xr.DataArray] = {}
+                missing_components: list[str] = []
+                for component_id, source in optional_sources.items():
+                    selected = _open_gfs_precip_ptype_component_optional(
+                        plugin=plugin,
+                        component_id=component_id,
+                        source_path=source,
+                    )
+                    if selected is None:
+                        missing_components.append(component_id)
+                        continue
+                    selected, _, _ = _normalize_latlon_dataarray(selected)
+                    if not np.array_equal(selected.coords[lat_name].values, prate_da.coords[lat_name].values) or not np.array_equal(
+                        selected.coords[lon_name].values, prate_da.coords[lon_name].values
+                    ):
+                        selected = selected.reindex_like(prate_da, method=None)
+                    optional_arrays[component_id] = selected
+
+                if missing_components:
+                    precip_ptype_fallback_components = sorted(set(missing_components))
+                    logger.warning(
+                        "GFS precip_ptype: optional p-type components unavailable; using PRATE-only fallback. "
+                        "missing=%s run=%s fh=%s",
+                        precip_ptype_fallback_components,
+                        args.run,
+                        args.fh,
+                    )
+                    rain_da = xr.zeros_like(prate_da, dtype=np.float32)
+                    snow_da = xr.zeros_like(prate_da, dtype=np.float32)
+                    sleet_da = xr.zeros_like(prate_da, dtype=np.float32)
+                    frzr_da = xr.zeros_like(prate_da, dtype=np.float32)
+                else:
+                    rain_da = optional_arrays[rain_component]
+                    snow_da = optional_arrays[snow_component]
+                    sleet_da = optional_arrays[sleet_component]
+                    frzr_da = optional_arrays[frzr_component]
 
                 da = prate_da
                 precip_ptype_components = {
@@ -2749,6 +2785,11 @@ def main() -> int:
                         "cfrzr": warped_frzr,
                     },
                 )
+                if precip_ptype_fallback_components:
+                    meta["ptype_data_mode"] = "prate_only_fallback"
+                    meta["ptype_missing_components"] = list(precip_ptype_fallback_components)
+                else:
+                    meta["ptype_data_mode"] = "blended"
                 valid_mask = np.isfinite(warped_prate)
                 stats = {
                     "vmin": float(np.nanmin(warped_prate[valid_mask])) if np.any(valid_mask) else float("nan"),

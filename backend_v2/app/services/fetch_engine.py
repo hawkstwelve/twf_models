@@ -211,6 +211,19 @@ def _gfs_precip_ptype_prate_search(fh: int) -> str:
     return f":PRATE:surface:{fh} hour fcst:"
 
 
+def _gfs_precip_ptype_component_search(component_var: str, fh: int) -> str:
+    short_name = {
+        "crain": "CRAIN",
+        "csnow": "CSNOW",
+        "cicep": "CICEP",
+        "cfrzr": "CFRZR",
+    }.get(component_var.strip().lower(), component_var.strip().upper())
+    terms = [f":{short_name}:surface:{fh} hour fcst:"]
+    if fh >= 6:
+        terms.append(f":{short_name}:surface:{fh - 6}-{fh} hour ave fcst:")
+    return _join_search_terms(terms) or terms[0]
+
+
 def _supports_radar_ptype(plugin: object) -> bool:
     getter = getattr(plugin, "get_var", None)
     if not callable(getter):
@@ -318,11 +331,15 @@ def _resolve_gfs_subset_bundle(
             if comp == prate_var:
                 search_terms.append(_gfs_precip_ptype_prate_search(fh))
                 continue
+            if comp in {rain_var, snow_var, sleet_var, frzr_var}:
+                search_terms.append(_gfs_precip_ptype_component_search(comp, fh))
+                continue
             if comp_spec is not None:
                 comp_search = _select_search(comp_spec.selectors)
                 if comp_search:
                     search_terms.append(comp_search)
-        return ("precip_ptype", _join_search_terms(search_terms), var_norm, comps)
+        # p-type components are optional for this product; PRATE is the required base field.
+        return ("precip_ptype", _join_search_terms(search_terms), var_norm, [prate_var])
 
     radar_components = ("refc", "crain", "csnow", "cicep", "cfrzr")
     if _supports_radar_ptype(plugin) and (
@@ -511,18 +528,21 @@ def fetch_grib(
     if derive_kind == "wspd10m":
         components = _resolve_component_vars(var_spec, ("10u", "10v"))
         precip_prate_component = None
+        precip_optional_components: set[str] = set()
     elif model == "gfs" and derive_kind == "precip_ptype_blend":
         components = _resolve_precip_ptype_component_vars(
             var_spec,
             ("precip_ptype", "crain", "csnow", "cicep", "cfrzr"),
         )
         precip_prate_component = components[0]
+        precip_optional_components = set(components[1:])
     elif model == "hrrr" and derive_kind == "radar_ptype_combo":
         components = _resolve_radar_blend_component_vars(
             var_spec,
             ("refc", "crain", "csnow", "cicep", "cfrzr"),
         )
         precip_prate_component = None
+        precip_optional_components = set()
     else:
         raise HTTPException(
             status_code=501,
@@ -534,10 +554,12 @@ def fetch_grib(
     gfs_component_run = run
     for component_var in components:
         component_spec = plugin.get_var(component_var)
-        if model == "gfs" and derive_kind == "precip_ptype_blend" and component_var == precip_prate_component:
-            search = _gfs_precip_ptype_prate_search(fh)
-        else:
-            search = _select_search(component_spec.selectors) if component_spec else None
+        search = _select_search(component_spec.selectors) if component_spec else None
+        if model == "gfs" and derive_kind == "precip_ptype_blend":
+            if component_var == precip_prate_component:
+                search = _gfs_precip_ptype_prate_search(fh)
+            elif component_var in precip_optional_components:
+                search = _gfs_precip_ptype_component_search(component_var, fh)
         if model == "gfs":
             try:
                 result = fetch_gfs_grib(
@@ -552,11 +574,33 @@ def fetch_grib(
                 )
             except Exception as exc:
                 if is_upstream_not_ready_error(exc):
+                    if (
+                        derive_kind == "precip_ptype_blend"
+                        and component_var in precip_optional_components
+                    ):
+                        logger.info(
+                            "Skipping optional GFS precip_ptype component at fh=%s: component=%s reason=%s",
+                            fh,
+                            component_var,
+                            exc,
+                        )
+                        continue
                     known_path = next(iter(component_paths.values()), None)
                     return _not_ready(gfs_component_run, exc, known_path)
                 raise
             not_ready_reason = getattr(result, "not_ready_reason", None)
             if not_ready_reason:
+                if (
+                    derive_kind == "precip_ptype_blend"
+                    and component_var in precip_optional_components
+                ):
+                    logger.info(
+                        "Optional GFS precip_ptype component unavailable at fh=%s: component=%s reason=%s",
+                        fh,
+                        component_var,
+                        not_ready_reason,
+                    )
+                    continue
                 known_path = next(iter(component_paths.values()), None)
                 return _not_ready(gfs_component_run, not_ready_reason, known_path)
             path = _fetch_path_or_raise(result, context="GFS component fetch")
