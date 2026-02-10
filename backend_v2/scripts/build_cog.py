@@ -1072,6 +1072,37 @@ def _write_vrt(
     vrt_path.write_text(vrt)
 
 
+def _write_single_band_vrt(
+    vrt_path: Path,
+    *,
+    x_size: int,
+    y_size: int,
+    geotransform: tuple[float, float, float, float, float, float],
+    srs_wkt: str,
+    band_path: Path,
+    data_type: str,
+    nodata: float | None = None,
+) -> None:
+    srs_escaped = escape(srs_wkt)
+    nodata_xml = f"\n    <NoDataValue>{nodata}</NoDataValue>" if nodata is not None else ""
+    vrt = f"""
+<VRTDataset rasterXSize=\"{x_size}\" rasterYSize=\"{y_size}\">
+  <SRS>{srs_escaped}</SRS>
+  <GeoTransform>{','.join(f'{v:.10f}' for v in geotransform)}</GeoTransform>
+  <VRTRasterBand dataType=\"{data_type}\" band=\"1\" subClass=\"VRTRawRasterBand\">
+    <Description>values</Description>
+    <ColorInterp>Gray</ColorInterp>{nodata_xml}
+    <SourceFilename relativeToVRT=\"0\">{band_path}</SourceFilename>
+    <ImageOffset>0</ImageOffset>
+    <PixelOffset>{4 if data_type == 'Float32' else 1}</PixelOffset>
+    <LineOffset>{x_size * (4 if data_type == 'Float32' else 1)}</LineOffset>
+    <ByteOrder>LSB</ByteOrder>
+  </VRTRasterBand>
+</VRTDataset>
+""".strip()
+    vrt_path.write_text(vrt)
+
+
 def write_byte_geotiff_from_arrays(
     da: xr.DataArray,
     byte_band: np.ndarray,
@@ -1191,6 +1222,229 @@ def write_byte_geotiff_from_arrays(
     return out_tif, used_latlon
 
 
+def write_float_geotiff_from_array(
+    da: xr.DataArray,
+    float_band: np.ndarray,
+    out_tif: Path,
+) -> tuple[Path, bool]:
+    used_latlon = False
+    nodata = -9999.0
+    try:
+        grid = _lambert_grid_from_attrs(da)
+
+        float_data, x_coords, y_coords = _apply_scan_order(float_band, grid)
+        float_data = np.asarray(float_data, dtype=np.float32)
+        float_data = np.where(np.isfinite(float_data), float_data, nodata).astype(np.float32)
+
+        dx = abs(x_coords[1] - x_coords[0]) if x_coords.size > 1 else 1.0
+        dy = abs(y_coords[1] - y_coords[0]) if y_coords.size > 1 else 1.0
+        x_min = float(np.min(x_coords))
+        x_max = float(np.max(x_coords))
+        y_min = float(np.min(y_coords))
+        y_max = float(np.max(y_coords))
+        geotransform = (x_min, dx, 0.0, y_max, 0.0, -dy)
+        srs_wkt = grid["lambert_crs"].to_wkt()
+    except ValueError:
+        used_latlon = True
+        float_data = np.asarray(float_band, dtype=np.float32)
+        float_data = np.where(np.isfinite(float_data), float_data, nodata).astype(np.float32)
+
+        try:
+            normalized_da = normalize_latlon_coords(da)
+            lat_name, lon_name = detect_latlon_names(normalized_da)
+            lat = normalized_da.coords[lat_name].values
+            lon = normalized_da.coords[lon_name].values
+        except ValueError:
+            lat, lon = _latlon_axes_from_grib_attrs(da, expected_shape=float_band.shape)
+            logger.warning(
+                "Lat/lon coords missing for '%s'; using GRIB attr fallback",
+                da.name or "unknown_var",
+            )
+
+        if lat.ndim != 1 or lon.ndim != 1:
+            raise ValueError("Lat/lon fallback expects 1D latitude/longitude arrays")
+
+        lon_wrapped = _normalize_lon_1d(lon.astype(np.float64))
+        lon_order = np.argsort(lon_wrapped)
+        if not np.array_equal(lon_order, np.arange(lon_order.size)):
+            lon_wrapped = lon_wrapped[lon_order]
+            float_data = float_data[:, lon_order]
+        lon = lon_wrapped
+
+        if lat[0] < lat[-1]:
+            float_data = float_data[::-1, :]
+            lat = lat[::-1]
+
+        dx = _infer_spacing(lon, axis_name="longitude") if lon.size > 1 else 1.0
+        dy = _infer_spacing(lat, axis_name="latitude") if lat.size > 1 else 1.0
+        x_min = float(np.min(lon))
+        y_max = float(np.max(lat))
+        geotransform = (x_min, dx, 0.0, y_max, 0.0, -dy)
+        srs_wkt = CRS.from_epsg(4326).to_wkt()
+
+    out_tif.parent.mkdir(parents=True, exist_ok=True)
+    band_path = out_tif.with_suffix(".band1.f32.bin")
+    vrt_path = out_tif.with_suffix(".vrt")
+
+    float_data.astype(np.float32).tofile(band_path)
+
+    _write_single_band_vrt(
+        vrt_path,
+        x_size=float_data.shape[1],
+        y_size=float_data.shape[0],
+        geotransform=geotransform,
+        srs_wkt=srs_wkt,
+        band_path=band_path,
+        data_type="Float32",
+        nodata=nodata,
+    )
+
+    require_gdal("gdal_translate")
+    run_cmd(
+        [
+            "gdal_translate",
+            "-of",
+            "GTiff",
+            "-co",
+            "TILED=YES",
+            "-co",
+            "COMPRESS=DEFLATE",
+            str(vrt_path),
+            str(out_tif),
+        ]
+    )
+
+    for temp_path in (band_path, vrt_path):
+        try:
+            temp_path.unlink()
+        except OSError:
+            pass
+
+    return out_tif, used_latlon
+
+
+def _read_geotiff_band_float32(path: Path, *, band: int = 1) -> np.ndarray:
+    info = gdalinfo_json(path)
+    size = info.get("size") or []
+    if len(size) != 2:
+        raise RuntimeError(f"Unable to read raster size from {path}")
+    width = int(size[0])
+    height = int(size[1])
+    nodata_value = None
+    bands = info.get("bands") or []
+    if 1 <= band <= len(bands):
+        nodata_value = (bands[band - 1] or {}).get("noDataValue")
+
+    raw_path = path.with_suffix(f".band{band}.f32.envi")
+    require_gdal("gdal_translate")
+    run_cmd(
+        [
+            "gdal_translate",
+            "-of",
+            "ENVI",
+            "-ot",
+            "Float32",
+            "-b",
+            str(band),
+            str(path),
+            str(raw_path),
+        ]
+    )
+    try:
+        arr = np.fromfile(raw_path, dtype=np.float32)
+        expected = width * height
+        if arr.size != expected:
+            raise RuntimeError(
+                f"Unexpected raster byte count for {path}: got={arr.size} expected={expected}"
+            )
+        arr = arr.reshape((height, width))
+        if nodata_value is not None:
+            nodata_float = float(nodata_value)
+            arr = np.where(np.isclose(arr, nodata_float, atol=1e-6), np.nan, arr)
+        return arr
+    finally:
+        for suffix in ("", ".hdr", ".aux.xml"):
+            try:
+                Path(str(raw_path) + suffix).unlink()
+            except OSError:
+                pass
+
+
+def _extract_raster_georef(path: Path) -> tuple[int, int, tuple[float, float, float, float, float, float], str]:
+    info = gdalinfo_json(path)
+    size = info.get("size") or []
+    if len(size) != 2:
+        raise RuntimeError(f"Unable to read raster size from {path}")
+    geotransform_values = info.get("geoTransform") or []
+    if len(geotransform_values) != 6:
+        raise RuntimeError(f"Unable to read geoTransform from {path}")
+    coord_sys = info.get("coordinateSystem") or {}
+    srs_wkt = str(coord_sys.get("wkt") or "").strip()
+    if not srs_wkt:
+        raise RuntimeError(f"Unable to read coordinate system WKT from {path}")
+    width = int(size[0])
+    height = int(size[1])
+    geotransform = tuple(float(v) for v in geotransform_values)
+    return width, height, geotransform, srs_wkt
+
+
+def write_byte_geotiff_from_georef(
+    *,
+    byte_band: np.ndarray,
+    alpha_band: np.ndarray,
+    out_tif: Path,
+    geotransform: tuple[float, float, float, float, float, float],
+    srs_wkt: str,
+) -> Path:
+    if byte_band.shape != alpha_band.shape:
+        raise ValueError(
+            f"byte/alpha shape mismatch: byte={byte_band.shape} alpha={alpha_band.shape}"
+        )
+    if byte_band.ndim != 2:
+        raise ValueError(f"Expected 2D byte array, got shape={byte_band.shape}")
+
+    out_tif.parent.mkdir(parents=True, exist_ok=True)
+    band1_path = out_tif.with_suffix(".band1.bin")
+    band2_path = out_tif.with_suffix(".band2.bin")
+    vrt_path = out_tif.with_suffix(".vrt")
+
+    np.asarray(byte_band, dtype=np.uint8).tofile(band1_path)
+    np.asarray(alpha_band, dtype=np.uint8).tofile(band2_path)
+
+    _write_vrt(
+        vrt_path,
+        x_size=byte_band.shape[1],
+        y_size=byte_band.shape[0],
+        geotransform=geotransform,
+        srs_wkt=srs_wkt,
+        band1_path=band1_path,
+        band2_path=band2_path,
+    )
+
+    require_gdal("gdal_translate")
+    run_cmd(
+        [
+            "gdal_translate",
+            "-of",
+            "GTiff",
+            "-co",
+            "TILED=YES",
+            "-co",
+            "COMPRESS=DEFLATE",
+            str(vrt_path),
+            str(out_tif),
+        ]
+    )
+
+    for temp_path in (band1_path, band2_path, vrt_path):
+        try:
+            temp_path.unlink()
+        except OSError:
+            pass
+
+    return out_tif
+
+
 def warp_to_3857(
     src_tif: Path,
     dst_tif: Path,
@@ -1199,6 +1453,7 @@ def warp_to_3857(
     resampling: str = "bilinear",
     tr_meters: tuple[float, float] | None = None,
     tap: bool = True,
+    with_alpha: bool = True,
 ) -> None:
     require_gdal("gdalwarp")
     dst_tif.parent.mkdir(parents=True, exist_ok=True)
@@ -1211,14 +1466,14 @@ def warp_to_3857(
         "EPSG:3857",
         "-r",
         resampling,
-        "-srcalpha",
-        "-dstalpha",
         "-co",
         "TILED=YES",
         "-co",
         "COMPRESS=DEFLATE",
         "-overwrite",
     ]
+    if with_alpha:
+        cmd.extend(["-srcalpha", "-dstalpha"])
 
     if tr_meters is not None:
         xres, yres = tr_meters
@@ -1822,6 +2077,7 @@ def main() -> int:
     ds_sleet: xr.Dataset | None = None
     ds_frzr: xr.Dataset | None = None
     pre_encoded: tuple[np.ndarray, np.ndarray, dict] | None = None
+    precip_ptype_components: dict[str, np.ndarray] | None = None
     try:
         if derive_kind == "wspd10m":
             try:
@@ -2220,17 +2476,13 @@ def main() -> int:
                     frzr_da = frzr_da.reindex_like(prate_da, method=None)
 
                 da = prate_da
-                pre_encoded = _encode_precip_ptype_blend(
-                    requested_var=args.var,
-                    normalized_var=normalized_var,
-                    prate_values=np.asarray(prate_da.values, dtype=np.float32),
-                    ptype_values={
-                        "crain": np.asarray(rain_da.values, dtype=np.float32),
-                        "csnow": np.asarray(snow_da.values, dtype=np.float32),
-                        "cicep": np.asarray(sleet_da.values, dtype=np.float32),
-                        "cfrzr": np.asarray(frzr_da.values, dtype=np.float32),
-                    },
-                )
+                precip_ptype_components = {
+                    "prate": np.asarray(prate_da.values, dtype=np.float32),
+                    "crain": np.asarray(rain_da.values, dtype=np.float32),
+                    "csnow": np.asarray(snow_da.values, dtype=np.float32),
+                    "cicep": np.asarray(sleet_da.values, dtype=np.float32),
+                    "cfrzr": np.asarray(frzr_da.values, dtype=np.float32),
+                }
             except Exception as exc:
                 if isinstance(exc, UpstreamNotReadyError):
                     raise
@@ -2358,7 +2610,12 @@ def main() -> int:
 
     try:
         start_time = time.time()
-        if pre_encoded is None:
+        use_precip_ptype_prewarp = (
+            args.model == "gfs"
+            and derive_kind == "precip_ptype_blend"
+            and precip_ptype_components is not None
+        )
+        if pre_encoded is None and not use_precip_ptype_prewarp:
             byte_band, alpha_band, meta, valid_mask, stats, spec_key_used = _encode_with_nodata(
                 values,
                 requested_var=args.var,
@@ -2366,7 +2623,7 @@ def main() -> int:
                 da=da,
                 allow_range_fallback=allow_range_fallback,
             )
-        else:
+        elif pre_encoded is not None:
             byte_band, alpha_band, meta = pre_encoded
             valid_mask = np.isfinite(values)
             stats = {
@@ -2374,6 +2631,20 @@ def main() -> int:
                 "vmax": float(np.nanmax(values[valid_mask])) if np.any(valid_mask) else float("nan"),
             }
             spec_key_used = str(meta.get("spec_key") or normalized_var)
+        else:
+            byte_band = np.zeros(values.shape, dtype=np.uint8)
+            alpha_band = np.zeros(values.shape, dtype=np.uint8)
+            meta = {
+                "kind": "discrete",
+                "units": "in/hr",
+                "spec_key": "precip_ptype",
+            }
+            valid_mask = np.isfinite(values)
+            stats = {
+                "vmin": float(np.nanmin(values[valid_mask])) if np.any(valid_mask) else float("nan"),
+                "vmax": float(np.nanmax(values[valid_mask])) if np.any(valid_mask) else float("nan"),
+            }
+            spec_key_used = "precip_ptype"
 
         if args.var == "tmp2m":
             valid_count = int(np.count_nonzero(valid_mask))
@@ -2424,28 +2695,96 @@ def main() -> int:
             warped_tif = temp_root / f"{base_name}.3857.tif"
             ovr_tif = temp_root / f"{base_name}.3857.ovrsrc.tif"
 
-            print(f"Writing byte GeoTIFF: {byte_tif}")
-            _, used_latlon = write_byte_geotiff_from_arrays(da, byte_band, alpha_band, byte_tif)
-
-            is_discrete = _is_discrete(args.var, meta)
-            warp_resampling = "near" if is_discrete else "bilinear"
-            print(f"Warping to EPSG:3857 ({warp_resampling}): {warped_tif}")
             tr_meters = _warp_tr_meters(args.model, args.var, meta) or target_grid_meters
             tap = True
-            warp_to_3857(
-                byte_tif,
-                warped_tif,
-                clip_bounds_3857=clip_bounds_3857,
-                resampling=warp_resampling,
-                tr_meters=tr_meters,
-                tap=tap,
-            )
-            if args.debug:
-                print(
-                    "Warp debug: "
-                    f"model={args.model} var={args.var} used_latlon={used_latlon} "
-                    f"resampling={warp_resampling} tr_meters={tr_meters} tap={tap}"
+            if use_precip_ptype_prewarp:
+                assert precip_ptype_components is not None
+                warped_components: dict[str, Path] = {}
+                for component_name in ("prate", "crain", "csnow", "cicep", "cfrzr"):
+                    src_component_tif = temp_root / f"{base_name}.{component_name}.native.f32.tif"
+                    dst_component_tif = temp_root / f"{base_name}.{component_name}.3857.f32.tif"
+                    write_float_geotiff_from_array(
+                        da,
+                        precip_ptype_components[component_name],
+                        src_component_tif,
+                    )
+                    warp_to_3857(
+                        src_component_tif,
+                        dst_component_tif,
+                        clip_bounds_3857=clip_bounds_3857,
+                        resampling="bilinear",
+                        tr_meters=tr_meters,
+                        tap=tap,
+                        with_alpha=False,
+                    )
+                    warped_components[component_name] = dst_component_tif
+
+                warped_prate = _read_geotiff_band_float32(warped_components["prate"])
+                warped_rain = _read_geotiff_band_float32(warped_components["crain"])
+                warped_snow = _read_geotiff_band_float32(warped_components["csnow"])
+                warped_sleet = _read_geotiff_band_float32(warped_components["cicep"])
+                warped_frzr = _read_geotiff_band_float32(warped_components["cfrzr"])
+
+                byte_band, alpha_band, meta = _encode_precip_ptype_blend(
+                    requested_var=args.var,
+                    normalized_var=normalized_var,
+                    prate_values=warped_prate,
+                    ptype_values={
+                        "crain": warped_rain,
+                        "csnow": warped_snow,
+                        "cicep": warped_sleet,
+                        "cfrzr": warped_frzr,
+                    },
                 )
+                valid_mask = np.isfinite(warped_prate)
+                stats = {
+                    "vmin": float(np.nanmin(warped_prate[valid_mask])) if np.any(valid_mask) else float("nan"),
+                    "vmax": float(np.nanmax(warped_prate[valid_mask])) if np.any(valid_mask) else float("nan"),
+                }
+                spec_key_used = str(meta.get("spec_key") or normalized_var)
+
+                width, height, geotransform, srs_wkt = _extract_raster_georef(warped_components["prate"])
+                if byte_band.shape != (height, width):
+                    raise RuntimeError(
+                        "Warped precip_ptype shape mismatch: "
+                        f"encoded={byte_band.shape} expected={(height, width)}"
+                    )
+                print(f"Writing prewarped precip_ptype byte GeoTIFF: {warped_tif}")
+                write_byte_geotiff_from_georef(
+                    byte_band=byte_band,
+                    alpha_band=alpha_band,
+                    out_tif=warped_tif,
+                    geotransform=geotransform,
+                    srs_wkt=srs_wkt,
+                )
+                if args.debug:
+                    print(
+                        "Warp debug: "
+                        f"model={args.model} var={args.var} used_latlon=True "
+                        "resampling=bilinear(pre-encode) "
+                        f"tr_meters={tr_meters} tap={tap}"
+                    )
+            else:
+                print(f"Writing byte GeoTIFF: {byte_tif}")
+                _, used_latlon = write_byte_geotiff_from_arrays(da, byte_band, alpha_band, byte_tif)
+
+                is_discrete = _is_discrete(args.var, meta)
+                warp_resampling = "near" if is_discrete else "bilinear"
+                print(f"Warping to EPSG:3857 ({warp_resampling}): {warped_tif}")
+                warp_to_3857(
+                    byte_tif,
+                    warped_tif,
+                    clip_bounds_3857=clip_bounds_3857,
+                    resampling=warp_resampling,
+                    tr_meters=tr_meters,
+                    tap=tap,
+                )
+                if args.debug:
+                    print(
+                        "Warp debug: "
+                        f"model={args.model} var={args.var} used_latlon={used_latlon} "
+                        f"resampling={warp_resampling} tr_meters={tr_meters} tap={tap}"
+                    )
 
             info = gdalinfo_json(warped_tif)
             if args.debug:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import xarray as xr
 
@@ -227,6 +229,40 @@ def test_is_discrete_treats_qpf6h_as_continuous() -> None:
 def test_is_discrete_treats_precip_ptype_as_discrete_when_meta_marks_discrete() -> None:
     assert build_cog._is_discrete("precip_ptype", {"kind": "discrete"}) is True
     assert build_cog._is_discrete("precip_ptype", {}) is False
+
+
+def test_warp_to_3857_uses_alpha_by_default(monkeypatch) -> None:
+    seen: dict[str, list[str]] = {}
+
+    monkeypatch.setattr(build_cog, "require_gdal", lambda _cmd: None)
+
+    def fake_run_cmd(args: list[str]) -> None:
+        seen["args"] = args
+
+    monkeypatch.setattr(build_cog, "run_cmd", fake_run_cmd)
+
+    build_cog.warp_to_3857(Path("/tmp/src.tif"), Path("/tmp/dst.tif"))
+
+    args = seen["args"]
+    assert "-srcalpha" in args
+    assert "-dstalpha" in args
+
+
+def test_warp_to_3857_can_disable_alpha(monkeypatch) -> None:
+    seen: dict[str, list[str]] = {}
+
+    monkeypatch.setattr(build_cog, "require_gdal", lambda _cmd: None)
+
+    def fake_run_cmd(args: list[str]) -> None:
+        seen["args"] = args
+
+    monkeypatch.setattr(build_cog, "run_cmd", fake_run_cmd)
+
+    build_cog.warp_to_3857(Path("/tmp/src.tif"), Path("/tmp/dst.tif"), with_alpha=False)
+
+    args = seen["args"]
+    assert "-srcalpha" not in args
+    assert "-dstalpha" not in args
 
 
 def test_encode_precip_ptype_blend_priority_and_metadata() -> None:
