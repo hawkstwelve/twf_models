@@ -203,6 +203,10 @@ def list_frames(model: str, region: str, run: str, var: str) -> list[dict]:
         fh = parse_fh_filename(entry.name)
         if fh is None:
             continue
+        if model == "gfs" and normalized_var == "precip_ptype":
+            # GFS precip_ptype is produced on 6-hour cadence starting at fh006.
+            if fh < 6 or (fh % 6) != 0:
+                continue
         if fh in seen_fhs:
             continue
         seen_fhs.add(fh)

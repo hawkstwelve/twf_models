@@ -51,14 +51,16 @@ def test_gfs_plugin_normalize_var_id() -> None:
     assert GFS_MODEL.normalize_var_id("refc") == "refc"
     assert GFS_MODEL.normalize_var_id("ugrd10m") == "10u"
     assert GFS_MODEL.normalize_var_id("radar_ptype") == "radar_ptype"
-    assert GFS_MODEL.normalize_var_id("radar_ptype_combo") == "radar_ptype"
+    assert GFS_MODEL.normalize_var_id("precip_ptype") == "precip_ptype"
 
 
-def test_gfs_plugin_contains_radar_ptype_specs() -> None:
-    combo = GFS_MODEL.get_var("radar_ptype")
-    assert combo is not None
-    assert combo.derived is True
-    assert combo.derive == "radar_ptype_combo"
+def test_gfs_plugin_contains_precip_ptype_spec_and_not_radar_ptype() -> None:
+    precip = GFS_MODEL.get_var("precip_ptype")
+    assert precip is not None
+    assert precip.primary is True
+    assert precip.derived is True
+    assert precip.derive == "precip_ptype_blend"
+    assert GFS_MODEL.get_var("radar_ptype") is None
 
 
 def test_gfs_plugin_select_tmp2m_from_selector_attrs() -> None:

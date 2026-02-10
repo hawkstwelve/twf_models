@@ -21,6 +21,7 @@ def test_gfs_discovery_lists_runs_vars_and_frames(monkeypatch: pytest.MonkeyPatc
     _touch(newer / "tmp2m" / "fh000.cog.tif", b"II*\x00valid")
     _touch(newer / "tmp2m" / "fh006.cog.tif", b"II*\x00valid")
     _touch(newer / "wspd10m" / "fh000.cog.tif", b"II*\x00valid")
+    _touch(newer / "precip_ptype" / "fh006.cog.tif", b"II*\x00valid")
     _touch(older / "tmp2m" / "fh000.cog.tif", b"II*\x00valid")
     (root / "gfs" / "pnw" / "LATEST.json").write_text(
         json.dumps({"run_id": "20260206_06z"})
@@ -33,7 +34,7 @@ def test_gfs_discovery_lists_runs_vars_and_frames(monkeypatch: pytest.MonkeyPatc
     assert runs == ["20260206_06z", "20260206_00z"]
 
     vars_latest = discovery_v2.list_vars("gfs", "pnw", "latest")
-    assert vars_latest == ["tmp2m", "wspd10m"]
+    assert vars_latest == ["precip_ptype", "tmp2m", "wspd10m"]
 
     frames = discovery_v2.list_frames("gfs", "pnw", "latest", "tmp2m")
     assert [row["fh"] for row in frames] == [0, 6]
@@ -82,3 +83,47 @@ def test_discovery_filters_gfs_radar_ptype_but_keeps_hrrr(monkeypatch: pytest.Mo
 
     hrrr_radar_frames = discovery_v2.list_frames("hrrr", "pnw", run_id, "radar_ptype")
     assert [row["fh"] for row in hrrr_radar_frames] == [0]
+
+
+def test_discovery_includes_gfs_precip_ptype_but_excludes_hrrr_precip_ptype(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "data"
+    run_id = "20260206_06z"
+
+    _touch(root / "gfs" / "pnw" / run_id / "precip_ptype" / "fh006.cog.tif", b"II*\x00valid")
+    _touch(root / "hrrr" / "pnw" / run_id / "precip_ptype" / "fh006.cog.tif", b"II*\x00valid")
+    (root / "gfs" / "pnw" / "LATEST.json").write_text(json.dumps({"run_id": run_id}))
+    (root / "hrrr" / "pnw" / "LATEST.json").write_text(json.dumps({"run_id": run_id}))
+
+    monkeypatch.setenv("TWF_DATA_V2_ROOT", str(root))
+    discovery_v2._CACHE.clear()
+
+    gfs_vars = discovery_v2.list_vars("gfs", "pnw", run_id)
+    assert "precip_ptype" in gfs_vars
+
+    hrrr_vars = discovery_v2.list_vars("hrrr", "pnw", run_id)
+    assert "precip_ptype" not in hrrr_vars
+
+
+def test_discovery_gfs_precip_ptype_frames_require_fh6_and_6_hour_steps(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "data"
+    run_id = "20260206_06z"
+    var_root = root / "gfs" / "pnw" / run_id / "precip_ptype"
+
+    _touch(var_root / "fh000.cog.tif", b"II*\x00valid")
+    _touch(var_root / "fh003.cog.tif", b"II*\x00valid")
+    _touch(var_root / "fh006.cog.tif", b"II*\x00valid")
+    _touch(var_root / "fh009.cog.tif", b"II*\x00valid")
+    _touch(var_root / "fh012.cog.tif", b"II*\x00valid")
+    (root / "gfs" / "pnw" / "LATEST.json").write_text(json.dumps({"run_id": run_id}))
+
+    monkeypatch.setenv("TWF_DATA_V2_ROOT", str(root))
+    discovery_v2._CACHE.clear()
+
+    frames = discovery_v2.list_frames("gfs", "pnw", run_id, "precip_ptype")
+    assert [row["fh"] for row in frames] == [6, 12]
