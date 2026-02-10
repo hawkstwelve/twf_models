@@ -222,18 +222,16 @@ def test_latest_probe_uses_six_hour_cycles(monkeypatch: pytest.MonkeyPatch, tmp_
 
 
 @pytest.mark.parametrize(
-    ("fh", "start", "end"),
+    "fh",
     [
-        (6, 0, 6),
-        (90, 84, 90),
+        6,
+        90,
     ],
 )
-def test_qpf6h_uses_rolling_apcp_window(
+def test_qpf6h_uses_broad_apcp_search(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     fh: int,
-    start: int,
-    end: int,
 ) -> None:
     run = "2026020600"
     run_dt = datetime.strptime(run, "%Y%m%d%H")
@@ -266,7 +264,7 @@ def test_qpf6h_uses_rolling_apcp_window(
         cache_dir=tmp_path,
     )
 
-    assert seen_searches == [f":APCP:surface:{start}-{end} hour acc fcst:"]
+    assert seen_searches == [":APCP:surface:"]
     assert result.path == expected
     assert expected.exists()
 
@@ -294,3 +292,89 @@ def test_qpf6h_before_fh6_returns_not_ready(
 
     assert result.path is None
     assert result.not_ready_reason == "qpf6h not available before fh6"
+
+
+def test_qpf6h_fallback_discovers_subset_file_when_reported_path_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    run = "2026020600"
+    run_dt = datetime.strptime(run, "%Y%m%d%H")
+    target_dir = tmp_path / run_dt.strftime("%Y%m%d") / run_dt.strftime("%H")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    reported_missing = target_dir / "missing_herbie_path"
+    discovered = (
+        target_dir
+        / "gfs"
+        / run_dt.strftime("%Y%m%d")
+        / "subset_123__gfs.t00z.pgrb2.0p25.f006.grib2"
+    )
+    discovered.parent.mkdir(parents=True, exist_ok=True)
+    discovered.write_bytes(b"GRIB")
+    expected = target_dir / "gfs.t00z.pgrb2.0p25f06.qpf6h.grib2"
+
+    class _MissingPathHerbie(_DummyHerbie):
+        def download(self, search: str, save_dir: Path):
+            assert search == ":APCP:surface:"
+            assert save_dir == target_dir
+            return reported_missing
+
+    monkeypatch.setattr(gfs_fetch, "Herbie", _MissingPathHerbie)
+    monkeypatch.setattr(
+        gfs_fetch,
+        "_subset_contains_required_variables",
+        lambda *args, **kwargs: (True, ["qpf6h"], ["APCP"]),
+    )
+
+    result = gfs_fetch.fetch_gfs_grib(
+        run=run,
+        fh=6,
+        model="gfs",
+        product="pgrb2.0p25",
+        variable="qpf6h",
+        cache_dir=tmp_path,
+    )
+
+    assert result.path == expected
+    assert result.path is not None
+    assert result.not_ready_reason is None
+    assert expected.exists()
+
+
+def test_missing_path_subset_discovery_not_used_for_non_qpf6h(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    run = "2026020600"
+    run_dt = datetime.strptime(run, "%Y%m%d%H")
+    target_dir = tmp_path / run_dt.strftime("%Y%m%d") / run_dt.strftime("%H")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    reported_missing = target_dir / "missing_herbie_path"
+    unrelated_subset = (
+        target_dir
+        / "gfs"
+        / run_dt.strftime("%Y%m%d")
+        / "subset_123__gfs.t00z.pgrb2.0p25.f000.grib2"
+    )
+    unrelated_subset.parent.mkdir(parents=True, exist_ok=True)
+    unrelated_subset.write_bytes(b"GRIB")
+
+    class _MissingPathHerbie(_DummyHerbie):
+        def download(self, _search: str, save_dir: Path):
+            assert save_dir == target_dir
+            return reported_missing
+
+    monkeypatch.setattr(gfs_fetch, "Herbie", _MissingPathHerbie)
+
+    result = gfs_fetch.fetch_gfs_grib(
+        run=run,
+        fh=0,
+        model="gfs",
+        product="pgrb2.0p25",
+        variable="t2m",
+        search_override=":TMP:2 m above ground:",
+        cache_dir=tmp_path,
+    )
+
+    assert result.path is None
+    assert result.not_ready_reason is not None

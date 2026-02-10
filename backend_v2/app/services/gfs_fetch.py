@@ -495,8 +495,7 @@ def _fetch_gfs_grib_internal(
     if normalized_var == "qpf6h":
         if fh < 6:
             raise UpstreamNotReady("qpf6h not available before fh6")
-        start = fh - 6
-        search = f":APCP:surface:{start}-{fh} hour acc fcst:"
+        search = ":APCP:surface:"
     elif not search:
         selectors = _resolve_var_selectors(model, variable)
         search = _select_herbie_search(selectors)
@@ -681,6 +680,23 @@ def _fetch_gfs_grib_internal(
             if candidate.exists():
                 path = candidate
                 break
+    if normalized_var == "qpf6h" and not path.exists():
+        qpf_pattern = f"subset_*__gfs.t{run_dt:%H}z.{product}.f{fh:03d}*"
+        qpf_candidates = sorted(
+            (candidate for candidate in target_dir.rglob(qpf_pattern) if candidate.is_file()),
+            key=lambda candidate: candidate.stat().st_mtime,
+            reverse=True,
+        )
+        chosen = qpf_candidates[0] if qpf_candidates else None
+        logger.info(
+            "qpf6h fallback discovery: target_dir=%s pattern=%s candidates=%s chosen=%s",
+            target_dir,
+            qpf_pattern,
+            len(qpf_candidates),
+            chosen,
+        )
+        if chosen is not None:
+            path = chosen
     if not path.exists():
         if expected_path.exists() and _is_readable_grib(expected_path):
             path = expected_path
