@@ -204,7 +204,7 @@ def _join_search_terms(terms: list[str]) -> str | None:
 
 
 def _gfs_precip_ptype_prate_search(fh: int) -> str:
-    return f":PRATE:surface:{fh} hour fcst:"
+    return f":PRATE:surface:{fh} hour fcst"
 
 
 def _gfs_precip_ptype_component_search(component_var: str, fh: int) -> str:
@@ -214,7 +214,7 @@ def _gfs_precip_ptype_component_search(component_var: str, fh: int) -> str:
         "cicep": "CICEP",
         "cfrzr": "CFRZR",
     }.get(component_var.strip().lower(), component_var.strip().upper())
-    return f":{short_name}:surface:{fh} hour fcst:"
+    return f":{short_name}:surface:{fh} hour fcst"
 
 
 def _supports_radar_ptype(plugin: object) -> bool:
