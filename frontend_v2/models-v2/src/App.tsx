@@ -159,8 +159,10 @@ export default function App() {
   }, [tileUrlForHour, forecastHour]);
 
   const legend = useMemo(() => {
-    const meta = currentFrame?.meta?.meta ?? frameRows[0]?.meta?.meta ?? null;
-    return buildLegend(meta, opacity);
+    const rawMeta = currentFrame?.meta?.meta ?? frameRows[0]?.meta?.meta ?? null;
+    const normalizedMeta =
+      (rawMeta as { meta?: LegendMeta | null } | null)?.meta ?? (rawMeta as LegendMeta | null);
+    return buildLegend(normalizedMeta, opacity);
   }, [currentFrame, frameRows, opacity]);
 
   const prefetchTileUrls = useMemo(() => {
