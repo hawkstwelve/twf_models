@@ -98,3 +98,28 @@ def test_encode_refc_masks_sub_10dbz() -> None:
     assert int(alpha[1, 1]) == 255
     # 10 dBZ should map to first visible color bin, not white/no-data.
     assert int(byte_band[1, 0]) == 0
+
+
+def test_qpf6h_spec_continuous_with_fixed_range_and_legend_stops() -> None:
+    spec = VAR_SPECS["qpf6h"]
+    assert spec["type"] == "continuous"
+    assert spec["units"] == "in"
+    assert spec["range"] == (0.0, 6.0)
+    assert spec["colors"] == VAR_SPECS["precip_total"]["colors"]
+    legend_stops = spec.get("legend_stops")
+    assert legend_stops is not None
+    assert len(legend_stops) == len(spec["colors"])
+    assert legend_stops[0][0] == 0.01
+    assert legend_stops[-1][0] == 25.0
+
+
+def test_encode_qpf6h_includes_range_and_legend_stops() -> None:
+    values = np.array([[0.0, 1.0], [3.0, 6.0]], dtype=np.float32)
+    byte_band, alpha, meta = encode_to_byte_and_alpha(values, "qpf6h")
+
+    assert byte_band.shape == values.shape
+    assert alpha.shape == values.shape
+    assert meta["kind"] == "continuous"
+    assert meta["units"] == "in"
+    assert meta["range"] == [0.0, 6.0]
+    assert "legend_stops" in meta

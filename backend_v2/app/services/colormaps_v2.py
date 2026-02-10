@@ -219,6 +219,7 @@ WSPD10M_LEGEND_STOPS = [
     (95, "#E600E6"),
     (100, "#680868"),
 ]
+QPF6H_LEGEND_STOPS = list(zip(precip_levels, precip_colors))
 
 # 850mb temperature (°C) continuous palette anchors and range
 TEMP850_C_COLOR_ANCHORS = [
@@ -283,6 +284,15 @@ VAR_SPECS = {
         "units": "in",
         "levels": precip_levels,
         "colors": precip_colors,
+    },
+    "qpf6h": {
+        "type": "continuous",
+        "units": "in",
+        "range": (0.0, 6.0),
+        "colors": precip_colors,
+        "display_name": "6-hr Precip",
+        "legend_title": "6-hr Precip (in)",
+        "legend_stops": QPF6H_LEGEND_STOPS,
     },
     "snowfall_total": {
         "type": "discrete",

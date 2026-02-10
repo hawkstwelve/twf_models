@@ -217,3 +217,24 @@ def test_resolve_target_grid_meters_override_precedence(monkeypatch) -> None:
 def test_is_discrete_treats_qpf6h_as_continuous() -> None:
     assert build_cog._is_discrete("qpf6h", {"kind": "continuous"}) is False
     assert build_cog._is_discrete("qpf6h", {}) is False
+
+
+def test_encode_with_nodata_qpf6h_uses_fixed_range() -> None:
+    values = np.array([[0.0, 1.0], [3.0, 6.0]], dtype=np.float32)
+    da = xr.DataArray(values, dims=("y", "x"), name="qpf6h")
+
+    _, alpha, meta, _, stats, _ = _encode_with_nodata(
+        values,
+        requested_var="qpf6h",
+        normalized_var="qpf6h",
+        da=da,
+        allow_range_fallback=False,
+    )
+
+    assert np.all(alpha == 255)
+    assert meta["kind"] == "continuous"
+    assert meta["units"] == "in"
+    assert meta["range"] == [0.0, 6.0]
+    assert meta["range_source"] == "spec"
+    assert stats["scale_min"] == 0.0
+    assert stats["scale_max"] == 6.0
