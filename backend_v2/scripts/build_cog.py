@@ -813,9 +813,10 @@ def _encode_precip_ptype_blend(
 
     byte_band = np.zeros(prate_values.shape, dtype=np.uint8)
     alpha = np.zeros(prate_values.shape, dtype=np.uint8)
-    prate = np.asarray(prate_values, dtype=np.float32)
-    prate = np.where(np.isfinite(prate), prate, np.nan)
-    visible_mask = np.isfinite(prate) & (prate >= alpha_threshold)
+    # Input PRATE is expected in mm/s; encode pipeline works in mm/hr.
+    prate_mmhr = np.asarray(prate_values, dtype=np.float32) * np.float32(3600.0)
+    prate_mmhr = np.where(np.isfinite(prate_mmhr), prate_mmhr, np.nan)
+    visible_mask = np.isfinite(prate_mmhr) & (prate_mmhr >= alpha_threshold)
 
     flat_colors = list(spec.get("colors", []))
     ptype_breaks = {
@@ -848,7 +849,7 @@ def _encode_precip_ptype_blend(
     has_type_info = max_conf > 0.0
     rain_index = int(ptype_order.index("rain"))
 
-    prate_capped = np.clip(prate, range_min, range_max)
+    prate_capped = np.clip(prate_mmhr, range_min, range_max)
     denom = range_max - range_min
     if denom <= 0:
         raise RuntimeError("Invalid precip_ptype blend intensity range")
@@ -1761,6 +1762,37 @@ def _band_min_max(info: dict, band_index: int) -> tuple[float | None, float | No
     return min_val, max_val
 
 
+def _assert_precip_ptype_alpha_stats(path: Path) -> None:
+    require_gdal("gdalinfo")
+    output = run_cmd_output(["gdalinfo", "-stats", str(path)])
+    section_match = re.search(r"Band\s+2\b([\s\S]*?)(?:\nBand\s+\d+\b|$)", output, flags=re.IGNORECASE)
+    if section_match is None:
+        raise RuntimeError(f"Could not find Band 2 stats in gdalinfo output for {path}")
+    section = section_match.group(1)
+
+    def _pick_float(patterns: list[str]) -> float | None:
+        for pattern in patterns:
+            match = re.search(pattern, section, flags=re.IGNORECASE)
+            if match is None:
+                continue
+            try:
+                return float(match.group(1))
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    max_val = _pick_float([r"STATISTICS_MAXIMUM=([0-9eE.+-]+)", r"Maximum=([0-9eE.+-]+)"])
+    mean_val = _pick_float([r"STATISTICS_MEAN=([0-9eE.+-]+)", r"Mean=([0-9eE.+-]+)"])
+    if max_val is None or max_val < 255.0:
+        raise RuntimeError(
+            f"precip_ptype alpha stats invalid for {path}: expected STATISTICS_MAXIMUM=255, got {max_val}"
+        )
+    if mean_val is None or mean_val <= 0.0:
+        raise RuntimeError(
+            f"precip_ptype alpha stats invalid for {path}: expected nonzero mean, got {mean_val}"
+        )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build V2 COG for a run/fh/variable.")
     parser.add_argument("--cache-dir", type=str, default=None)
@@ -2524,9 +2556,18 @@ def main() -> int:
                     sleet_da = optional_arrays[sleet_component]
                     frzr_da = optional_arrays[frzr_component]
 
+                prate_vals = np.asarray(prate_da.values, dtype=np.float32)
+                prate_units = str(
+                    prate_da.attrs.get("units")
+                    or prate_da.attrs.get("GRIB_units")
+                    or ""
+                ).strip().lower()
+                if "mm/hr" in prate_units or "mm h-1" in prate_units:
+                    prate_vals = prate_vals / np.float32(3600.0)
+
                 da = prate_da
                 precip_ptype_components = {
-                    "prate": np.asarray(prate_da.values, dtype=np.float32),
+                    "prate": prate_vals,
                     "crain": np.asarray(rain_da.values, dtype=np.float32),
                     "csnow": np.asarray(snow_da.values, dtype=np.float32),
                     "cicep": np.asarray(sleet_da.values, dtype=np.float32),
@@ -2664,7 +2705,31 @@ def main() -> int:
             and derive_kind == "precip_ptype_blend"
             and precip_ptype_components is not None
         )
-        if pre_encoded is None and not use_precip_ptype_prewarp:
+        if use_precip_ptype_prewarp:
+            assert precip_ptype_components is not None
+            byte_band, alpha_band, meta = _encode_precip_ptype_blend(
+                requested_var=args.var,
+                normalized_var=normalized_var,
+                prate_values=precip_ptype_components["prate"],
+                ptype_values={
+                    "crain": precip_ptype_components["crain"],
+                    "csnow": precip_ptype_components["csnow"],
+                    "cicep": precip_ptype_components["cicep"],
+                    "cfrzr": precip_ptype_components["cfrzr"],
+                },
+            )
+            if precip_ptype_fallback_components:
+                meta["ptype_data_mode"] = "prate_only_fallback"
+                meta["ptype_missing_components"] = list(precip_ptype_fallback_components)
+            else:
+                meta["ptype_data_mode"] = "blended"
+            valid_mask = np.isfinite(precip_ptype_components["prate"])
+            stats = {
+                "vmin": float(np.nanmin(precip_ptype_components["prate"][valid_mask])) if np.any(valid_mask) else float("nan"),
+                "vmax": float(np.nanmax(precip_ptype_components["prate"][valid_mask])) if np.any(valid_mask) else float("nan"),
+            }
+            spec_key_used = str(meta.get("spec_key") or normalized_var)
+        elif pre_encoded is None:
             byte_band, alpha_band, meta, valid_mask, stats, spec_key_used = _encode_with_nodata(
                 values,
                 requested_var=args.var,
@@ -2680,20 +2745,6 @@ def main() -> int:
                 "vmax": float(np.nanmax(values[valid_mask])) if np.any(valid_mask) else float("nan"),
             }
             spec_key_used = str(meta.get("spec_key") or normalized_var)
-        else:
-            byte_band = np.zeros(values.shape, dtype=np.uint8)
-            alpha_band = np.zeros(values.shape, dtype=np.uint8)
-            meta = {
-                "kind": "discrete",
-                "units": "mm/hr",
-                "spec_key": "precip_ptype",
-            }
-            valid_mask = np.isfinite(values)
-            stats = {
-                "vmin": float(np.nanmin(values[valid_mask])) if np.any(valid_mask) else float("nan"),
-                "vmax": float(np.nanmax(values[valid_mask])) if np.any(valid_mask) else float("nan"),
-            }
-            spec_key_used = "precip_ptype"
 
         if args.var == "tmp2m":
             valid_count = int(np.count_nonzero(valid_mask))
@@ -2972,6 +3023,9 @@ def main() -> int:
                 )
                 run_gdaladdo_overviews(cog_path, addo_resampling, "nearest")
                 assert_single_internal_overview_cog(cog_path)
+
+            if args.model == "gfs" and derive_kind == "precip_ptype_blend":
+                _assert_precip_ptype_alpha_stats(cog_path)
 
             if args.debug:
                 cog_info = gdalinfo_json(cog_path)

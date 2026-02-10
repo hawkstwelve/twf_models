@@ -310,7 +310,7 @@ def test_encode_precip_ptype_blend_priority_and_metadata() -> None:
 
 
 def test_encode_precip_ptype_blend_falls_back_to_rain_without_type_signal() -> None:
-    prate = np.array([[0.5]], dtype=np.float32)
+    prate = np.array([[0.001]], dtype=np.float32)  # mm/s
     zeros = np.zeros((1, 1), dtype=np.float32)
 
     byte_band, alpha, meta = _encode_precip_ptype_blend(
@@ -326,9 +326,10 @@ def test_encode_precip_ptype_blend_falls_back_to_rain_without_type_signal() -> N
     )
 
     rain_offset = int(meta["ptype_breaks"]["rain"]["offset"])
+    prate_mmhr = float(prate[0, 0]) * 3600.0
     expected_bin = int(
         min(
-            ((prate[0, 0] - meta["range"][0]) / (meta["range"][1] - meta["range"][0])) * meta["bins_per_ptype"],
+            ((prate_mmhr - meta["range"][0]) / (meta["range"][1] - meta["range"][0])) * meta["bins_per_ptype"],
             meta["bins_per_ptype"] - 1,
         )
     )
@@ -337,7 +338,7 @@ def test_encode_precip_ptype_blend_falls_back_to_rain_without_type_signal() -> N
 
 
 def test_encode_precip_ptype_blend_masks_below_visibility_threshold() -> None:
-    prate = np.array([[0.009]], dtype=np.float32)
+    prate = np.array([[0.000002]], dtype=np.float32)  # mm/s -> 0.0072 mm/hr
     rain = np.array([[1.0]], dtype=np.float32)
     zeros = np.zeros((1, 1), dtype=np.float32)
 
@@ -355,6 +356,29 @@ def test_encode_precip_ptype_blend_masks_below_visibility_threshold() -> None:
 
     assert int(alpha[0, 0]) == 0
     assert int(byte_band[0, 0]) == 0
+
+
+def test_encode_precip_ptype_blend_converts_mm_per_s_to_mm_per_hr() -> None:
+    prate = np.array([[0.001]], dtype=np.float32)  # 3.6 mm/hr
+    rain = np.array([[1.0]], dtype=np.float32)
+    zeros = np.zeros((1, 1), dtype=np.float32)
+
+    byte_band, alpha, meta = _encode_precip_ptype_blend(
+        requested_var="precip_ptype",
+        normalized_var="precip_ptype",
+        prate_values=prate,
+        ptype_values={
+            "crain": rain,
+            "csnow": zeros,
+            "cicep": zeros,
+            "cfrzr": zeros,
+        },
+    )
+
+    assert int(alpha[0, 0]) == 255
+    rain_offset = int(meta["ptype_breaks"]["rain"]["offset"])
+    expected_bin = int(((3.6 - meta["range"][0]) / (meta["range"][1] - meta["range"][0])) * meta["bins_per_ptype"])
+    assert int(byte_band[0, 0]) == rain_offset + expected_bin
 
 
 def test_encode_with_nodata_qpf6h_uses_fixed_range() -> None:
@@ -383,7 +407,7 @@ def test_build_cog_precip_ptype_succeeds_with_missing_ptype_components(
     tmp_path: Path,
 ) -> None:
     out_root = tmp_path / "out"
-    grib_path = tmp_path / "cache" / "20260206" / "06" / "gfs.t06z.pgrb2.0p25f54.precip_ptype.grib2"
+    grib_path = tmp_path / "cache" / "20260206" / "06" / "gfs.t06z.pgrb2.0p25f24.precip_ptype.grib2"
     grib_path.parent.mkdir(parents=True, exist_ok=True)
     grib_path.touch()
 
@@ -393,7 +417,7 @@ def test_build_cog_precip_ptype_succeeds_with_missing_ptype_components(
         region="pnw",
         out_root=str(out_root),
         run="latest",
-        fh=54,
+        fh=24,
         var="precip_ptype",
         debug=False,
         smooth=False,
@@ -470,6 +494,19 @@ def test_build_cog_precip_ptype_succeeds_with_missing_ptype_components(
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.touch()
 
+    seen_cmd_output: list[list[str]] = []
+
+    def fake_run_cmd_output(args_list: list[str]) -> str:
+        seen_cmd_output.append(args_list)
+        if args_list[:2] == ["gdalinfo", "-stats"]:
+            return (
+                "Band 2 Block=256x256 Type=Byte, ColorInterp=Alpha\n"
+                "  Metadata:\n"
+                "    STATISTICS_MAXIMUM=255\n"
+                "    STATISTICS_MEAN=42.5\n"
+            )
+        return ""
+
     def fake_gdalinfo_json(path: Path) -> dict:
         del path
         return {
@@ -495,6 +532,7 @@ def test_build_cog_precip_ptype_succeeds_with_missing_ptype_components(
     monkeypatch.setattr(build_cog, "write_byte_geotiff_from_georef", fake_write_byte_geotiff_from_georef)
     monkeypatch.setattr(build_cog, "require_gdal", lambda _cmd: None)
     monkeypatch.setattr(build_cog, "run_cmd", fake_run_cmd)
+    monkeypatch.setattr(build_cog, "run_cmd_output", fake_run_cmd_output)
     monkeypatch.setattr(build_cog, "gdalinfo_json", fake_gdalinfo_json)
     monkeypatch.setattr(build_cog, "assert_alpha_present", lambda _info: None)
     monkeypatch.setattr(build_cog, "log_warped_info", lambda _path, _info: None)
@@ -504,10 +542,11 @@ def test_build_cog_precip_ptype_succeeds_with_missing_ptype_components(
     rc = build_cog.main()
     assert rc == 0
 
-    sidecar_path = out_root / "gfs" / "pnw" / "20260206_06z" / "precip_ptype" / "fh054.json"
+    sidecar_path = out_root / "gfs" / "pnw" / "20260206_06z" / "precip_ptype" / "fh024.json"
     assert sidecar_path.exists()
     payload = json.loads(sidecar_path.read_text())
     meta = payload["meta"]
     assert meta["ptype_data_mode"] == "prate_only_fallback"
     assert meta["ptype_noinfo_fallback"] == "rain"
     assert sorted(meta["ptype_missing_components"]) == ["cfrzr", "cicep", "crain", "csnow"]
+    assert any(cmd[:2] == ["gdalinfo", "-stats"] for cmd in seen_cmd_output)
