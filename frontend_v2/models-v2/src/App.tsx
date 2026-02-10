@@ -65,6 +65,13 @@ function buildLegend(meta: LegendMeta | null | undefined, opacity: number): Lege
   if (!meta) {
     return null;
   }
+  const metaWithIds = meta as LegendMeta & { var_key?: string; spec_key?: string; id?: string };
+  const legendMetadata = {
+    kind: metaWithIds.kind,
+    id: metaWithIds.var_key ?? metaWithIds.spec_key ?? metaWithIds.id,
+    ptype_breaks: metaWithIds.ptype_breaks,
+    ptype_order: metaWithIds.ptype_order,
+  };
 
   if (Array.isArray(meta.legend_stops) && meta.legend_stops.length > 0) {
     const entries = meta.legend_stops
@@ -78,6 +85,7 @@ function buildLegend(meta: LegendMeta | null | undefined, opacity: number): Lege
       units: meta.units,
       entries,
       opacity,
+      ...legendMetadata,
     };
   }
 
@@ -93,6 +101,7 @@ function buildLegend(meta: LegendMeta | null | undefined, opacity: number): Lege
       units: meta.units,
       entries,
       opacity,
+      ...legendMetadata,
     };
   }
 
@@ -141,6 +150,7 @@ function buildLegend(meta: LegendMeta | null | undefined, opacity: number): Lege
         units: meta.units,
         entries,
         opacity,
+        ...legendMetadata,
       };
     }
   }

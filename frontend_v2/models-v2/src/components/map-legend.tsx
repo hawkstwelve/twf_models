@@ -14,6 +14,8 @@ export type LegendPayload = {
   units?: string;
   kind?: string;
   id?: string;
+  ptype_breaks?: Record<string, { offset: number; count: number }>;
+  ptype_order?: string[];
   entries: LegendEntry[];
   opacity: number;
 };
@@ -35,9 +37,41 @@ function UnavailablePlaceholder() {
 }
 
 const RADAR_GROUP_LABELS = ["Rain", "Snow", "Sleet", "Freezing Rain"];
+const DEFAULT_PTYPE_ORDER = ["rain", "snow", "sleet", "frzr"];
+const LEGEND_COLLAPSED_STORAGE_KEY = "twf.legend.collapsed";
 
-function radarGroupLabel(index: number): string {
+type RadarLegendGroup = {
+  label: string;
+  entries: LegendEntry[];
+};
+
+function radarGroupLabelForCode(code: string, index: number): string {
+  const normalized = code.toLowerCase();
+  if (normalized === "rain") return "Rain";
+  if (normalized === "snow") return "Snow";
+  if (normalized === "sleet") return "Sleet";
+  if (normalized === "frzr") return "Freezing Rain";
   return RADAR_GROUP_LABELS[index] ?? `Type ${index + 1}`;
+}
+
+function readCollapsedPreference(): boolean {
+  if (typeof window === "undefined") return true;
+  try {
+    const stored = window.localStorage.getItem(LEGEND_COLLAPSED_STORAGE_KEY);
+    if (stored === null) return true;
+    return stored === "true";
+  } catch {
+    return true;
+  }
+}
+
+function writeCollapsedPreference(value: boolean): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(LEGEND_COLLAPSED_STORAGE_KEY, String(value));
+  } catch {
+    // Ignore storage errors (private mode/quota).
+  }
 }
 
 function isRadarPtypeLegend(legend: LegendPayload): boolean {
@@ -54,32 +88,72 @@ function isRadarPtypeLegend(legend: LegendPayload): boolean {
   );
 }
 
-function groupRadarEntries(entries: LegendEntry[]): LegendEntry[][] {
-  // UI displays entries in reverse order (highest first). Apply grouping on the
-  // displayed order so zero-delimiters split the visible list correctly.
-  const displayed = entries.slice().reverse();
-
+function groupRadarEntries(
+  entries: LegendEntry[],
+  ptypeBreaks?: Record<string, { offset: number; count: number }>,
+  ptypeOrder?: string[]
+): RadarLegendGroup[] {
   const isZero = (value: number) => Math.abs(value) < 1e-9;
 
-  const groups: LegendEntry[][] = [];
+  if (ptypeBreaks) {
+    const orderedTypes = (Array.isArray(ptypeOrder) && ptypeOrder.length > 0 ? ptypeOrder : DEFAULT_PTYPE_ORDER).filter(
+      (ptype) => ptypeBreaks[ptype]
+    );
+    const groupedByMeta: RadarLegendGroup[] = [];
+
+    for (let index = 0; index < orderedTypes.length; index += 1) {
+      const ptype = orderedTypes[index];
+      const boundary = ptypeBreaks[ptype];
+      if (!boundary) continue;
+      const offset = Number(boundary.offset);
+      const count = Number(boundary.count);
+      if (!Number.isFinite(offset) || !Number.isFinite(count) || offset < 0 || count <= 0) {
+        continue;
+      }
+      const slice = entries
+        .slice(offset, offset + count)
+        .filter((entry) => !isZero(entry.value))
+        .slice()
+        .reverse();
+      if (slice.length === 0) continue;
+      groupedByMeta.push({
+        label: radarGroupLabelForCode(ptype, index),
+        entries: slice,
+      });
+    }
+
+    if (groupedByMeta.length > 0) {
+      return groupedByMeta;
+    }
+  }
+
+  // Fallback: split displayed sequence on zero-value delimiters.
+  const displayed = entries.slice().reverse();
+  const fallbackGroups: RadarLegendGroup[] = [];
   let current: LegendEntry[] = [];
 
   for (const entry of displayed) {
     if (isZero(entry.value)) {
       if (current.length > 0) {
-        groups.push(current);
+        fallbackGroups.push({
+          label: RADAR_GROUP_LABELS[fallbackGroups.length] ?? `Type ${fallbackGroups.length + 1}`,
+          entries: current,
+        });
         current = [];
       }
-      continue; // skip delimiter row
+      continue;
     }
     current.push(entry);
   }
 
   if (current.length > 0) {
-    groups.push(current);
+    fallbackGroups.push({
+      label: RADAR_GROUP_LABELS[fallbackGroups.length] ?? `Type ${fallbackGroups.length + 1}`,
+      entries: current,
+    });
   }
 
-  return groups;
+  return fallbackGroups;
 }
 
 type MapLegendProps = {
@@ -88,7 +162,7 @@ type MapLegendProps = {
 };
 
 export function MapLegend({ legend, onOpacityChange }: MapLegendProps) {
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState<boolean>(() => readCollapsedPreference());
   const [isSmallScreen, setIsSmallScreen] = useState(false);
   const [fadeKey, setFadeKey] = useState(0);
   const prevTitleRef = useRef(legend?.title);
@@ -97,7 +171,10 @@ export function MapLegend({ legend, onOpacityChange }: MapLegendProps) {
     const mq = window.matchMedia("(max-width: 640px)");
     const handler = (query: MediaQueryList | MediaQueryListEvent) => {
       setIsSmallScreen(query.matches);
-      if (query.matches) setCollapsed(true);
+      if (query.matches) {
+        setCollapsed(true);
+        writeCollapsedPreference(true);
+      }
     };
     handler(mq);
     mq.addEventListener("change", handler);
@@ -120,7 +197,9 @@ export function MapLegend({ legend, onOpacityChange }: MapLegendProps) {
   }
 
   const opacityPercent = Math.round(legend.opacity * 100);
-  const groupedRadarEntries = isRadarPtypeLegend(legend) ? groupRadarEntries(legend.entries) : [];
+  const groupedRadarEntries = isRadarPtypeLegend(legend)
+    ? groupRadarEntries(legend.entries, legend.ptype_breaks, legend.ptype_order)
+    : [];
   const showGroupedRadar = groupedRadarEntries.length > 0;
 
   return (
@@ -134,7 +213,13 @@ export function MapLegend({ legend, onOpacityChange }: MapLegendProps) {
     >
       <button
         type="button"
-        onClick={() => setCollapsed((value) => !value)}
+        onClick={() =>
+          setCollapsed((value) => {
+            const next = !value;
+            writeCollapsedPreference(next);
+            return next;
+          })
+        }
         className="flex w-full items-center justify-between gap-1.5 border-b border-border/30 px-1.5 py-1 text-left transition-all duration-150 hover:bg-secondary/30 active:bg-secondary/50"
         aria-expanded={!collapsed}
         aria-controls="legend-body"
@@ -166,9 +251,9 @@ export function MapLegend({ legend, onOpacityChange }: MapLegendProps) {
                       className={cn(groupIndex > 0 ? "mt-2 border-t border-border/20 pt-2" : "")}
                     >
                       <div className="mb-1 px-0.5 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground/85">
-                        {radarGroupLabel(groupIndex)}
+                        {group.label}
                       </div>
-                      {group.map((entry, index) => (
+                      {group.entries.map((entry, index) => (
                         <div
                           key={`${entry.value}-${entry.color}-${groupIndex}-${index}`}
                           className={cn(
