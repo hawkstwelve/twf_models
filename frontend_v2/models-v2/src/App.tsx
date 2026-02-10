@@ -96,6 +96,55 @@ function buildLegend(meta: LegendMeta | null | undefined, opacity: number): Lege
     };
   }
 
+  if (Array.isArray(meta.colors) && meta.colors.length > 0) {
+    const entries: Array<{ value: number; color: string }> = [];
+
+    if (Array.isArray(meta.ptype_order) && meta.ptype_breaks && meta.ptype_levels) {
+      for (const ptype of meta.ptype_order) {
+        const ptypeBreak = meta.ptype_breaks[ptype];
+        const ptypeLevels = meta.ptype_levels[ptype];
+        if (!ptypeBreak || !Array.isArray(ptypeLevels)) {
+          continue;
+        }
+        const offset = Number(ptypeBreak.offset);
+        const count = Number(ptypeBreak.count);
+        if (!Number.isFinite(offset) || !Number.isFinite(count) || offset < 0 || count <= 0) {
+          continue;
+        }
+        const maxItems = Math.min(count, ptypeLevels.length, meta.colors.length - offset);
+        for (let index = 0; index < maxItems; index += 1) {
+          const value = Number(ptypeLevels[index]);
+          const color = meta.colors[offset + index];
+          if (!Number.isFinite(value) || !color) {
+            continue;
+          }
+          entries.push({ value, color });
+        }
+      }
+    }
+
+    if (entries.length === 0 && Array.isArray(meta.levels) && meta.levels.length > 0) {
+      const maxItems = Math.min(meta.levels.length, meta.colors.length);
+      for (let index = 0; index < maxItems; index += 1) {
+        const value = Number(meta.levels[index]);
+        const color = meta.colors[index];
+        if (!Number.isFinite(value) || !color) {
+          continue;
+        }
+        entries.push({ value, color });
+      }
+    }
+
+    if (entries.length > 0) {
+      return {
+        title: meta.legend_title ?? "Legend",
+        units: meta.units,
+        entries,
+        opacity,
+      };
+    }
+  }
+
   return null;
 }
 

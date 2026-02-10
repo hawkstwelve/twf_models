@@ -8,10 +8,15 @@ export type ModelOption = {
 export type LegendStops = [number | string, string][];
 
 export type LegendMeta = {
+  kind?: string;
   legend_title?: string;
   units?: string;
   legend_stops?: LegendStops;
   colors?: string[];
+  levels?: number[];
+  ptype_order?: string[];
+  ptype_breaks?: Record<string, { offset: number; count: number }>;
+  ptype_levels?: Record<string, number[]>;
   range?: [number, number];
 };
 
