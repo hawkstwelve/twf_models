@@ -29,6 +29,7 @@ const SCRUB_SWAP_TIMEOUT_MS = 650;
 const AUTOPLAY_SWAP_TIMEOUT_MS = 1500;
 const SETTLE_TIMEOUT_MS = 1200;
 const CONTINUOUS_CROSSFADE_MS = 120;
+const MICRO_CROSSFADE_MS = 60; // Very brief crossfade to avoid white flash
 const PREFETCH_BUFFER_COUNT = 4;
 
 // Keep hidden raster layers at a tiny opacity so MapLibre still requests/renders their tiles.
@@ -333,6 +334,37 @@ export function MapCanvas({
     [cancelCrossfade, setLayerOpacity]
   );
 
+  const runMicroCrossfade = useCallback(
+    (map: maplibregl.Map, fromBuffer: OverlayBuffer, toBuffer: OverlayBuffer, targetOpacity: number, token: number) => {
+      const started = performance.now();
+      
+      const tick = (now: number) => {
+        if (token !== swapTokenRef.current) {
+          return;
+        }
+        const elapsed = now - started;
+        const progress = Math.min(1, elapsed / MICRO_CROSSFADE_MS);
+        
+        // Quick fade: new layer fades in while old layer stays visible, then old fades out
+        const toOpacity = targetOpacity * progress;
+        setLayerOpacity(map, layerId(toBuffer), toOpacity);
+        
+        if (progress < 1) {
+          window.requestAnimationFrame(tick);
+        } else {
+          // Once new layer is fully visible, hide old layer
+          setLayerOpacity(map, layerId(fromBuffer), HIDDEN_OPACITY);
+        }
+      };
+      
+      // Start with old layer at full opacity, new layer hidden
+      setLayerOpacity(map, layerId(fromBuffer), targetOpacity);
+      setLayerOpacity(map, layerId(toBuffer), 0);
+      window.requestAnimationFrame(tick);
+    },
+    [setLayerOpacity]
+  );
+
   const waitForSourceReady = useCallback(
     (
       map: maplibregl.Map,
@@ -373,20 +405,14 @@ export function MapCanvas({
 
       const finishReadyAfterRender = () => {
         if (done) return;
-        // Wait for map idle event to ensure all tiles are fully painted
-        const waitForIdle = () => {
-          if (done) return;
-          const onIdleOnce = () => {
+        // Double RAF ensures tiles are rendered before swap
+        window.requestAnimationFrame(() => {
+          window.requestAnimationFrame(() => {
             if (!done) {
               finishReady();
             }
-          };
-          map.once("idle", onIdleOnce);
-          // Trigger a repaint to ensure idle event fires
-          map.triggerRepaint();
-        };
-        // Use RAF to ensure we're not already in an idle state
-        window.requestAnimationFrame(waitForIdle);
+          });
+        });
       };
 
       const onSourceData = (event: maplibregl.MapSourceDataEvent) => {
@@ -499,10 +525,8 @@ export function MapCanvas({
         runCrossfade(map, previousActive, inactiveBuffer, opacity);
       } else {
         cancelCrossfade();
-        // Tiles should already be painted due to double RAF in waitForSourceReady
-        // Make both changes synchronously to avoid any gap
-        setLayerOpacity(map, layerId(inactiveBuffer), opacity);
-        setLayerOpacity(map, layerId(previousActive), HIDDEN_OPACITY);
+        // Use micro-crossfade for smooth transition without noticeable flash
+        runMicroCrossfade(map, previousActive, inactiveBuffer, opacity, token);
       }
       console.debug("[map] swap end", { sourceId: sourceId(inactiveBuffer), tileUrl, mode, token });
       if (!skipSettleNotify) {
