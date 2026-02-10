@@ -9,6 +9,7 @@ export type LegendStops = [number | string, string][];
 
 export type LegendMeta = {
   kind?: string;
+  display_name?: string;
   legend_title?: string;
   units?: string;
   legend_stops?: LegendStops;
@@ -29,6 +30,15 @@ export type FrameRow = {
     meta?: LegendMeta | null;
   } | null;
 };
+
+export type VarRow =
+  | string
+  | {
+      id: string;
+      display_name?: string;
+      name?: string;
+      label?: string;
+    };
 
 async function fetchJson<T>(url: string): Promise<T> {
   const response = await fetch(url, { credentials: "omit" });
@@ -52,9 +62,9 @@ export async function fetchRuns(model: string, region: string): Promise<string[]
   );
 }
 
-export async function fetchVars(model: string, region: string, run: string): Promise<string[]> {
+export async function fetchVars(model: string, region: string, run: string): Promise<VarRow[]> {
   const runKey = run || "latest";
-  return fetchJson<string[]>(
+  return fetchJson<VarRow[]>(
     `${API_BASE}/${encodeURIComponent(model)}/${encodeURIComponent(region)}/${encodeURIComponent(runKey)}/vars`
   );
 }

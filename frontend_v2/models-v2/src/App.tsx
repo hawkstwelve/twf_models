@@ -8,13 +8,14 @@ import { WeatherToolbar } from "@/components/weather-toolbar";
 import {
   type FrameRow,
   type LegendMeta,
+  type VarRow,
   fetchFrames,
   fetchModels,
   fetchRegions,
   fetchRuns,
   fetchVars,
 } from "@/lib/api";
-import { ALLOWED_VARIABLES, DEFAULTS, VARIABLE_LABELS } from "@/lib/config";
+import { DEFAULTS, VARIABLE_LABELS } from "@/lib/config";
 import { buildRunOptions } from "@/lib/run-options";
 import { buildTileUrlFromFrame } from "@/lib/tiles";
 
@@ -39,8 +40,35 @@ function makeRegionLabel(id: string): string {
   return id.toUpperCase();
 }
 
-function makeVariableLabel(id: string): string {
+function makeVariableLabel(id: string, preferredLabel?: string | null): string {
+  if (preferredLabel && preferredLabel.trim()) {
+    return preferredLabel.trim();
+  }
   return VARIABLE_LABELS[id] ?? id;
+}
+
+function normalizeVarRows(rows: VarRow[]): Array<{ id: string; displayName?: string }> {
+  const normalized: Array<{ id: string; displayName?: string }> = [];
+  for (const row of rows) {
+    if (typeof row === "string") {
+      const id = row.trim();
+      if (!id) continue;
+      normalized.push({ id });
+      continue;
+    }
+    const id = String(row.id ?? "").trim();
+    if (!id) continue;
+    const displayName = row.display_name ?? row.name ?? row.label;
+    normalized.push({ id, displayName: displayName?.trim() || undefined });
+  }
+  return normalized;
+}
+
+function extractLegendMeta(row: FrameRow | null | undefined): LegendMeta | null {
+  const rawMeta = row?.meta?.meta ?? null;
+  if (!rawMeta) return null;
+  const nested = (rawMeta as { meta?: LegendMeta | null }).meta;
+  return nested ?? (rawMeta as LegendMeta);
 }
 
 function nearestFrame(frames: number[], current: number): number {
@@ -81,7 +109,7 @@ function buildLegend(meta: LegendMeta | null | undefined, opacity: number): Lege
       return null;
     }
     return {
-      title: meta.legend_title ?? "Legend",
+      title: meta.legend_title ?? meta.display_name ?? "Legend",
       units: meta.units,
       entries,
       opacity,
@@ -97,7 +125,7 @@ function buildLegend(meta: LegendMeta | null | undefined, opacity: number): Lege
       return { value, color };
     });
     return {
-      title: meta.legend_title ?? "Legend",
+      title: meta.legend_title ?? meta.display_name ?? "Legend",
       units: meta.units,
       entries,
       opacity,
@@ -146,7 +174,7 @@ function buildLegend(meta: LegendMeta | null | undefined, opacity: number): Lege
 
     if (entries.length > 0) {
       return {
-        title: meta.legend_title ?? "Legend",
+        title: meta.legend_title ?? meta.display_name ?? "Legend",
         units: meta.units,
         entries,
         opacity,
@@ -219,9 +247,7 @@ export default function App() {
   }, [tileUrlForHour, forecastHour]);
 
   const legend = useMemo(() => {
-    const rawMeta = currentFrame?.meta?.meta ?? frameRows[0]?.meta?.meta ?? null;
-    const normalizedMeta =
-      (rawMeta as { meta?: LegendMeta | null } | null)?.meta ?? (rawMeta as LegendMeta | null);
+    const normalizedMeta = extractLegendMeta(currentFrame) ?? extractLegendMeta(frameRows[0] ?? null);
     return buildLegend(normalizedMeta, opacity);
   }, [currentFrame, frameRows, opacity]);
 
@@ -368,8 +394,11 @@ export default function App() {
 
         setRuns(runData);
 
-        const filteredVars = varData.filter((id) => ALLOWED_VARIABLES.has(id));
-        const variableOptions = filteredVars.map((id) => ({ value: id, label: makeVariableLabel(id) }));
+        const normalizedVars = normalizeVarRows(varData);
+        const variableOptions = normalizedVars.map((entry) => ({
+          value: entry.id,
+          label: makeVariableLabel(entry.id, entry.displayName),
+        }));
         setVariables(variableOptions);
 
         setRun(nextRun);
@@ -405,6 +434,15 @@ export default function App() {
         const rows = await fetchFrames(model, region, resolvedRunForRequests, variable);
         if (cancelled) return;
         setFrameRows(rows);
+        const frameMeta = extractLegendMeta(rows[0] ?? null);
+        const variableDisplayName = frameMeta?.display_name?.trim();
+        if (variableDisplayName) {
+          setVariables((prev) =>
+            prev.map((option) =>
+              option.value === variable ? { ...option, label: makeVariableLabel(option.value, variableDisplayName) } : option
+            )
+          );
+        }
         const frames = rows.map((row) => Number(row.fh)).filter(Number.isFinite);
         setForecastHour((prev) => nearestFrame(frames, prev));
         setTargetForecastHour((prev) => nearestFrame(frames, prev));
