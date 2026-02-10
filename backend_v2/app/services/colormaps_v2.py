@@ -84,9 +84,15 @@ def _expand_hex_ramp(colors_hex: list[str], n: int) -> list[str]:
     return [_rgb_to_hex(np.array([rr, gg, bb], dtype=np.float64)) for rr, gg, bb in zip(r, g, b)]
 
 
-def _build_precip_ptype_flat_palette() -> tuple[list[float], list[str], dict[str, dict[str, int]]]:
+def _build_precip_ptype_flat_palette() -> tuple[
+    list[float],
+    list[str],
+    dict[str, dict[str, int]],
+    dict[str, list[float]],
+]:
     colors: list[str] = []
     breaks: dict[str, dict[str, int]] = {}
+    levels_by_type: dict[str, list[float]] = {}
     for idx, key in enumerate(PRECIP_PTYPE_ORDER):
         cfg = PRECIP_CONFIG[key]
         type_colors = _expand_hex_ramp(list(cfg["colors"]), PRECIP_PTYPE_BINS_PER_TYPE)
@@ -96,16 +102,27 @@ def _build_precip_ptype_flat_palette() -> tuple[list[float], list[str], dict[str
             "offset": offset,
             "count": PRECIP_PTYPE_BINS_PER_TYPE,
         }
+        levels_by_type[key] = np.linspace(
+            PRECIP_PTYPE_RANGE[0],
+            PRECIP_PTYPE_RANGE[1],
+            num=PRECIP_PTYPE_BINS_PER_TYPE,
+            dtype=float,
+        ).tolist()
     levels = np.linspace(
         PRECIP_PTYPE_RANGE[0],
         PRECIP_PTYPE_RANGE[1],
         num=len(colors),
         dtype=float,
     ).tolist()
-    return levels, colors, breaks
+    return levels, colors, breaks, levels_by_type
 
 
-PRECIP_PTYPE_LEVELS, PRECIP_PTYPE_COLORS, PRECIP_PTYPE_BREAKS = _build_precip_ptype_flat_palette()
+(
+    PRECIP_PTYPE_LEVELS,
+    PRECIP_PTYPE_COLORS,
+    PRECIP_PTYPE_BREAKS,
+    PRECIP_PTYPE_LEVELS_BY_TYPE,
+) = _build_precip_ptype_flat_palette()
 
 # Radar reflectivity configuration with dBZ levels and colors for each precipitation type
 RADAR_CONFIG = {
@@ -366,6 +383,7 @@ VAR_SPECS = {
         "legend_title": "Precipitation Rate (in/hr)",
         "ptype_order": list(PRECIP_PTYPE_ORDER),
         "ptype_breaks": PRECIP_PTYPE_BREAKS,
+        "ptype_levels": PRECIP_PTYPE_LEVELS_BY_TYPE,
     },
     "snowfall_total": {
         "type": "discrete",
@@ -537,6 +555,20 @@ def encode_to_byte_and_alpha(
             meta["display_name"] = spec["display_name"]
         if "legend_title" in spec:
             meta["legend_title"] = spec["legend_title"]
+        if "ptype_order" in spec:
+            meta["ptype_order"] = list(spec["ptype_order"])
+        if "ptype_breaks" in spec:
+            meta["ptype_breaks"] = dict(spec["ptype_breaks"])
+        if "ptype_levels" in spec:
+            meta["ptype_levels"] = {
+                str(key): list(values) for key, values in dict(spec["ptype_levels"]).items()
+            }
+        if "range" in spec:
+            range_vals = spec.get("range")
+            if isinstance(range_vals, (list, tuple)) and len(range_vals) == 2:
+                meta["range"] = [float(range_vals[0]), float(range_vals[1])]
+        if "bins_per_ptype" in spec:
+            meta["bins_per_ptype"] = int(spec["bins_per_ptype"])
         return byte_band, alpha, meta
 
     range_vals = spec.get("range")

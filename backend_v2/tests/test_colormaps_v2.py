@@ -143,6 +143,10 @@ def test_precip_ptype_spec_discrete_with_ptype_breaks() -> None:
     assert spec["ptype_breaks"]["sleet"] == {"offset": 64, "count": 64}
     assert spec["ptype_breaks"]["snow"] == {"offset": 128, "count": 64}
     assert spec["ptype_breaks"]["rain"] == {"offset": 192, "count": 64}
+    assert set(spec["ptype_levels"].keys()) == {"frzr", "sleet", "snow", "rain"}
+    assert len(spec["ptype_levels"]["frzr"]) == 64
+    assert float(spec["ptype_levels"]["frzr"][0]) == 0.0
+    assert float(spec["ptype_levels"]["frzr"][-1]) == 1.0
 
 
 def test_encode_precip_ptype_is_discrete() -> None:
@@ -154,3 +158,7 @@ def test_encode_precip_ptype_is_discrete() -> None:
     assert meta["kind"] == "discrete"
     assert meta["units"] == "in/hr"
     assert "levels" in meta
+    assert meta["ptype_order"] == ["frzr", "sleet", "snow", "rain"]
+    assert meta["ptype_breaks"]["frzr"] == {"offset": 0, "count": 64}
+    assert meta["range"] == [0.0, 1.0]
+    assert meta["bins_per_ptype"] == 64
