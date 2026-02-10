@@ -90,6 +90,24 @@ def _cleanup_partial_grib(path: Path | None) -> None:
     _delete_cfgrib_index_files(path)
 
 
+def _resolve_herbie_download_path(downloaded: str | os.PathLike[str]) -> Path:
+    """Normalize Herbie download paths that may omit GRIB extensions.
+
+    Herbie can report a path that does not exist while the actual file exists at the
+    same location with a `.grib2` or `.grb2` suffix.
+    """
+    original = Path(os.fspath(downloaded))
+    if original.exists():
+        return original
+
+    for suffix in (".grib2", ".grb2"):
+        candidate = Path(str(original) + suffix)
+        if candidate.exists():
+            return candidate
+
+    return original
+
+
 def _required_grib_vars_for_request(model_id: str, normalized_var: str) -> tuple[list[str], str]:
     from app.models.registry import MODEL_REGISTRY
 
@@ -667,19 +685,7 @@ def _fetch_gfs_grib_internal(
         _cleanup_expected_path()
         raise UpstreamNotReady("Herbie did not return a GRIB2 path")
 
-    path = Path(downloaded)
-    if not path.exists():
-        candidates: list[Path] = []
-        if path.suffix == "":
-            candidates = [Path(str(path) + ".grib2"), Path(str(path) + ".grb2")]
-        elif path.suffix.lower() not in {".grib2", ".grb2"}:
-            # Some Herbie responses omit the GRIB extension even when the basename
-            # contains dots (e.g., "...pgrb2.0p25f090").
-            candidates = [Path(str(path) + ".grib2"), Path(str(path) + ".grb2")]
-        for candidate in candidates:
-            if candidate.exists():
-                path = candidate
-                break
+    path = _resolve_herbie_download_path(downloaded)
     if normalized_var == "qpf6h" and not path.exists():
         qpf_pattern = f"subset_*__gfs.t{run_dt:%H}z.{product}.f{fh:03d}*"
         qpf_candidates = sorted(
