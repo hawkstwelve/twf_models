@@ -1672,9 +1672,30 @@ def run_gdaladdo_overviews(
     # Ensure a clean slate if COG driver produced internal overviews unexpectedly.
     run_cmd(base_cmd + ["-clean", str(cog_path)])
 
+    # Debug: check band info before adding overviews
+    info_before = gdalinfo_json(cog_path)
+    bands_before = info_before.get("bands") or []
+    ovr_counts_before = [len((b or {}).get("overviews") or []) for b in bands_before]
+    logger.info(
+        "gdaladdo: before adding overviews path=%s bands=%d band_overview_counts=%s",
+        cog_path.name,
+        len(bands_before),
+        ovr_counts_before,
+    )
+
     try:
         _run(band1_resampling, ["-b", "1"])
         _run("nearest", ["-b", "2"])
+        # Debug: check after per-band overviews
+        info_after_band = gdalinfo_json(cog_path)
+        bands_after_band = info_after_band.get("bands") or []
+        ovr_counts_after_band = [len((b or {}).get("overviews") or []) for b in bands_after_band]
+        logger.info(
+            "gdaladdo: after per-band overviews path=%s bands=%d band_overview_counts=%s",
+            cog_path.name,
+            len(bands_after_band),
+            ovr_counts_after_band,
+        )
     except RuntimeError as exc:
         if not _is_external_overview_conflict(exc):
             raise
@@ -2959,10 +2980,17 @@ def main() -> int:
                     "TILED=YES",
                     "-co",
                     "COMPRESS=DEFLATE",
+                    "-co",
+                    "PHOTOMETRIC=RGB",
                     str(warped_tif),
                     str(ovr_tif),
                 ]
             )
+            
+            # Debug: check alpha after creating ovr_tif from warped_tif
+            _info_ovr_initial = gdalinfo_json(ovr_tif)
+            _alpha_min_ovr_init, _alpha_max_ovr_init = _band_min_max(_info_ovr_initial, 2)
+            print(f"Debug: ovr_tif alpha after gdal_translate from warped_tif: min={_alpha_min_ovr_init} max={_alpha_max_ovr_init}")
 
             # Add internal overviews per band (band 1 uses average/nearest depending on var; band 2 (alpha) always nearest).
             # Debug: check alpha before adding overviews
