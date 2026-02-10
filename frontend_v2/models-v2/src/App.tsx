@@ -176,6 +176,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [settledTileUrl, setSettledTileUrl] = useState<string | null>(null);
+  const [showZoomHint, setShowZoomHint] = useState(false);
   const latestTileUrlRef = useRef<string>("");
   const readyTileUrlsRef = useRef<Map<string, number>>(new Map());
   const autoplayHoldMsRef = useRef(0);
@@ -543,16 +544,25 @@ export default function App() {
           opacity={opacity}
           mode={isPlaying ? "autoplay" : "scrub"}
           variable={variable}
+          model={model}
           prefetchTileUrls={prefetchTileUrls}
           crossfade={false}
           onFrameSettled={handleFrameSettled}
           onTileReady={handleTileReady}
+          onZoomHint={setShowZoomHint}
         />
 
         {error && (
           <div className="absolute left-4 top-4 z-40 flex items-center gap-2 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-xs text-destructive shadow-lg backdrop-blur-md">
             <AlertCircle className="h-3.5 w-3.5" />
             {error}
+          </div>
+        )}
+
+        {showZoomHint && (
+          <div className="absolute right-4 top-4 z-40 flex items-center gap-2 rounded-md border border-blue-500/50 bg-blue-500/10 px-3 py-2 text-xs text-blue-700 shadow-lg backdrop-blur-md">
+            <AlertCircle className="h-3.5 w-3.5" />
+            GFS is low-resolution at this zoom. Switch to HRRR for sharper detail.
           </div>
         )}
 

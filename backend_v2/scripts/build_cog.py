@@ -291,7 +291,7 @@ def _is_discrete(var: str, meta: dict) -> bool:
 def _warp_tr_meters(model: str, var: str, meta: dict) -> tuple[float, float] | None:
     model_key = str(model or "").strip().lower()
     if model_key == "gfs":
-        return (10000.0, 10000.0)
+        return (20000.0, 20000.0)
     return None
 
 

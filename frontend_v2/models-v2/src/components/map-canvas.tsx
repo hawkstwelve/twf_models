@@ -68,8 +68,11 @@ function getResamplingMode(variable?: string): "nearest" | "linear" {
   return "nearest";
 }
 
-function styleFor(overlayUrl: string, opacity: number, variable?: string): StyleSpecification {
+function styleFor(overlayUrl: string, opacity: number, variable?: string, model?: string): StyleSpecification {
   const resamplingMode = getResamplingMode(variable);
+  const overlayOpacity: any = model === "gfs"
+    ? ["interpolate", ["linear"], ["zoom"], 6, opacity, 7, 0]
+    : opacity;
   return {
     version: 8,
     sources: {
@@ -126,7 +129,7 @@ function styleFor(overlayUrl: string, opacity: number, variable?: string): Style
         type: "raster",
         source: sourceId("a"),
         paint: {
-          "raster-opacity": opacity,
+          "raster-opacity": overlayOpacity,
           "raster-resampling": resamplingMode,
           "raster-fade-duration": 0,
         },
@@ -136,7 +139,7 @@ function styleFor(overlayUrl: string, opacity: number, variable?: string): Style
         type: "raster",
         source: sourceId("b"),
         paint: {
-          "raster-opacity": HIDDEN_OPACITY,
+          "raster-opacity": overlayOpacity,
           "raster-resampling": resamplingMode,
           "raster-fade-duration": 0,
         },
@@ -146,7 +149,7 @@ function styleFor(overlayUrl: string, opacity: number, variable?: string): Style
         type: "raster",
         source: prefetchSourceId(1),
         paint: {
-          "raster-opacity": HIDDEN_OPACITY,
+          "raster-opacity": overlayOpacity,
           "raster-resampling": resamplingMode,
           "raster-fade-duration": 0,
         },
@@ -156,7 +159,7 @@ function styleFor(overlayUrl: string, opacity: number, variable?: string): Style
         type: "raster",
         source: prefetchSourceId(2),
         paint: {
-          "raster-opacity": HIDDEN_OPACITY,
+          "raster-opacity": overlayOpacity,
           "raster-resampling": resamplingMode,
           "raster-fade-duration": 0,
         },
@@ -166,7 +169,7 @@ function styleFor(overlayUrl: string, opacity: number, variable?: string): Style
         type: "raster",
         source: prefetchSourceId(3),
         paint: {
-          "raster-opacity": HIDDEN_OPACITY,
+          "raster-opacity": overlayOpacity,
           "raster-resampling": resamplingMode,
           "raster-fade-duration": 0,
         },
@@ -176,7 +179,7 @@ function styleFor(overlayUrl: string, opacity: number, variable?: string): Style
         type: "raster",
         source: prefetchSourceId(4),
         paint: {
-          "raster-opacity": HIDDEN_OPACITY,
+          "raster-opacity": overlayOpacity,
           "raster-resampling": resamplingMode,
           "raster-fade-duration": 0,
         },
@@ -196,10 +199,12 @@ type MapCanvasProps = {
   opacity: number;
   mode: PlaybackMode;
   variable?: string;
+  model?: string;
   prefetchTileUrls?: string[];
   crossfade?: boolean;
   onFrameSettled?: (tileUrl: string) => void;
   onTileReady?: (tileUrl: string) => void;
+  onZoomHint?: (show: boolean) => void;
 };
 
 export function MapCanvas({
@@ -208,10 +213,12 @@ export function MapCanvas({
   opacity,
   mode,
   variable,
+  model,
   prefetchTileUrls = [],
   crossfade = false,
   onFrameSettled,
   onTileReady,
+  onZoomHint,
 }: MapCanvasProps) {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -447,7 +454,7 @@ export function MapCanvas({
 
     const map = new maplibregl.Map({
       container: mapContainerRef.current,
-      style: styleFor(tileUrl, opacity, variable),
+      style: styleFor(tileUrl, opacity, variable, model),
       center: view.center,
       zoom: view.zoom,
       minZoom: 3,
@@ -469,6 +476,34 @@ export function MapCanvas({
       setIsLoaded(false);
     };
   }, [cancelCrossfade]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isLoaded || !onZoomHint) {
+      return;
+    }
+
+    const lastHintStateRef = { current: false };
+
+    const checkZoom = () => {
+      const zoom = map.getZoom();
+      const shouldShow = model === "gfs" && zoom >= 7;
+      if (shouldShow !== lastHintStateRef.current) {
+        lastHintStateRef.current = shouldShow;
+        onZoomHint(shouldShow);
+      }
+    };
+
+    map.on("moveend", checkZoom);
+    checkZoom();
+
+    return () => {
+      map.off("moveend", checkZoom);
+      if (lastHintStateRef.current) {
+        onZoomHint(false);
+      }
+    };
+  }, [isLoaded, model, onZoomHint]);
 
   useEffect(() => {
     const map = mapRef.current;
