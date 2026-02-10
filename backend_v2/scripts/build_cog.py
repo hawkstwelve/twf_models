@@ -2857,6 +2857,16 @@ def main() -> int:
                     "vmax": float(np.nanmax(warped_prate[valid_mask])) if np.any(valid_mask) else float("nan"),
                 }
                 spec_key_used = str(meta.get("spec_key") or normalized_var)
+                
+                # Debug: check alpha band stats immediately after encoding
+                alpha_nonzero = int(np.count_nonzero(alpha_band))
+                alpha_max = int(np.max(alpha_band)) if alpha_band.size > 0 else 0
+                visible_pixels_meta = meta.get("visible_pixels", 0)
+                print(
+                    f"precip_ptype encode debug: visible_pixels={visible_pixels_meta} "
+                    f"alpha_nonzero={alpha_nonzero} alpha_max={alpha_max} "
+                    f"prate_min_mm_s={stats['vmin']:.6f} prate_max_mm_s={stats['vmax']:.6f}"
+                )
 
                 width, height, geotransform, srs_wkt = _extract_raster_georef(warped_components["prate"])
                 if byte_band.shape != (height, width):
