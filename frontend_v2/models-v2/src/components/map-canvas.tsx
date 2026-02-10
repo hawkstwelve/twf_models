@@ -373,9 +373,20 @@ export function MapCanvas({
 
       const finishReadyAfterRender = () => {
         if (done) return;
-        window.requestAnimationFrame(() => {
-          finishReady();
-        });
+        // Wait for map idle event to ensure all tiles are fully painted
+        const waitForIdle = () => {
+          if (done) return;
+          const onIdleOnce = () => {
+            if (!done) {
+              finishReady();
+            }
+          };
+          map.once("idle", onIdleOnce);
+          // Trigger a repaint to ensure idle event fires
+          map.triggerRepaint();
+        };
+        // Use RAF to ensure we're not already in an idle state
+        window.requestAnimationFrame(waitForIdle);
       };
 
       const onSourceData = (event: maplibregl.MapSourceDataEvent) => {
@@ -488,16 +499,10 @@ export function MapCanvas({
         runCrossfade(map, previousActive, inactiveBuffer, opacity);
       } else {
         cancelCrossfade();
-        // Wait for next render frame to ensure new tiles are painted before swap
-        window.requestAnimationFrame(() => {
-          // Check if this swap is still current
-          if (token !== swapTokenRef.current) {
-            return;
-          }
-          // Atomic swap: show new layer and hide old layer simultaneously
-          setLayerOpacity(map, layerId(inactiveBuffer), opacity);
-          setLayerOpacity(map, layerId(previousActive), HIDDEN_OPACITY);
-        });
+        // Tiles should already be painted due to double RAF in waitForSourceReady
+        // Make both changes synchronously to avoid any gap
+        setLayerOpacity(map, layerId(inactiveBuffer), opacity);
+        setLayerOpacity(map, layerId(previousActive), HIDDEN_OPACITY);
       }
       console.debug("[map] swap end", { sourceId: sourceId(inactiveBuffer), tileUrl, mode, token });
       if (!skipSettleNotify) {
