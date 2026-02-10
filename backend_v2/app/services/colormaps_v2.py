@@ -46,6 +46,31 @@ PRECIP_CONFIG = {
     },
 }
 
+PRECIP_PTYPE_ORDER = ("frzr", "sleet", "snow", "rain")
+
+
+def _build_precip_ptype_flat_palette() -> tuple[list[float], list[str], dict[str, dict[str, int]]]:
+    levels: list[float] = []
+    colors: list[str] = []
+    breaks: dict[str, dict[str, int]] = {}
+    offset = 0
+    for key in PRECIP_PTYPE_ORDER:
+        cfg = PRECIP_CONFIG[key]
+        type_colors = list(cfg["colors"])
+        colors.extend(type_colors)
+        breaks[key] = {
+            "offset": offset,
+            "count": len(type_colors),
+        }
+        offset += len(type_colors)
+    if colors:
+        # Keep spec-level bins monotonic for generic discrete encoding paths.
+        levels = np.linspace(0.0, 2.0, num=len(colors), dtype=float).tolist()
+    return levels, colors, breaks
+
+
+PRECIP_PTYPE_LEVELS, PRECIP_PTYPE_COLORS, PRECIP_PTYPE_BREAKS = _build_precip_ptype_flat_palette()
+
 # Radar reflectivity configuration with dBZ levels and colors for each precipitation type
 RADAR_CONFIG = {
     "rain": {
@@ -295,12 +320,14 @@ VAR_SPECS = {
         "legend_stops": QPF6H_LEGEND_STOPS,
     },
     "precip_ptype": {
-        "type": "continuous",
+        "type": "discrete",
         "units": "in/hr",
-        "range": (0.0, 2.0),
-        "colors": precip_colors,
+        "levels": PRECIP_PTYPE_LEVELS,
+        "colors": PRECIP_PTYPE_COLORS,
         "display_name": "Precipitation Intensity",
         "legend_title": "Precipitation Rate (in/hr)",
+        "ptype_order": list(PRECIP_PTYPE_ORDER),
+        "ptype_breaks": PRECIP_PTYPE_BREAKS,
     },
     "snowfall_total": {
         "type": "discrete",

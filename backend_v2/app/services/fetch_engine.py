@@ -153,6 +153,24 @@ def _resolve_radar_blend_component_vars(
     return fallback
 
 
+def _resolve_precip_ptype_component_vars(
+    var_spec: object,
+    fallback: tuple[str, str, str, str, str],
+) -> tuple[str, str, str, str, str]:
+    selectors = getattr(var_spec, "selectors", None)
+    if selectors is None:
+        return fallback
+    prate = _hint_value(selectors, "prate_component")
+    rain = _hint_value(selectors, "rain_component")
+    snow = _hint_value(selectors, "snow_component")
+    sleet = _hint_value(selectors, "sleet_component")
+    frzr = _hint_value(selectors, "frzr_component")
+    values = (prate, rain, snow, sleet, frzr)
+    if all(values):
+        return values  # type: ignore[return-value]
+    return fallback
+
+
 def _use_hrrr_shared_source() -> bool:
     # Backward compatible:
     # - new flag: TWF_HRRR_SUBSET_BUNDLE_PER_HOUR
@@ -277,6 +295,22 @@ def _resolve_gfs_subset_bundle(
                     search_terms.append(comp_search)
         required = [u_var, v_var] if var_norm == "wspd10m" else [var_norm]
         return ("wspd10m", _join_search_terms(search_terms), var_norm, required)
+
+    if var_norm == "precip_ptype" or str(getattr(var_spec, "derive", "") or "") == "precip_ptype_blend":
+        precip_spec = plugin.get_var("precip_ptype") or var_spec
+        prate_var, rain_var, snow_var, sleet_var, frzr_var = _resolve_precip_ptype_component_vars(
+            precip_spec,
+            ("precip_ptype", "crain", "csnow", "cicep", "cfrzr"),
+        )
+        comps = [prate_var, rain_var, snow_var, sleet_var, frzr_var]
+        search_terms = []
+        for comp in comps:
+            comp_spec = plugin.get_var(comp)
+            if comp_spec is not None:
+                comp_search = _select_search(comp_spec.selectors)
+                if comp_search:
+                    search_terms.append(comp_search)
+        return ("precip_ptype", _join_search_terms(search_terms), var_norm, comps)
 
     radar_components = ("refc", "crain", "csnow", "cicep", "cfrzr")
     if _supports_radar_ptype(plugin) and (
@@ -463,6 +497,11 @@ def fetch_grib(
     derive_kind = str(getattr(var_spec, "derive", "") or "")
     if derive_kind == "wspd10m":
         components = _resolve_component_vars(var_spec, ("10u", "10v"))
+    elif model == "gfs" and derive_kind == "precip_ptype_blend":
+        components = _resolve_precip_ptype_component_vars(
+            var_spec,
+            ("precip_ptype", "crain", "csnow", "cicep", "cfrzr"),
+        )
     elif model == "hrrr" and derive_kind == "radar_ptype_combo":
         components = _resolve_radar_blend_component_vars(
             var_spec,

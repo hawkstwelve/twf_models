@@ -49,6 +49,19 @@ def test_component_vars_for_derived_radar_ptype_combo() -> None:
     )
 
 
+def test_component_vars_for_derived_gfs_precip_ptype_blend() -> None:
+    plugin = get_model("gfs")
+    spec = plugin.get_var("precip_ptype")
+    assert spec is not None
+    assert validator._component_vars_for_derived(spec) == (
+        "precip_ptype",
+        "crain",
+        "csnow",
+        "cicep",
+        "cfrzr",
+    )
+
+
 def test_filter_inventory_df_applies_level_and_type_hint() -> None:
     df = pd.DataFrame(
         [

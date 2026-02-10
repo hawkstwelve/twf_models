@@ -19,6 +19,10 @@ class GFSPlugin(BaseModelPlugin):
         "10v",
         "refc",
         "precip_ptype",
+        "crain",
+        "csnow",
+        "cicep",
+        "cfrzr",
     }
 
     def target_fhs(self, cycle_hour: int) -> list[int]:
@@ -296,6 +300,7 @@ GFS_VARS: dict[str, VarSpec] = {
             search=[":PRATE:surface:"],
             filter_by_keys={
                 "typeOfLevel": "surface",
+                "shortName": "prate",
             },
             hints={
                 "upstream_var": "prate",
@@ -303,10 +308,77 @@ GFS_VARS: dict[str, VarSpec] = {
                 "short_name": "prate",
                 "kind": "precip_ptype",
                 "units": "in/hr",
+                "prate_component": "precip_ptype",
+                "rain_component": "crain",
+                "snow_component": "csnow",
+                "sleet_component": "cicep",
+                "frzr_component": "cfrzr",
             },
         ),
         primary=True,
+        derived=True,
+        derive="precip_ptype_blend",
         normalize_units="in/hr",
+    ),
+    "crain": VarSpec(
+        id="crain",
+        name="Categorical Rain",
+        selectors=VarSelectors(
+            search=[":CRAIN:surface:"],
+            filter_by_keys={
+                "typeOfLevel": "surface",
+                "shortName": "crain",
+            },
+            hints={
+                "upstream_var": "crain",
+                "short_name": "crain",
+            },
+        ),
+    ),
+    "csnow": VarSpec(
+        id="csnow",
+        name="Categorical Snow",
+        selectors=VarSelectors(
+            search=[":CSNOW:surface:"],
+            filter_by_keys={
+                "typeOfLevel": "surface",
+                "shortName": "csnow",
+            },
+            hints={
+                "upstream_var": "csnow",
+                "short_name": "csnow",
+            },
+        ),
+    ),
+    "cicep": VarSpec(
+        id="cicep",
+        name="Categorical Sleet",
+        selectors=VarSelectors(
+            search=[":CICEP:surface:"],
+            filter_by_keys={
+                "typeOfLevel": "surface",
+                "shortName": "cicep",
+            },
+            hints={
+                "upstream_var": "cicep",
+                "short_name": "cicep",
+            },
+        ),
+    ),
+    "cfrzr": VarSpec(
+        id="cfrzr",
+        name="Categorical Freezing Rain",
+        selectors=VarSelectors(
+            search=[":CFRZR:surface:"],
+            filter_by_keys={
+                "typeOfLevel": "surface",
+                "shortName": "cfrzr",
+            },
+            hints={
+                "upstream_var": "cfrzr",
+                "short_name": "cfrzr",
+            },
+        ),
     ),
     "qpf6h": VarSpec(
         id="qpf6h",

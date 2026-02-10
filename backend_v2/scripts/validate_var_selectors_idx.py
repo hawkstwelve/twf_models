@@ -118,6 +118,7 @@ def _component_vars_for_derived(var_spec) -> tuple[str, ...]:
     values = tuple(
         item
         for item in (
+            hints.get("prate_component"),
             hints.get("u_component"),
             hints.get("v_component"),
             hints.get("refl_component"),

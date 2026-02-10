@@ -125,22 +125,26 @@ def test_encode_qpf6h_includes_range_and_legend_stops() -> None:
     assert "legend_stops" in meta
 
 
-def test_precip_ptype_spec_continuous_with_in_per_hour_range() -> None:
+def test_precip_ptype_spec_discrete_with_ptype_breaks() -> None:
     spec = VAR_SPECS["precip_ptype"]
-    assert spec["type"] == "continuous"
+    assert spec["type"] == "discrete"
     assert spec["units"] == "in/hr"
-    assert spec["range"] == (0.0, 2.0)
-    assert spec["colors"] == VAR_SPECS["precip_total"]["colors"]
+    assert isinstance(spec["levels"], list)
+    assert len(spec["levels"]) > 0
+    assert isinstance(spec["colors"], list)
+    assert len(spec["colors"]) > 0
     assert spec["display_name"] == "Precipitation Intensity"
     assert spec["legend_title"] == "Precipitation Rate (in/hr)"
+    assert spec["ptype_order"] == ["frzr", "sleet", "snow", "rain"]
+    assert set(spec["ptype_breaks"].keys()) == {"frzr", "sleet", "snow", "rain"}
 
 
-def test_encode_precip_ptype_is_continuous() -> None:
+def test_encode_precip_ptype_is_discrete() -> None:
     values = np.array([[0.0, 0.5], [1.0, 2.0]], dtype=np.float32)
     byte_band, alpha, meta = encode_to_byte_and_alpha(values, "precip_ptype")
 
     assert byte_band.shape == values.shape
     assert alpha.shape == values.shape
-    assert meta["kind"] == "continuous"
+    assert meta["kind"] == "discrete"
     assert meta["units"] == "in/hr"
-    assert meta["range"] == [0.0, 2.0]
+    assert "levels" in meta

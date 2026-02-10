@@ -15,10 +15,16 @@ def test_gfs_precip_ptype_varspec_is_prate_based_and_primary() -> None:
     assert spec.id == "precip_ptype"
     assert spec.name == "Precipitation Intensity + Type"
     assert spec.primary is True
-    assert spec.derived is False
+    assert spec.derived is True
+    assert spec.derive == "precip_ptype_blend"
     assert spec.selectors.search == [":PRATE:surface:"]
     assert spec.selectors.hints.get("kind") == "precip_ptype"
     assert spec.selectors.hints.get("units") == "in/hr"
+    assert spec.selectors.hints.get("prate_component") == "precip_ptype"
+    assert spec.selectors.hints.get("rain_component") == "crain"
+    assert spec.selectors.hints.get("snow_component") == "csnow"
+    assert spec.selectors.hints.get("sleet_component") == "cicep"
+    assert spec.selectors.hints.get("frzr_component") == "cfrzr"
     assert hrrr.get_var("precip_ptype") is None
 
 

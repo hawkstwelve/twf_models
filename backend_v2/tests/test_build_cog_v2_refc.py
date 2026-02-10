@@ -4,7 +4,12 @@ import numpy as np
 import xarray as xr
 
 from app.models.base import VarSelectors, VarSpec
-from scripts.build_cog import _encode_radar_ptype_combo, _encode_with_nodata, resolve_target_grid_meters
+from scripts.build_cog import (
+    _encode_precip_ptype_blend,
+    _encode_radar_ptype_combo,
+    _encode_with_nodata,
+    resolve_target_grid_meters,
+)
 from scripts import build_cog
 
 
@@ -219,9 +224,63 @@ def test_is_discrete_treats_qpf6h_as_continuous() -> None:
     assert build_cog._is_discrete("qpf6h", {}) is False
 
 
-def test_is_discrete_treats_precip_ptype_as_continuous() -> None:
-    assert build_cog._is_discrete("precip_ptype", {"kind": "continuous"}) is False
+def test_is_discrete_treats_precip_ptype_as_discrete_when_meta_marks_discrete() -> None:
+    assert build_cog._is_discrete("precip_ptype", {"kind": "discrete"}) is True
     assert build_cog._is_discrete("precip_ptype", {}) is False
+
+
+def test_encode_precip_ptype_blend_priority_and_metadata() -> None:
+    prate = np.array([[1.0, 1.0, 1.0, 1.0]], dtype=np.float32)
+    rain = np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32)
+    snow = np.array([[1.0, 1.0, 0.0, 0.0]], dtype=np.float32)
+    sleet = np.array([[1.0, 0.0, 1.0, 0.0]], dtype=np.float32)
+    frzr = np.array([[1.0, 0.0, 0.0, 1.0]], dtype=np.float32)
+
+    byte_band, alpha, meta = _encode_precip_ptype_blend(
+        requested_var="precip_ptype",
+        normalized_var="precip_ptype",
+        prate_values=prate,
+        ptype_values={
+            "crain": rain,
+            "csnow": snow,
+            "cicep": sleet,
+            "cfrzr": frzr,
+        },
+    )
+
+    frzr_offset = int(meta["ptype_breaks"]["frzr"]["offset"])
+    sleet_offset = int(meta["ptype_breaks"]["sleet"]["offset"])
+    snow_offset = int(meta["ptype_breaks"]["snow"]["offset"])
+    rain_offset = int(meta["ptype_breaks"]["rain"]["offset"])
+
+    assert meta["ptype_order"] == ["frzr", "sleet", "snow", "rain"]
+    assert "ptype_breaks" in meta
+    assert np.all(alpha == 255)
+    assert int(byte_band[0, 0]) >= frzr_offset and int(byte_band[0, 0]) < sleet_offset  # tie -> frzr
+    assert int(byte_band[0, 1]) >= snow_offset and int(byte_band[0, 1]) < rain_offset
+    assert int(byte_band[0, 2]) >= sleet_offset and int(byte_band[0, 2]) < snow_offset
+    assert int(byte_band[0, 3]) >= frzr_offset and int(byte_band[0, 3]) < sleet_offset
+
+
+def test_encode_precip_ptype_blend_falls_back_to_rain_without_type_signal() -> None:
+    prate = np.array([[0.5]], dtype=np.float32)
+    zeros = np.zeros((1, 1), dtype=np.float32)
+
+    byte_band, alpha, meta = _encode_precip_ptype_blend(
+        requested_var="precip_ptype",
+        normalized_var="precip_ptype",
+        prate_values=prate,
+        ptype_values={
+            "crain": zeros,
+            "csnow": zeros,
+            "cicep": zeros,
+            "cfrzr": zeros,
+        },
+    )
+
+    rain_offset = int(meta["ptype_breaks"]["rain"]["offset"])
+    assert int(alpha[0, 0]) == 255
+    assert int(byte_band[0, 0]) >= rain_offset
 
 
 def test_encode_with_nodata_qpf6h_uses_fixed_range() -> None:

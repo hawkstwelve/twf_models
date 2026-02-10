@@ -28,7 +28,7 @@ import xarray as xr
 from pyproj import CRS, Transformer
 
 from app.models import ModelPlugin, VarSpec, get_model
-from app.services.colormaps_v2 import RADAR_CONFIG, VAR_SPECS
+from app.services.colormaps_v2 import PRECIP_CONFIG, RADAR_CONFIG, VAR_SPECS
 from app.services.fetch_engine import fetch_grib
 from app.services.grid import detect_latlon_names, normalize_latlon_coords
 from app.services.upstream import is_upstream_not_ready_error
@@ -394,6 +394,22 @@ def _radar_blend_component_ids(var_spec: VarSpec) -> tuple[str, str, str, str, s
     )
 
 
+def _precip_ptype_component_ids(var_spec: VarSpec) -> tuple[str, str, str, str, str]:
+    selectors = var_spec.selectors
+    prate_key = selectors.hints.get("prate_component") or "precip_ptype"
+    rain_key = selectors.hints.get("rain_component") or "crain"
+    snow_key = selectors.hints.get("snow_component") or "csnow"
+    sleet_key = selectors.hints.get("sleet_component") or "cicep"
+    frzr_key = selectors.hints.get("frzr_component") or "cfrzr"
+    return (
+        str(prate_key),
+        str(rain_key),
+        str(snow_key),
+        str(sleet_key),
+        str(frzr_key),
+    )
+
+
 def _resolve_radar_blend_component_paths(
     component_paths: dict[str, Path],
     *,
@@ -411,6 +427,28 @@ def _resolve_radar_blend_component_paths(
             available = sorted(component_paths.keys())
             raise RuntimeError(
                 f"Missing radar_ptype_combo component file: expected={key} have={available}"
+            )
+        resolved.append(path)
+    return tuple(resolved)  # type: ignore[return-value]
+
+
+def _resolve_precip_ptype_component_paths(
+    component_paths: dict[str, Path],
+    *,
+    prate_key: str,
+    rain_key: str,
+    snow_key: str,
+    sleet_key: str,
+    frzr_key: str,
+) -> tuple[Path, Path, Path, Path, Path]:
+    resolved: list[Path] = []
+    expected = [prate_key, rain_key, snow_key, sleet_key, frzr_key]
+    for key in expected:
+        path = component_paths.get(key)
+        if path is None:
+            available = sorted(component_paths.keys())
+            raise RuntimeError(
+                f"Missing precip_ptype component file: expected={key} have={available}"
             )
         resolved.append(path)
     return tuple(resolved)  # type: ignore[return-value]
@@ -706,6 +744,107 @@ def _encode_radar_ptype_combo(
             binary_like,
             footprint_min_dbz,
         )
+    return byte_band, alpha, meta
+
+
+def _encode_precip_ptype_blend(
+    *,
+    requested_var: str,
+    normalized_var: str,
+    prate_values: np.ndarray,
+    ptype_values: dict[str, np.ndarray],
+) -> tuple[np.ndarray, np.ndarray, dict]:
+    if prate_values.ndim != 2:
+        raise RuntimeError(f"Expected 2D PRATE array, got shape={prate_values.shape}")
+    for key, values in ptype_values.items():
+        if values.shape != prate_values.shape:
+            raise RuntimeError(
+                f"P-type component shape mismatch for {key}: prate={prate_values.shape} ptype={values.shape}"
+            )
+
+    # Tie-break priority (highest to lowest): frzr > sleet > snow > rain.
+    ptype_order = ("frzr", "sleet", "snow", "rain")
+    type_to_component = {
+        "rain": "crain",
+        "snow": "csnow",
+        "sleet": "cicep",
+        "frzr": "cfrzr",
+    }
+
+    byte_band = np.full(prate_values.shape, 255, dtype=np.uint8)
+    alpha = np.zeros(prate_values.shape, dtype=np.uint8)
+    prate = np.asarray(prate_values, dtype=np.float32)
+    prate = np.where(np.isfinite(prate), prate, np.nan)
+    visible_mask = np.isfinite(prate) & (prate > 0.0)
+
+    flat_colors: list[str] = []
+    ptype_breaks: dict[str, dict[str, int]] = {}
+    ptype_levels: dict[str, list[float]] = {}
+    color_offset = 0
+    for ptype in ptype_order:
+        cfg = PRECIP_CONFIG[ptype]
+        levels_in_per_hour = [float(level) / 25.4 for level in cfg["levels"]]
+        colors = list(cfg["colors"])
+        ptype_levels[ptype] = levels_in_per_hour
+        ptype_breaks[ptype] = {"offset": color_offset, "count": len(colors)}
+        flat_colors.extend(colors)
+        color_offset += len(colors)
+
+    ptype_scale: dict[str, str] = {}
+    ptype_stack = []
+    for ptype in ptype_order:
+        comp_key = type_to_component[ptype]
+        comp_vals = np.asarray(ptype_values[comp_key], dtype=np.float32)
+        comp_vals = np.where(np.isfinite(comp_vals), comp_vals, 0.0)
+        max_val = float(np.max(comp_vals)) if comp_vals.size else 0.0
+        if max_val > 1.01 and max_val <= 100.0:
+            comp_vals = comp_vals / 100.0
+            ptype_scale[ptype] = "percent_to_fraction"
+        else:
+            ptype_scale[ptype] = "fraction"
+        comp_vals = np.where((comp_vals >= 0.0) & (comp_vals <= 1.0), comp_vals, 0.0)
+        ptype_stack.append(comp_vals)
+
+    stack = np.stack(ptype_stack, axis=0)
+    winner_idx = np.argmax(stack, axis=0)
+    max_conf = np.max(stack, axis=0)
+    has_type_info = max_conf > 0.0
+    idx_map = {ptype: idx for idx, ptype in enumerate(ptype_order)}
+
+    ptype_pixel_counts: dict[str, int] = {}
+    for ptype in ptype_order:
+        levels = ptype_levels[ptype]
+        colors = list(PRECIP_CONFIG[ptype]["colors"])
+        offset = int(ptype_breaks[ptype]["offset"])
+
+        if ptype == "rain":
+            type_mask = visible_mask & ((~has_type_info) | (winner_idx == idx_map[ptype]))
+        else:
+            type_mask = visible_mask & has_type_info & (winner_idx == idx_map[ptype])
+
+        if np.any(type_mask):
+            bins = np.digitize(prate, levels, right=False) - 1
+            bins = np.clip(bins, 0, len(colors) - 1).astype(np.uint8)
+            byte_band[type_mask] = (offset + bins[type_mask]).astype(np.uint8)
+            alpha[type_mask] = 255
+        ptype_pixel_counts[ptype] = int(np.count_nonzero(type_mask))
+
+    meta = {
+        "var_key": requested_var,
+        "source_var": normalized_var,
+        "spec_key": "precip_ptype",
+        "kind": "discrete",
+        "units": "in/hr",
+        "colors": flat_colors,
+        "ptype_order": list(ptype_order),
+        "ptype_breaks": ptype_breaks,
+        "ptype_levels": ptype_levels,
+        "ptype_priority": list(ptype_order),
+        "ptype_noinfo_fallback": "rain",
+        "ptype_scale": ptype_scale,
+        "visible_pixels": int(np.count_nonzero(visible_mask)),
+        "ptype_pixel_counts": ptype_pixel_counts,
+    }
     return byte_band, alpha, meta
 
 
@@ -1504,6 +1643,7 @@ def main() -> int:
     grib_path: Path | None = None
     u_path: Path | None = None
     v_path: Path | None = None
+    prate_path: Path | None = None
     refl_path: Path | None = None
     rain_path: Path | None = None
     snow_path: Path | None = None
@@ -1598,6 +1738,50 @@ def main() -> int:
             print(f"GRIB path (frzr mask): {frzr_path}")
         else:
             print(f"GRIB path (shared): {grib_path}")
+    elif args.model == "gfs" and derive_kind == "precip_ptype_blend":
+        try:
+            fetch_result = fetch_grib(
+                model=args.model,
+                run=args.run,
+                fh=args.fh,
+                var=normalized_var,
+                region=args.region,
+                cache_dir=cache_dir,
+            )
+            if fetch_result.not_ready_reason:
+                _handle_upstream_not_ready(args, fetch_result.not_ready_reason, _collect_fetch_paths(fetch_result))
+                return 2
+            prate_component, rain_component, snow_component, sleet_component, frzr_component = (
+                _precip_ptype_component_ids(var_spec)
+            )
+            if fetch_result.component_paths:
+                prate_path, rain_path, snow_path, sleet_path, frzr_path = _resolve_precip_ptype_component_paths(
+                    fetch_result.component_paths,
+                    prate_key=prate_component,
+                    rain_key=rain_component,
+                    snow_key=snow_component,
+                    sleet_key=sleet_component,
+                    frzr_key=frzr_component,
+                )
+                grib_path = prate_path
+            elif fetch_result.grib_path is not None:
+                grib_path = fetch_result.grib_path
+            else:
+                raise RuntimeError("Missing GRIB source for precip_ptype_blend")
+        except Exception as exc:
+            if is_upstream_not_ready_error(exc):
+                _log_upstream_not_ready(args, str(exc))
+                return 2
+            logger.exception("Failed to fetch GRIB components for precip_ptype_blend")
+            return 1
+        if all(path is not None for path in (prate_path, rain_path, snow_path, sleet_path, frzr_path)):
+            print(f"GRIB path (prate): {prate_path}")
+            print(f"GRIB path (rain mask): {rain_path}")
+            print(f"GRIB path (snow mask): {snow_path}")
+            print(f"GRIB path (sleet mask): {sleet_path}")
+            print(f"GRIB path (frzr mask): {frzr_path}")
+        else:
+            print(f"GRIB path (shared): {grib_path}")
     else:
         try:
             fetch_result = fetch_grib(
@@ -1626,6 +1810,7 @@ def main() -> int:
     ds: xr.Dataset | None = None
     ds_u: xr.Dataset | None = None
     ds_v: xr.Dataset | None = None
+    ds_prate: xr.Dataset | None = None
     ds_refl: xr.Dataset | None = None
     ds_rain: xr.Dataset | None = None
     ds_snow: xr.Dataset | None = None
@@ -1976,6 +2161,78 @@ def main() -> int:
                 raise RuntimeError(
                     f"Failed to derive radar_ptype_combo: {type(exc).__name__}: {exc}"
                 ) from exc
+        elif args.model == "gfs" and derive_kind == "precip_ptype_blend":
+            try:
+                prate_component, rain_component, snow_component, sleet_component, frzr_component = (
+                    _precip_ptype_component_ids(var_spec)
+                )
+                shared_source_path = grib_path
+                prate_source = prate_path or shared_source_path
+                rain_source = rain_path or shared_source_path
+                snow_source = snow_path or shared_source_path
+                sleet_source = sleet_path or shared_source_path
+                frzr_source = frzr_path or shared_source_path
+                if any(src is None for src in (prate_source, rain_source, snow_source, sleet_source, frzr_source)):
+                    raise RuntimeError("Missing GRIB source path for precip_ptype components")
+
+                ds_prate = _open_cfgrib_dataset_strict(prate_source, plugin.get_var(prate_component))
+                ds_rain = _open_cfgrib_dataset_strict(rain_source, plugin.get_var(rain_component))
+                ds_snow = _open_cfgrib_dataset_strict(snow_source, plugin.get_var(snow_component))
+                ds_sleet = _open_cfgrib_dataset_strict(sleet_source, plugin.get_var(sleet_component))
+                ds_frzr = _open_cfgrib_dataset_strict(frzr_source, plugin.get_var(frzr_component))
+
+                prate_da = plugin.select_dataarray(ds_prate, prate_component)
+                rain_da = plugin.select_dataarray(ds_rain, rain_component)
+                snow_da = plugin.select_dataarray(ds_snow, snow_component)
+                sleet_da = plugin.select_dataarray(ds_sleet, sleet_component)
+                frzr_da = plugin.select_dataarray(ds_frzr, frzr_component)
+
+                arrays = [prate_da, rain_da, snow_da, sleet_da, frzr_da]
+                arrays = [arr.isel(time=0) if "time" in arr.dims else arr for arr in arrays]
+                prate_da, rain_da, snow_da, sleet_da, frzr_da = [arr.squeeze() for arr in arrays]
+
+                prate_da, lat_name, lon_name = _normalize_latlon_dataarray(prate_da)
+                rain_da, _, _ = _normalize_latlon_dataarray(rain_da)
+                snow_da, _, _ = _normalize_latlon_dataarray(snow_da)
+                sleet_da, _, _ = _normalize_latlon_dataarray(sleet_da)
+                frzr_da, _, _ = _normalize_latlon_dataarray(frzr_da)
+
+                if not np.array_equal(rain_da.coords[lat_name].values, prate_da.coords[lat_name].values) or not np.array_equal(
+                    rain_da.coords[lon_name].values, prate_da.coords[lon_name].values
+                ):
+                    rain_da = rain_da.reindex_like(prate_da, method=None)
+                if not np.array_equal(snow_da.coords[lat_name].values, prate_da.coords[lat_name].values) or not np.array_equal(
+                    snow_da.coords[lon_name].values, prate_da.coords[lon_name].values
+                ):
+                    snow_da = snow_da.reindex_like(prate_da, method=None)
+                if not np.array_equal(sleet_da.coords[lat_name].values, prate_da.coords[lat_name].values) or not np.array_equal(
+                    sleet_da.coords[lon_name].values, prate_da.coords[lon_name].values
+                ):
+                    sleet_da = sleet_da.reindex_like(prate_da, method=None)
+                if not np.array_equal(frzr_da.coords[lat_name].values, prate_da.coords[lat_name].values) or not np.array_equal(
+                    frzr_da.coords[lon_name].values, prate_da.coords[lon_name].values
+                ):
+                    frzr_da = frzr_da.reindex_like(prate_da, method=None)
+
+                da = prate_da
+                pre_encoded = _encode_precip_ptype_blend(
+                    requested_var=args.var,
+                    normalized_var=normalized_var,
+                    prate_values=np.asarray(prate_da.values, dtype=np.float32),
+                    ptype_values={
+                        "crain": np.asarray(rain_da.values, dtype=np.float32),
+                        "csnow": np.asarray(snow_da.values, dtype=np.float32),
+                        "cicep": np.asarray(sleet_da.values, dtype=np.float32),
+                        "cfrzr": np.asarray(frzr_da.values, dtype=np.float32),
+                    },
+                )
+            except Exception as exc:
+                if isinstance(exc, UpstreamNotReadyError):
+                    raise
+                logger.exception("precip_ptype_blend derivation failed")
+                raise RuntimeError(
+                    f"Failed to derive precip_ptype_blend: {type(exc).__name__}: {exc}"
+                ) from exc
         else:
             try:
                 open_dataset = _open_cfgrib_dataset_strict if args.model == "gfs" else _open_cfgrib_dataset
@@ -2012,6 +2269,7 @@ def main() -> int:
                 grib_path,
                 u_path,
                 v_path,
+                prate_path,
                 refl_path,
                 rain_path,
                 snow_path,
@@ -2029,6 +2287,7 @@ def main() -> int:
                     grib_path,
                     u_path,
                     v_path,
+                    prate_path,
                     refl_path,
                     rain_path,
                     snow_path,
@@ -2109,7 +2368,7 @@ def main() -> int:
                 "vmin": float(np.nanmin(values[valid_mask])) if np.any(valid_mask) else float("nan"),
                 "vmax": float(np.nanmax(values[valid_mask])) if np.any(valid_mask) else float("nan"),
             }
-            spec_key_used = "radar_ptype"
+            spec_key_used = str(meta.get("spec_key") or normalized_var)
 
         if args.var == "tmp2m":
             valid_count = int(np.count_nonzero(valid_mask))
@@ -2363,6 +2622,8 @@ def main() -> int:
             ds_u.close()
         if ds_v is not None:
             ds_v.close()
+        if ds_prate is not None:
+            ds_prate.close()
         if ds_refl is not None:
             ds_refl.close()
         if ds_rain is not None:
