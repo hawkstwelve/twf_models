@@ -294,6 +294,14 @@ VAR_SPECS = {
         "legend_title": "6-hr Precip (in)",
         "legend_stops": QPF6H_LEGEND_STOPS,
     },
+    "precip_ptype": {
+        "type": "continuous",
+        "units": "in/hr",
+        "range": (0.0, 2.0),
+        "colors": precip_colors,
+        "display_name": "Precipitation Intensity",
+        "legend_title": "Precipitation Rate (in/hr)",
+    },
     "snowfall_total": {
         "type": "discrete",
         "units": "in",

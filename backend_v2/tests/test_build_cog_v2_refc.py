@@ -219,6 +219,11 @@ def test_is_discrete_treats_qpf6h_as_continuous() -> None:
     assert build_cog._is_discrete("qpf6h", {}) is False
 
 
+def test_is_discrete_treats_precip_ptype_as_continuous() -> None:
+    assert build_cog._is_discrete("precip_ptype", {"kind": "continuous"}) is False
+    assert build_cog._is_discrete("precip_ptype", {}) is False
+
+
 def test_encode_with_nodata_qpf6h_uses_fixed_range() -> None:
     values = np.array([[0.0, 1.0], [3.0, 6.0]], dtype=np.float32)
     da = xr.DataArray(values, dims=("y", "x"), name="qpf6h")
