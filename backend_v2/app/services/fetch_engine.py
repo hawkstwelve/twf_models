@@ -185,6 +185,16 @@ def _join_search_terms(terms: list[str]) -> str | None:
     return "|".join(ordered)
 
 
+def _supports_radar_ptype(plugin: object) -> bool:
+    getter = getattr(plugin, "get_var", None)
+    if not callable(getter):
+        return False
+    try:
+        return getter("radar_ptype") is not None
+    except Exception:
+        return False
+
+
 def _resolve_hrrr_subset_bundle(
     plugin: object,
     *,
@@ -216,7 +226,10 @@ def _resolve_hrrr_subset_bundle(
         return ("wspd10m", _join_search_terms(search_terms), var_norm, required)
 
     radar_components = ("refc", "crain", "csnow", "cicep", "cfrzr")
-    if var_norm in set(radar_components) | {"radar_ptype"} or str(getattr(var_spec, "derive", "") or "") == "radar_ptype_combo":
+    if _supports_radar_ptype(plugin) and (
+        var_norm in set(radar_components) | {"radar_ptype"}
+        or str(getattr(var_spec, "derive", "") or "") == "radar_ptype_combo"
+    ):
         radar_spec = plugin.get_var("radar_ptype") or var_spec
         refl_var, rain_var, snow_var, sleet_var, frzr_var = _resolve_radar_blend_component_vars(
             radar_spec,
@@ -266,7 +279,10 @@ def _resolve_gfs_subset_bundle(
         return ("wspd10m", _join_search_terms(search_terms), var_norm, required)
 
     radar_components = ("refc", "crain", "csnow", "cicep", "cfrzr")
-    if var_norm in set(radar_components) | {"radar_ptype"} or str(getattr(var_spec, "derive", "") or "") == "radar_ptype_combo":
+    if _supports_radar_ptype(plugin) and (
+        var_norm in set(radar_components) | {"radar_ptype"}
+        or str(getattr(var_spec, "derive", "") or "") == "radar_ptype_combo"
+    ):
         radar_spec = plugin.get_var("radar_ptype") or var_spec
         refl_var, rain_var, snow_var, sleet_var, frzr_var = _resolve_radar_blend_component_vars(
             radar_spec,
@@ -447,7 +463,7 @@ def fetch_grib(
     derive_kind = str(getattr(var_spec, "derive", "") or "")
     if derive_kind == "wspd10m":
         components = _resolve_component_vars(var_spec, ("10u", "10v"))
-    elif derive_kind == "radar_ptype_combo":
+    elif model == "hrrr" and derive_kind == "radar_ptype_combo":
         components = _resolve_radar_blend_component_vars(
             var_spec,
             ("refc", "crain", "csnow", "cicep", "cfrzr"),

@@ -1518,6 +1518,9 @@ def main() -> int:
         return 1
 
     derive_kind = str(var_spec.derive or "") if var_spec.derived else ""
+    if derive_kind == "radar_ptype_combo" and args.model != "hrrr":
+        logger.error("radar_ptype_combo derivation is only supported for model=hrrr")
+        return 1
 
     if derive_kind == "wspd10m":
         try:
@@ -1551,7 +1554,7 @@ def main() -> int:
             print(f"GRIB path (v10): {v_path}")
         else:
             print(f"GRIB path (shared): {grib_path}")
-    elif derive_kind == "radar_ptype_combo":
+    elif args.model == "hrrr" and derive_kind == "radar_ptype_combo":
         try:
             fetch_result = fetch_grib(
                 model=args.model,
@@ -1732,7 +1735,7 @@ def main() -> int:
                 raise RuntimeError(
                     f"Failed to derive wspd10m: {type(exc).__name__}: {exc}"
                 ) from exc
-        elif derive_kind == "radar_ptype_combo":
+        elif args.model == "hrrr" and derive_kind == "radar_ptype_combo":
             try:
                 refl_component, rain_component, snow_component, sleet_component, frzr_component = (
                     _radar_blend_component_ids(var_spec)

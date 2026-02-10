@@ -27,7 +27,7 @@ def test_fetch_grib_gfs_refc_generic_path(monkeypatch, tmp_path: Path) -> None:
         seen["cache_key"] = cache_key
         seen["required_vars"] = required_vars
         return SimpleNamespace(
-            path=day_dir / "gfs.t06z.pgrb2.0p25f00.radar_ptype.grib2",
+            path=day_dir / "gfs.t06z.pgrb2.0p25f00.refc.grib2",
             is_full_file=False,
         )
 
@@ -43,8 +43,8 @@ def test_fetch_grib_gfs_refc_generic_path(monkeypatch, tmp_path: Path) -> None:
 
     assert result.not_ready_reason is None
     assert result.grib_path is not None
-    assert result.grib_path.name.endswith(".radar_ptype.grib2")
-    assert seen["cache_key"] == "radar_ptype"
+    assert result.grib_path.name.endswith(".refc.grib2")
+    assert seen["cache_key"] == "refc"
     assert seen["required_vars"] == ["refc"]
     assert ":REFC:" in str(seen["search_override"])
 

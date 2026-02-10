@@ -212,3 +212,8 @@ def test_resolve_target_grid_meters_override_precedence(monkeypatch) -> None:
 
     monkeypatch.delenv("TWF_TARGET_GRID_METERS_GFS_PNW", raising=False)
     assert resolve_target_grid_meters("gfs", "pnw") == (20000.0, 20000.0)
+
+
+def test_is_discrete_treats_qpf6h_as_continuous() -> None:
+    assert build_cog._is_discrete("qpf6h", {"kind": "continuous"}) is False
+    assert build_cog._is_discrete("qpf6h", {}) is False

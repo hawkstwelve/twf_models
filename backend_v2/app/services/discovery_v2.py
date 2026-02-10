@@ -145,7 +145,7 @@ def list_runs(model: str, region: str) -> list[str]:
 
 
 def list_vars(model: str, region: str, run: str) -> list[str]:
-    get_model(model)
+    plugin = get_model(model)
     resolved_run = resolve_run(model, region, run)
     if run != "latest":
         run_root = get_data_root() / model / region / resolved_run
@@ -158,13 +158,20 @@ def list_vars(model: str, region: str, run: str) -> list[str]:
 
     vars_root = get_data_root() / model / region / resolved_run
     _ensure_dir(vars_root, "Unknown run")
-    vars_list = sorted(p.name for p in _safe_list_dirs(vars_root))
+    vars_list = sorted(
+        p.name
+        for p in _safe_list_dirs(vars_root)
+        if plugin.get_var(plugin.normalize_var_id(p.name)) is not None
+    )
     _cache_set(cache_key, vars_list)
     return list(vars_list)
 
 
 def list_frames(model: str, region: str, run: str, var: str) -> list[dict]:
-    get_model(model)
+    plugin = get_model(model)
+    normalized_var = plugin.normalize_var_id(var)
+    if plugin.get_var(normalized_var) is None:
+        return []
     try:
         resolved_run = resolve_run(model, region, run)
     except HTTPException as exc:
@@ -178,12 +185,12 @@ def list_frames(model: str, region: str, run: str, var: str) -> list[dict]:
             return []
         raise HTTPException(status_code=404, detail="Unknown run")
 
-    cache_key = ("frames", model, region, f"{resolved_run}:{var}")
+    cache_key = ("frames", model, region, f"{resolved_run}:{normalized_var}")
     cached = _cache_get(cache_key)
     if cached is not None:
         return [frame.copy() for frame in cached]
 
-    var_root = get_data_root() / model / region / resolved_run / var
+    var_root = get_data_root() / model / region / resolved_run / normalized_var
     if not var_root.exists() or not var_root.is_dir():
         _cache_set(cache_key, [])
         return []
@@ -211,7 +218,7 @@ def list_frames(model: str, region: str, run: str, var: str) -> list[dict]:
                     model=model,
                     region=region,
                     run=resolved_run,
-                    var=var,
+                    var=normalized_var,
                     fh=fh,
                 ),
             }

@@ -38,8 +38,8 @@ def test_gfs_discovery_lists_runs_vars_and_frames(monkeypatch: pytest.MonkeyPatc
     frames = discovery_v2.list_frames("gfs", "pnw", "latest", "tmp2m")
     assert [row["fh"] for row in frames] == [0, 6]
     assert all(row["run"] == "20260206_06z" for row in frames)
-    assert frames[0]["tile_url_template"] == "/tiles/gfs/pnw/20260206_06z/tmp2m/0/{z}/{x}/{y}.png"
-    assert frames[1]["tile_url_template"] == "/tiles/gfs/pnw/20260206_06z/tmp2m/6/{z}/{x}/{y}.png"
+    assert frames[0]["tile_url_template"] == "/tiles/v2/gfs/pnw/20260206_06z/tmp2m/0/{z}/{x}/{y}.png"
+    assert frames[1]["tile_url_template"] == "/tiles/v2/gfs/pnw/20260206_06z/tmp2m/6/{z}/{x}/{y}.png"
 
 
 def test_gfs_discovery_ignores_invalid_cog_files(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -54,3 +54,31 @@ def test_gfs_discovery_ignores_invalid_cog_files(monkeypatch: pytest.MonkeyPatch
 
     frames = discovery_v2.list_frames("gfs", "pnw", "latest", "tmp2m")
     assert [row["fh"] for row in frames] == [6]
+
+
+def test_discovery_filters_gfs_radar_ptype_but_keeps_hrrr(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    run_id = "20260206_06z"
+
+    _touch(root / "gfs" / "pnw" / run_id / "tmp2m" / "fh000.cog.tif", b"II*\x00valid")
+    _touch(root / "gfs" / "pnw" / run_id / "radar_ptype" / "fh000.cog.tif", b"II*\x00valid")
+    _touch(root / "hrrr" / "pnw" / run_id / "tmp2m" / "fh000.cog.tif", b"II*\x00valid")
+    _touch(root / "hrrr" / "pnw" / run_id / "radar_ptype" / "fh000.cog.tif", b"II*\x00valid")
+    (root / "gfs" / "pnw" / "LATEST.json").write_text(json.dumps({"run_id": run_id}))
+    (root / "hrrr" / "pnw" / "LATEST.json").write_text(json.dumps({"run_id": run_id}))
+
+    monkeypatch.setenv("TWF_DATA_V2_ROOT", str(root))
+    discovery_v2._CACHE.clear()
+
+    gfs_vars = discovery_v2.list_vars("gfs", "pnw", run_id)
+    assert "tmp2m" in gfs_vars
+    assert "radar_ptype" not in gfs_vars
+
+    hrrr_vars = discovery_v2.list_vars("hrrr", "pnw", run_id)
+    assert "radar_ptype" in hrrr_vars
+
+    gfs_radar_frames = discovery_v2.list_frames("gfs", "pnw", run_id, "radar_ptype")
+    assert gfs_radar_frames == []
+
+    hrrr_radar_frames = discovery_v2.list_frames("hrrr", "pnw", run_id, "radar_ptype")
+    assert [row["fh"] for row in hrrr_radar_frames] == [0]
