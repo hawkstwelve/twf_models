@@ -12,11 +12,13 @@ from .base import BaseModelPlugin, RegionSpec, VarSelectors, VarSpec
 
 
 class GFSPlugin(BaseModelPlugin):
+    _PRATE_TO_IN_PER_HOUR = 3600.0 / 25.4
     _STRICT_SELECTION_VARS = {
         "tmp2m",
         "10u",
         "10v",
         "refc",
+        "precip_ptype",
     }
 
     def target_fhs(self, cycle_hour: int) -> list[int]:
@@ -126,6 +128,34 @@ class GFSPlugin(BaseModelPlugin):
             raise TypeError("Expected xarray.Dataset for GFS selection")
 
         normalized = self.normalize_var_id(var_id)
+        if normalized == "precip_ptype":
+            prate_da = self._select_from_spec(ds, "precip_ptype")
+            source_units = str(
+                prate_da.attrs.get("GRIB_units")
+                or prate_da.attrs.get("units")
+                or ""
+            ).strip().lower()
+            convert = "in/hr" not in source_units and "inch" not in source_units
+
+            values = np.asarray(prate_da.values, dtype=np.float32)
+            if convert:
+                values = values * self._PRATE_TO_IN_PER_HOUR
+
+            coords = {
+                dim: prate_da.coords[dim]
+                for dim in prate_da.dims
+                if dim in prate_da.coords
+            }
+            precip_da = xr.DataArray(
+                values.astype(np.float32),
+                dims=prate_da.dims,
+                coords=coords,
+                name="precip_ptype",
+            )
+            precip_da.attrs = dict(prate_da.attrs)
+            precip_da.attrs["GRIB_units"] = "in/hr"
+            precip_da.attrs["units"] = "in/hr"
+            return precip_da
         if normalized == "wspd10m":
             u_da = self._select_from_spec(ds, "10u")
             v_da = self._select_from_spec(ds, "10v")
@@ -258,6 +288,25 @@ GFS_VARS: dict[str, VarSpec] = {
                 "short_name": "refc",
             },
         ),
+    ),
+    "precip_ptype": VarSpec(
+        id="precip_ptype",
+        name="Precipitation Intensity + Type",
+        selectors=VarSelectors(
+            search=[":PRATE:surface:"],
+            filter_by_keys={
+                "typeOfLevel": "surface",
+            },
+            hints={
+                "upstream_var": "prate",
+                "cf_var": "prate",
+                "short_name": "prate",
+                "kind": "precip_ptype",
+                "units": "in/hr",
+            },
+        ),
+        primary=True,
+        normalize_units="in/hr",
     ),
     "qpf6h": VarSpec(
         id="qpf6h",
