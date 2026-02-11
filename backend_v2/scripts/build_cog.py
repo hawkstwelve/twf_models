@@ -1810,9 +1810,11 @@ def run_gdaladdo_overviews(
             _run(band1_resampling, ["-b", "1"])
             _run("nearest", ["-b", "2"])
         else:
-            # No alpha band or non-alpha case: use standard per-band approach
+            # No alpha band: single-band file (e.g., precip_ptype with NODATA)
             _run(band1_resampling, ["-b", "1"])
-            _run("nearest", ["-b", "2"])
+            # Only add band 2 overviews if we have at least 2 bands
+            if len(bands_before) >= 2:
+                _run("nearest", ["-b", "2"])
         # Debug: check after overview generation
         info_after_band = gdalinfo_json(cog_path)
         bands_after_band = info_after_band.get("bands") or []
@@ -3111,23 +3113,22 @@ def main() -> int:
 
             # Create a plain GeoTIFF copy we can safely add internal overviews to.
             require_gdal("gdal_translate")
-            run_cmd(
-                [
-                    "gdal_translate",
-                    "-of",
-                    "GTiff",
-                    "-co",
-                    "TILED=YES",
-                    "-co",
-                    "COMPRESS=DEFLATE",
-                    "-co",
-                    "PHOTOMETRIC=MINISBLACK",
-                    "-co",
-                    "ALPHA=YES",
-                    str(warped_tif),
-                    str(ovr_tif),
-                ]
-            )
+            translate_cmd = [
+                "gdal_translate",
+                "-of",
+                "GTiff",
+                "-co",
+                "TILED=YES",
+                "-co",
+                "COMPRESS=DEFLATE",
+                "-co",
+                "PHOTOMETRIC=MINISBLACK",
+            ]
+            # Only add ALPHA=YES for 2-band (byte+alpha) files, not for single-band NODATA files
+            if not use_precip_ptype_prewarp:
+                translate_cmd.extend(["-co", "ALPHA=YES"])
+            translate_cmd.extend([str(warped_tif), str(ovr_tif)])
+            run_cmd(translate_cmd)
             
             # Debug: check alpha after creating ovr_tif from warped_tif
             _info_ovr_initial = gdalinfo_json(ovr_tif)
