@@ -790,9 +790,9 @@ def _encode_precip_ptype_blend(
 
     # Tie-break priority (highest to lowest): frzr > sleet > snow > rain.
     ptype_order = ("frzr", "sleet", "snow", "rain")
-    bins_per_ptype = int(spec.get("bins_per_ptype", 64))
-    if bins_per_ptype <= 0:
-        bins_per_ptype = 64
+    # Reserve index 0 for NODATA (single-band encoding), so use 63 bins per ptype.
+    # Total: 4 ptypes * 63 bins = 252, leaving indices 1..252 for data, 0 for nodata.
+    bins_per_ptype = 63
     range_min = 0.0
     spec_range = spec.get("range")
     if (
@@ -811,8 +811,7 @@ def _encode_precip_ptype_blend(
         "frzr": "cfrzr",
     }
 
-    byte_band = np.zeros(prate_values.shape, dtype=np.uint8)
-    alpha = np.zeros(prate_values.shape, dtype=np.uint8)
+    byte_band = np.zeros(prate_values.shape, dtype=np.uint8)  # Defaults to 0 (NODATA)
     # Input PRATE is expected in mm/s; encode pipeline works in mm/hr.
     prate = np.asarray(prate_values, dtype=np.float32)
     prate = np.where(np.isfinite(prate), prate, np.nan)
@@ -883,12 +882,13 @@ def _encode_precip_ptype_blend(
     intensity_bin = np.clip(np.rint(intensity_float), 0, bins_per_ptype - 1).astype(np.uint8)
 
     ptype_index = np.where(has_type_info, winner_idx, rain_index).astype(np.uint8)
-    encoded = (
+    encoded_raw = (
         ptype_index.astype(np.uint16) * np.uint16(bins_per_ptype)
         + intensity_bin.astype(np.uint16)
     ).astype(np.uint8)
-    byte_band[visible_mask] = encoded[visible_mask]
-    alpha[visible_mask] = 255
+    # Shift by +1 to reserve 0 for NODATA. Visible pixels: 1..252
+    byte_band[visible_mask] = (encoded_raw[visible_mask] + 1).astype(np.uint8)
+    # byte_band already initialized to 0 (NODATA) for invisible pixels
 
     ptype_pixel_counts = {
         ptype: int(np.count_nonzero(visible_mask & (ptype_index == idx)))
@@ -913,8 +913,10 @@ def _encode_precip_ptype_blend(
         "ptype_scale": ptype_scale,
         "visible_pixels": int(np.count_nonzero(visible_mask)),
         "ptype_pixel_counts": ptype_pixel_counts,
+        "encoding": "singleband_nodata0",  # Mark for renderer
+        "index_shift": 1,  # Renderer must subtract 1 from non-zero values
     }
-    return byte_band, alpha, meta
+    return byte_band, meta
 
 
 def require_gdal(cmd_name: str) -> None:
@@ -1459,6 +1461,68 @@ def _extract_raster_georef(path: Path) -> tuple[int, int, tuple[float, float, fl
     return width, height, geotransform, srs_wkt
 
 
+def write_byte_geotiff_singleband_from_georef(
+    *,
+    byte_band: np.ndarray,
+    out_tif: Path,
+    geotransform: tuple[float, float, float, float, float, float],
+    srs_wkt: str,
+    nodata: int = 0,
+) -> Path:
+    """Write a single-band byte GeoTIFF with NODATA value (for precip_ptype).
+    
+    This avoids alpha band overview mismatch issues that cause zoom-dependent washout.
+    """
+    if byte_band.ndim != 2:
+        raise ValueError(f"Expected 2D byte array, got shape={byte_band.shape}")
+
+    out_tif.parent.mkdir(parents=True, exist_ok=True)
+    band1_path = out_tif.with_suffix(".band1.bin")
+    vrt_path = out_tif.with_suffix(".vrt")
+
+    np.asarray(byte_band, dtype=np.uint8).tofile(band1_path)
+
+    _write_single_band_vrt(
+        vrt_path,
+        x_size=byte_band.shape[1],
+        y_size=byte_band.shape[0],
+        geotransform=geotransform,
+        srs_wkt=srs_wkt,
+        band_path=band1_path,
+        data_type="Byte",
+        nodata=float(nodata),
+    )
+
+    require_gdal("gdal_translate")
+    run_cmd(
+        [
+            "gdal_translate",
+            "-of",
+            "GTiff",
+            "-co",
+            "TILED=YES",
+            "-co",
+            "COMPRESS=DEFLATE",
+            "-co",
+            "PHOTOMETRIC=MINISBLACK",
+            "-a_nodata",
+            str(nodata),
+            "-b",
+            "1",
+            str(vrt_path),
+            str(out_tif),
+        ]
+    )
+
+    for temp_path in (band1_path, vrt_path):
+        try:
+            temp_path.unlink()
+        except OSError:
+            pass
+
+    return out_tif
+
+
 def write_byte_geotiff_from_georef(
     *,
     byte_band: np.ndarray,
@@ -1846,21 +1910,22 @@ def _band_min_max(info: dict, band_index: int) -> tuple[float | None, float | No
     return min_val, max_val
 
 
-def _assert_precip_ptype_alpha_stats(path: Path, meta: dict | None = None) -> None:
-    # If meta indicates no visible pixels, skip validation (all-transparent is valid)
+def _assert_precip_ptype_singleband_stats(path: Path, meta: dict | None = None) -> None:
+    """Validate single-band precip_ptype COG with NODATA=0 encoding."""
+    # If meta indicates no visible pixels, skip validation (all-nodata is valid)
     if meta is not None:
         visible_pixels = meta.get("visible_pixels", -1)
         if visible_pixels == 0:
             logger.info(
-                "precip_ptype alpha validation skipped: no visible pixels (no precipitation above threshold)"
+                "precip_ptype validation skipped: no visible pixels (no precipitation above threshold)"
             )
             return
 
     require_gdal("gdalinfo")
     output = run_cmd_output(["gdalinfo", "-stats", str(path)])
-    section_match = re.search(r"Band\s+2\b([\s\S]*?)(?:\nBand\s+\d+\b|$)", output, flags=re.IGNORECASE)
+    section_match = re.search(r"Band\s+1\b([\s\S]*?)(?:\nBand\s+\d+\b|$)", output, flags=re.IGNORECASE)
     if section_match is None:
-        raise RuntimeError(f"Could not find Band 2 stats in gdalinfo output for {path}")
+        raise RuntimeError(f"Could not find Band 1 stats in gdalinfo output for {path}")
     section = section_match.group(1)
 
     def _pick_float(patterns: list[str]) -> float | None:
@@ -1874,15 +1939,16 @@ def _assert_precip_ptype_alpha_stats(path: Path, meta: dict | None = None) -> No
                 continue
         return None
 
+    # For single-band with NODATA=0, expect max in range 1..252 and nonzero mean
     max_val = _pick_float([r"STATISTICS_MAXIMUM=([0-9eE.+-]+)", r"Maximum=([0-9eE.+-]+)"])
     mean_val = _pick_float([r"STATISTICS_MEAN=([0-9eE.+-]+)", r"Mean=([0-9eE.+-]+)"])
-    if max_val is None or max_val < 255.0:
+    if max_val is None or max_val < 1.0 or max_val > 252.0:
         raise RuntimeError(
-            f"precip_ptype alpha stats invalid for {path}: expected STATISTICS_MAXIMUM=255, got {max_val}"
+            f"precip_ptype byte stats invalid for {path}: expected STATISTICS_MAXIMUM in 1..252, got {max_val}"
         )
     if mean_val is None or mean_val <= 0.0:
         raise RuntimeError(
-            f"precip_ptype alpha stats invalid for {path}: expected nonzero mean, got {mean_val}"
+            f"precip_ptype byte stats invalid for {path}: expected nonzero mean, got {mean_val}"
         )
 
 
@@ -2800,7 +2866,7 @@ def main() -> int:
         )
         if use_precip_ptype_prewarp:
             assert precip_ptype_components is not None
-            byte_band, alpha_band, meta = _encode_precip_ptype_blend(
+            byte_band, meta = _encode_precip_ptype_blend(
                 requested_var=args.var,
                 normalized_var=normalized_var,
                 prate_values=precip_ptype_components["prate"],
@@ -2918,7 +2984,7 @@ def main() -> int:
                 warped_sleet = _read_geotiff_band_float32(warped_components["cicep"])
                 warped_frzr = _read_geotiff_band_float32(warped_components["cfrzr"])
 
-                byte_band, alpha_band, meta = _encode_precip_ptype_blend(
+                byte_band, meta = _encode_precip_ptype_blend(
                     requested_var=args.var,
                     normalized_var=normalized_var,
                     prate_values=warped_prate,
@@ -2941,13 +3007,13 @@ def main() -> int:
                 }
                 spec_key_used = str(meta.get("spec_key") or normalized_var)
                 
-                # Debug: check alpha band stats immediately after encoding
-                alpha_nonzero = int(np.count_nonzero(alpha_band))
-                alpha_max = int(np.max(alpha_band)) if alpha_band.size > 0 else 0
+                # Debug: check byte band stats immediately after encoding
+                byte_nonzero = int(np.count_nonzero(byte_band))
+                byte_max = int(np.max(byte_band)) if byte_band.size > 0 else 0
                 visible_pixels_meta = meta.get("visible_pixels", 0)
                 print(
                     f"precip_ptype encode debug: visible_pixels={visible_pixels_meta} "
-                    f"alpha_nonzero={alpha_nonzero} alpha_max={alpha_max} "
+                    f"byte_nonzero={byte_nonzero} byte_max={byte_max} (expect 1..252) "
                     f"prate_min_mm_s={stats['vmin']:.6f} prate_max_mm_s={stats['vmax']:.6f}"
                 )
 
@@ -2957,18 +3023,18 @@ def main() -> int:
                         "Warped precip_ptype shape mismatch: "
                         f"encoded={byte_band.shape} expected={(height, width)}"
                     )
-                print(f"Writing prewarped precip_ptype byte GeoTIFF: {warped_tif}")
-                write_byte_geotiff_from_georef(
+                print(f"Writing prewarped precip_ptype single-band GeoTIFF (NODATA=0): {warped_tif}")
+                write_byte_geotiff_singleband_from_georef(
                     byte_band=byte_band,
-                    alpha_band=alpha_band,
                     out_tif=warped_tif,
                     geotransform=geotransform,
                     srs_wkt=srs_wkt,
+                    nodata=0,
                 )
-                # Debug: check alpha immediately after writing warped_tif
+                # Debug: check byte band after writing warped_tif
                 _info = gdalinfo_json(warped_tif)
-                _alpha_min, _alpha_max = _band_min_max(_info, 2)
-                print(f"Debug: warped_tif alpha after write: min={_alpha_min} max={_alpha_max}")
+                _byte_min, _byte_max = _band_min_max(_info, 1)
+                print(f"Debug: warped_tif byte band after write: min={_byte_min} max={_byte_max}")
                 if args.debug:
                     print(
                         "Warp debug: "
@@ -3001,14 +3067,25 @@ def main() -> int:
             info = gdalinfo_json(warped_tif)
             if args.debug:
                 band_count = len(info.get("bands") or [])
-                alpha_min, alpha_max = _band_min_max(info, 2)
-                print(
-                    "Warp debug: "
-                    f"bands={band_count} "
-                    f"alpha_band2_min={alpha_min if alpha_min is not None else 'n/a'} "
-                    f"alpha_band2_max={alpha_max if alpha_max is not None else 'n/a'}"
-                )
-            assert_alpha_present(info)
+                if use_precip_ptype_prewarp:
+                    byte_min, byte_max = _band_min_max(info, 1)
+                    print(
+                        "Warp debug: "
+                        f"bands={band_count} "
+                        f"byte_band1_min={byte_min if byte_min is not None else 'n/a'} "
+                        f"byte_band1_max={byte_max if byte_max is not None else 'n/a'}"
+                    )
+                else:
+                    alpha_min, alpha_max = _band_min_max(info, 2)
+                    print(
+                        "Warp debug: "
+                        f"bands={band_count} "
+                        f"alpha_band2_min={alpha_min if alpha_min is not None else 'n/a'} "
+                        f"alpha_band2_max={alpha_max if alpha_max is not None else 'n/a'}"
+                    )
+            # Skip alpha validation for single-band precip_ptype
+            if not use_precip_ptype_prewarp:
+                assert_alpha_present(info)
             log_warped_info(warped_tif, info)
 
             if clip_bounds_3857:
@@ -3185,7 +3262,7 @@ def main() -> int:
                 assert_single_internal_overview_cog(cog_path)
 
             if args.model == "gfs" and derive_kind == "precip_ptype_blend":
-                _assert_precip_ptype_alpha_stats(cog_path, meta=meta)
+                _assert_precip_ptype_singleband_stats(cog_path, meta=meta)
 
             if args.debug:
                 cog_info = gdalinfo_json(cog_path)

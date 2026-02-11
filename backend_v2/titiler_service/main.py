@@ -90,7 +90,18 @@ def _image_data_to_rgba(image_data, var_key: str) -> np.ndarray:
         lut = get_lut(var_key)
         if band.dtype == np.uint8:
             byte_band = band.astype(np.uint8)
-            alpha = np.where(byte_band == 255, 0, 255).astype(np.uint8)
+            # Special handling for precip_ptype: single-band with NODATA=0 and index shift
+            if var_key == "precip_ptype":
+                # Index 0 is NODATA; visible pixels are 1..252 (shifted +1 during encoding)
+                # Subtract 1 to get palette index 0..251
+                palette_index = np.where(byte_band == 0, 0, byte_band - 1).astype(np.uint8)
+                rgba = lut[palette_index]
+                # Alpha: transparent where NODATA (0), opaque elsewhere
+                alpha = np.where(byte_band == 0, 0, 255).astype(np.uint8)
+            else:
+                # Legacy 2-band encoding compatibility (255 = NODATA)
+                alpha = np.where(byte_band == 255, 0, 255).astype(np.uint8)
+                rgba = lut[byte_band]
             if mask_array is not None:
                 alpha = np.where(mask_array > 0, alpha, 0).astype(np.uint8)
         else:
@@ -98,7 +109,7 @@ def _image_data_to_rgba(image_data, var_key: str) -> np.ndarray:
                 band.astype(np.float32),
                 var_key=var_key,
             )
-        rgba = lut[byte_band]
+            rgba = lut[byte_band]
         rgba[..., 3] = alpha
         return rgba
 
