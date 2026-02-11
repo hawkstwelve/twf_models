@@ -101,11 +101,16 @@ function isPrecipPtypeLegendMeta(
 }
 
 function withPrecipRateUnits(title: string, units?: string): string {
-  const resolvedUnits = (units ?? "").trim().toLowerCase();
-  if (resolvedUnits !== "in/hr") {
+  const resolvedUnits = (units ?? "").trim();
+  if (!resolvedUnits) {
     return title;
   }
-  return title.toLowerCase().includes("(in/hr)") ? title : `${title} (in/hr)`;
+  const lowerTitle = title.toLowerCase();
+  const lowerUnits = resolvedUnits.toLowerCase();
+  if (lowerTitle.includes(`(${lowerUnits})`)) {
+    return title;
+  }
+  return `${title} (${resolvedUnits})`;
 }
 
 function buildLegend(meta: LegendMeta | null | undefined, opacity: number): LegendPayload | null {
@@ -116,7 +121,7 @@ function buildLegend(meta: LegendMeta | null | undefined, opacity: number): Lege
   const isPrecipPtype = isPrecipPtypeLegendMeta(metaWithIds);
   const baseTitle = meta.legend_title ?? meta.display_name ?? "Legend";
   const title = isPrecipPtype ? withPrecipRateUnits(baseTitle, meta.units) : baseTitle;
-  const units = isPrecipPtype ? "in/hr" : meta.units;
+  const units = meta.units;
   const legendMetadata = {
     kind: metaWithIds.kind,
     id: metaWithIds.var_key ?? metaWithIds.spec_key ?? metaWithIds.id,

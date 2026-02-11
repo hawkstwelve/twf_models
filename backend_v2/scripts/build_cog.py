@@ -819,6 +819,24 @@ def _encode_precip_ptype_blend(
     prate_mmhr = prate * 3600.0
     visible_mask = np.isfinite(prate_mmhr) & (prate_mmhr >= alpha_threshold)
 
+    # --- Smooth precip rate slightly to reduce blockiness (3x3 weighted kernel) ---
+    prate_smooth = prate_mmhr.copy()
+    kernel = np.array([[1, 2, 1],
+                       [2, 4, 2],
+                       [1, 2, 1]], dtype=np.float32)
+    kernel = kernel / np.sum(kernel)
+
+    # Pad with edge values to preserve footprint
+    padded = np.pad(prate_smooth, 1, mode="edge")
+    smoothed = np.zeros_like(prate_smooth, dtype=np.float32)
+
+    for i in range(prate_smooth.shape[0]):
+        for j in range(prate_smooth.shape[1]):
+            window = padded[i:i+3, j:j+3]
+            smoothed[i, j] = np.sum(window * kernel)
+
+    prate_mmhr = smoothed
+
     flat_colors = list(spec.get("colors", []))
     ptype_breaks = {
         ptype: {"offset": idx * bins_per_ptype, "count": bins_per_ptype}
@@ -854,8 +872,15 @@ def _encode_precip_ptype_blend(
     denom = range_max - range_min
     if denom <= 0:
         raise RuntimeError("Invalid precip_ptype blend intensity range")
+
     norm = np.clip((prate_capped - range_min) / denom, 0.0, 1.0)
-    intensity_bin = np.minimum((norm * bins_per_ptype).astype(np.int16), bins_per_ptype - 1).astype(np.uint8)
+
+    # Gamma scaling (<1 boosts light precip for better visual contrast)
+    gamma = 0.35
+    norm_gamma = np.power(norm, gamma)
+
+    intensity_float = norm_gamma * (bins_per_ptype - 1)
+    intensity_bin = np.clip(np.rint(intensity_float), 0, bins_per_ptype - 1).astype(np.uint8)
 
     ptype_index = np.where(has_type_info, winner_idx, rain_index).astype(np.uint8)
     encoded = (
