@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import importlib
 import json
 from pathlib import Path
 
 import pytest
 
+from app import config as config_module
 from app.services import discovery_v2
+from app.services import offline_tiles as offline_tiles_module
 
 
 def _touch(path: Path, content: bytes = b"") -> None:
@@ -13,117 +16,73 @@ def _touch(path: Path, content: bytes = b"") -> None:
     path.write_bytes(content)
 
 
-def test_gfs_discovery_lists_runs_vars_and_frames(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    root = tmp_path / "data"
-    newer = root / "gfs" / "pnw" / "20260206_06z"
-    older = root / "gfs" / "pnw" / "20260206_00z"
-
-    _touch(newer / "tmp2m" / "fh000.cog.tif", b"II*\x00valid")
-    _touch(newer / "tmp2m" / "fh006.cog.tif", b"II*\x00valid")
-    _touch(newer / "wspd10m" / "fh000.cog.tif", b"II*\x00valid")
-    _touch(newer / "precip_ptype" / "fh006.cog.tif", b"II*\x00valid")
-    _touch(older / "tmp2m" / "fh000.cog.tif", b"II*\x00valid")
-    (root / "gfs" / "pnw" / "LATEST.json").write_text(
-        json.dumps({"run_id": "20260206_06z"})
-    )
-
-    monkeypatch.setenv("TWF_DATA_V2_ROOT", str(root))
-    discovery_v2._CACHE.clear()
-
-    runs = discovery_v2.list_runs("gfs", "pnw")
-    assert runs == ["20260206_06z", "20260206_00z"]
-
-    vars_latest = discovery_v2.list_vars("gfs", "pnw", "latest")
-    assert vars_latest == ["precip_ptype", "tmp2m", "wspd10m"]
-
-    frames = discovery_v2.list_frames("gfs", "pnw", "latest", "tmp2m")
-    assert [row["fh"] for row in frames] == [0, 6]
-    assert all(row["run"] == "20260206_06z" for row in frames)
-    assert frames[0]["tile_url_template"] == "/tiles/v2/gfs/pnw/20260206_06z/tmp2m/0/{z}/{x}/{y}.png"
-    assert frames[1]["tile_url_template"] == "/tiles/v2/gfs/pnw/20260206_06z/tmp2m/6/{z}/{x}/{y}.png"
+def _write_source_frame(root: Path, *, model: str, region: str, run: str, var: str, fh: int) -> None:
+    frame_id = f"{fh:03d}"
+    _touch(root / model / region / run / var / f"fh{frame_id}.cog.tif", b"II*\x00cog")
+    sidecar = {
+        "model": model,
+        "region": region,
+        "run": run,
+        "var": var,
+        "fh": fh,
+        "meta": {"units": "F", "output_mode": "byte_alpha"},
+    }
+    (root / model / region / run / var / f"fh{frame_id}.json").write_text(json.dumps(sidecar))
 
 
-def test_gfs_discovery_ignores_invalid_cog_files(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    root = tmp_path / "data"
-    run_dir = root / "gfs" / "pnw" / "20260206_06z" / "tmp2m"
-    _touch(run_dir / "fh000.cog.tif", b"not-a-tiff")
-    _touch(run_dir / "fh006.cog.tif", b"II*\x00valid")
-    (root / "gfs" / "pnw" / "LATEST.json").write_text(json.dumps({"run_id": "20260206_06z"}))
-
-    monkeypatch.setenv("TWF_DATA_V2_ROOT", str(root))
-    discovery_v2._CACHE.clear()
-
-    frames = discovery_v2.list_frames("gfs", "pnw", "latest", "tmp2m")
-    assert [row["fh"] for row in frames] == [6]
-
-
-def test_discovery_filters_gfs_radar_ptype_but_keeps_hrrr(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    root = tmp_path / "data"
-    run_id = "20260206_06z"
-
-    _touch(root / "gfs" / "pnw" / run_id / "tmp2m" / "fh000.cog.tif", b"II*\x00valid")
-    _touch(root / "gfs" / "pnw" / run_id / "radar_ptype" / "fh000.cog.tif", b"II*\x00valid")
-    _touch(root / "hrrr" / "pnw" / run_id / "tmp2m" / "fh000.cog.tif", b"II*\x00valid")
-    _touch(root / "hrrr" / "pnw" / run_id / "radar_ptype" / "fh000.cog.tif", b"II*\x00valid")
-    (root / "gfs" / "pnw" / "LATEST.json").write_text(json.dumps({"run_id": run_id}))
-    (root / "hrrr" / "pnw" / "LATEST.json").write_text(json.dumps({"run_id": run_id}))
-
-    monkeypatch.setenv("TWF_DATA_V2_ROOT", str(root))
-    discovery_v2._CACHE.clear()
-
-    gfs_vars = discovery_v2.list_vars("gfs", "pnw", run_id)
-    assert "tmp2m" in gfs_vars
-    assert "radar_ptype" not in gfs_vars
-
-    hrrr_vars = discovery_v2.list_vars("hrrr", "pnw", run_id)
-    assert "radar_ptype" in hrrr_vars
-
-    gfs_radar_frames = discovery_v2.list_frames("gfs", "pnw", run_id, "radar_ptype")
-    assert gfs_radar_frames == []
-
-    hrrr_radar_frames = discovery_v2.list_frames("hrrr", "pnw", run_id, "radar_ptype")
-    assert [row["fh"] for row in hrrr_radar_frames] == [0]
+def _reload_modules(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    monkeypatch.setenv("TWF_DATA_V2_ROOT", str(tmp_path / "data_v2"))
+    monkeypatch.setenv("STAGING_ROOT", str(tmp_path / "staging"))
+    monkeypatch.setenv("PUBLISH_ROOT", str(tmp_path / "published"))
+    monkeypatch.setenv("MANIFEST_ROOT", str(tmp_path / "manifests"))
+    monkeypatch.setenv("OFFLINE_TILES_ENABLED", "true")
+    importlib.reload(config_module)
+    offline_tiles = importlib.reload(offline_tiles_module)
+    discovery = importlib.reload(discovery_v2)
+    discovery._CACHE.clear()
+    return offline_tiles, discovery
 
 
-def test_discovery_includes_gfs_precip_ptype_but_excludes_hrrr_precip_ptype(
+def test_gfs_discovery_reads_published_manifests_only(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    root = tmp_path / "data"
-    run_id = "20260206_06z"
+    offline_tiles, discovery = _reload_modules(monkeypatch, tmp_path)
+    data_root = tmp_path / "data_v2"
+    run = "20260206_06z"
+    for fh in range(0, 36, 6):
+        _write_source_frame(data_root, model="gfs", region="pnw", run=run, var="tmp2m", fh=fh)
+        offline_tiles.stage_single_frame(model="gfs", region="pnw", run=run, var="tmp2m", fh=fh)
+        offline_tiles.publish_from_staging(model="gfs", run=run, var="tmp2m")
 
-    _touch(root / "gfs" / "pnw" / run_id / "precip_ptype" / "fh006.cog.tif", b"II*\x00valid")
-    _touch(root / "hrrr" / "pnw" / run_id / "precip_ptype" / "fh006.cog.tif", b"II*\x00valid")
-    (root / "gfs" / "pnw" / "LATEST.json").write_text(json.dumps({"run_id": run_id}))
-    (root / "hrrr" / "pnw" / "LATEST.json").write_text(json.dumps({"run_id": run_id}))
+    models = discovery.list_models()
+    assert any(row["id"] == "gfs" for row in models)
+    assert discovery.list_runs("gfs", "pnw") == [run]
+    assert discovery.list_vars("gfs", "pnw", "latest") == ["tmp2m"]
 
-    monkeypatch.setenv("TWF_DATA_V2_ROOT", str(root))
-    discovery_v2._CACHE.clear()
-
-    gfs_vars = discovery_v2.list_vars("gfs", "pnw", run_id)
-    assert "precip_ptype" in gfs_vars
-
-    hrrr_vars = discovery_v2.list_vars("hrrr", "pnw", run_id)
-    assert "precip_ptype" not in hrrr_vars
+    frames = discovery.list_frames("gfs", "pnw", "latest", "tmp2m")
+    assert [row["fh"] for row in frames] == [0, 6, 12, 18, 24, 30]
+    assert frames[0]["url"] == "/tiles/gfs/20260206_06z/tmp2m/000.pmtiles"
 
 
-def test_discovery_gfs_precip_ptype_frames_require_fh6_and_6_hour_steps(
+def test_gfs_discovery_does_not_leak_staging_only_runs(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    root = tmp_path / "data"
-    run_id = "20260206_06z"
-    var_root = root / "gfs" / "pnw" / run_id / "precip_ptype"
+    offline_tiles, discovery = _reload_modules(monkeypatch, tmp_path)
+    data_root = tmp_path / "data_v2"
 
-    _touch(var_root / "fh000.cog.tif", b"II*\x00valid")
-    _touch(var_root / "fh003.cog.tif", b"II*\x00valid")
-    _touch(var_root / "fh006.cog.tif", b"II*\x00valid")
-    _touch(var_root / "fh009.cog.tif", b"II*\x00valid")
-    _touch(var_root / "fh012.cog.tif", b"II*\x00valid")
-    (root / "gfs" / "pnw" / "LATEST.json").write_text(json.dumps({"run_id": run_id}))
+    published_run = "20260206_06z"
+    for fh in range(0, 36, 6):
+        _write_source_frame(data_root, model="gfs", region="pnw", run=published_run, var="tmp2m", fh=fh)
+        offline_tiles.stage_single_frame(model="gfs", region="pnw", run=published_run, var="tmp2m", fh=fh)
+        offline_tiles.publish_from_staging(model="gfs", run=published_run, var="tmp2m")
 
-    monkeypatch.setenv("TWF_DATA_V2_ROOT", str(root))
-    discovery_v2._CACHE.clear()
+    staging_only_run = "20260206_12z"
+    for fh in (0, 6, 12):
+        _write_source_frame(data_root, model="gfs", region="pnw", run=staging_only_run, var="tmp2m", fh=fh)
+        offline_tiles.stage_single_frame(model="gfs", region="pnw", run=staging_only_run, var="tmp2m", fh=fh)
+    # Never published: < gate
 
-    frames = discovery_v2.list_frames("gfs", "pnw", run_id, "precip_ptype")
-    assert [row["fh"] for row in frames] == [6, 12]
+    runs = discovery.list_runs("gfs", "pnw")
+    assert runs == [published_run]

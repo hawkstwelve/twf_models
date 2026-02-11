@@ -28,7 +28,8 @@ The implementation roadmap remains in `docs/OFFLINE_TILES_REFACTOR_PLAN.md`.
 3. Publish is pointer-based and atomic.
 - Staging writes happen under `STAGING_ROOT`.
 - Published data under `PUBLISH_ROOT` is never mutated in place.
-- Visibility changes only through atomic update of a model latest pointer in `MANIFEST_ROOT`.
+- Visibility changes only through atomic update of a model latest pointer in `MANIFEST_ROOT/{model}/latest.json` (lowercase model id).
+- Optional legacy alias `{MODEL}_latest.json` is compatibility-only and non-canonical.
 
 4. Discovery/clients consume published manifests only.
 - No readiness probing by tile endpoint.
@@ -36,7 +37,7 @@ The implementation roadmap remains in `docs/OFFLINE_TILES_REFACTOR_PLAN.md`.
 
 ## Schema Baseline
 
-`contract_version` is required in all publish contracts.
+`contract_version` is required in all publish contracts and must be integer `1` for Phase 1.
 
 ## `meta.json` required fields
 

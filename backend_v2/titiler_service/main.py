@@ -9,6 +9,7 @@ import numpy as np
 from fastapi import APIRouter, FastAPI, HTTPException, Response
 from PIL import Image
 
+from app.config import settings
 from app.services.colormaps_v2 import encode_to_byte_and_alpha, get_lut
 from app.services.run_resolution import get_data_root, resolve_run
 
@@ -37,11 +38,6 @@ UNAVAILABLE_TILE_CACHE_SECONDS = 15
 RUNTIME_TILE_DEPRECATION_WARNING = (
     '299 - "Runtime PNG tile routes are deprecated; migrate to manifest-driven PMTiles overlays."'
 )
-RUNTIME_TILE_DEPRECATION_HEADERS = {
-    "Deprecation": "true",
-    "Warning": RUNTIME_TILE_DEPRECATION_WARNING,
-    "X-TWF-Deprecated-Route": "runtime-png-tiles",
-}
 
 app = FastAPI(
     title="TWF TiTiler Service (V2)",
@@ -49,6 +45,17 @@ app = FastAPI(
 )
 
 router = APIRouter(tags=["titiler"])
+
+
+def _runtime_tile_deprecation_headers() -> dict[str, str]:
+    headers = {
+        "Deprecation": "true",
+        "Warning": RUNTIME_TILE_DEPRECATION_WARNING,
+        "X-TWF-Deprecated-Route": "runtime-png-tiles",
+    }
+    if settings.RUNTIME_TILE_SUNSET_AT:
+        headers["Sunset"] = settings.RUNTIME_TILE_SUNSET_AT
+    return headers
 
 
 def _ensure_segment(label: str, value: str) -> None:
@@ -142,7 +149,7 @@ def _unavailable_tile_response() -> Response:
         status_code=204,
         headers={
             "Cache-Control": f"public, max-age={UNAVAILABLE_TILE_CACHE_SECONDS}",
-            **RUNTIME_TILE_DEPRECATION_HEADERS,
+            **_runtime_tile_deprecation_headers(),
         },
     )
 
@@ -283,7 +290,7 @@ def _tile_response(
 
     headers = {
         "Cache-Control": f"public, max-age={TILE_CACHE_SECONDS}, immutable",
-        **RUNTIME_TILE_DEPRECATION_HEADERS,
+        **_runtime_tile_deprecation_headers(),
     }
     try:
         stat = cog_path.stat()

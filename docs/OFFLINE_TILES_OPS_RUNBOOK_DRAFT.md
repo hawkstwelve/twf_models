@@ -12,6 +12,7 @@ Define Phase 0 cutover controls, baseline observability, and rollback procedure 
 Environment flags:
 
 - `OFFLINE_TILES_ENABLED`
+- `OFFLINE_TILES_MAX_WORKERS` (default `4`, clamped to max `6`)
 - `STAGING_ROOT`
 - `PUBLISH_ROOT`
 - `MANIFEST_ROOT`
@@ -58,3 +59,8 @@ Metric expectation:
 
 Runtime PNG tile endpoints remain available during transition but now return explicit deprecation headers.  
 Removal target remains Phase 2 per `docs/OFFLINE_TILES_REFACTOR_PLAN.md`.
+
+## Static Cache Guidance
+
+- `/tiles/{model}/{run}/{var}/{frame_id}.pmtiles`: `Cache-Control: public, max-age=31536000, immutable`
+- `/manifests/{model}/latest.json`: `Cache-Control: public, max-age=5, must-revalidate`

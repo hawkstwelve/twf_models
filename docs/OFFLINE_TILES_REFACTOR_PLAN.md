@@ -79,7 +79,8 @@ Use this only if operationally needed for build tooling; default remains per-fra
 
 ## Schemas & Versioning
 
-Every `meta.json` and `manifest.json` MUST include `contract_version`.
+Every `meta.json` and `manifest.json` MUST include `contract_version` as an integer.
+Canonical value for Phase 1 is `1`.
 
 ### `meta.json` required fields
 
@@ -130,9 +131,9 @@ Published structure (example):
 ```text
 /data/
   /staging/
-    GFS/20260211_12z/prate/...
+    gfs/20260211_12z/prate/...
   /published/
-    GFS/
+    gfs/
       20260211_12z/
         prate/
           frames/
@@ -141,7 +142,8 @@ Published structure (example):
             006.pmtiles
           manifest.json
   /manifests/
-    GFS_latest.json
+    gfs/
+      latest.json
 ```
 
 Retention policy:
@@ -246,7 +248,8 @@ Implement offline per-frame PMTiles build/publish pipeline and published-only di
 2. Publisher implementation
 - Enforce immutable `/published` contract
 - Promote staged artifacts to published run path without modifying already published files
-- Publish visibility only through atomic pointer update in `/data/manifests/{MODEL}_latest.json`
+- Publish visibility only through atomic pointer update in `/data/manifests/{model}/latest.json` (canonical lowercase model path)
+- Optional legacy alias `{MODEL}_latest.json` may exist only for compatibility callers; it is not canonical
 
 3. Progressive publish mechanics
 - Initial publish gate at `N=6` validated frames (default)

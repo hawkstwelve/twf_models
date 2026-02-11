@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+from types import SimpleNamespace
 from pathlib import Path
 
 import numpy as np
@@ -178,3 +179,40 @@ def test_titiler_missing_asset_during_render_returns_204(monkeypatch, tmp_path: 
 
     assert response.status_code == 204
     assert response.headers["deprecation"] == "true"
+
+
+def test_titiler_sunset_header_only_emitted_when_configured(monkeypatch, tmp_path: Path) -> None:
+    _touch_cog(tmp_path)
+    monkeypatch.setattr(titiler_main, "get_data_root", lambda: tmp_path)
+    monkeypatch.setattr(titiler_main, "resolve_run", lambda model, region, run: "20260207_19z")
+    monkeypatch.setattr(titiler_main, "COGReader", _FakeCOGReader)
+
+    monkeypatch.setattr(titiler_main, "settings", SimpleNamespace(RUNTIME_TILE_SUNSET_AT=None))
+    response_without_sunset = titiler_main.tile_canonical(
+        model="hrrr",
+        region="pnw",
+        run="latest",
+        var="tmp2m",
+        fh=0,
+        z=6,
+        x=10,
+        y=22,
+    )
+    assert "sunset" not in response_without_sunset.headers
+
+    monkeypatch.setattr(
+        titiler_main,
+        "settings",
+        SimpleNamespace(RUNTIME_TILE_SUNSET_AT="Tue, 31 Dec 2030 23:59:59 GMT"),
+    )
+    response_with_sunset = titiler_main.tile_canonical(
+        model="hrrr",
+        region="pnw",
+        run="latest",
+        var="tmp2m",
+        fh=0,
+        z=6,
+        x=10,
+        y=22,
+    )
+    assert response_with_sunset.headers["sunset"] == "Tue, 31 Dec 2030 23:59:59 GMT"

@@ -5,6 +5,7 @@ import re
 from fastapi import APIRouter, HTTPException
 
 from app.services import discovery_v2
+from app.services.offline_tiles import load_published_run_manifest
 
 router = APIRouter(prefix="/api/v2", tags=["v2"])
 SEGMENT_RE = re.compile(r"^[a-z0-9_-]+$")
@@ -51,3 +52,11 @@ def list_frames(model: str, region: str, run: str, var: str) -> list[dict]:
     _ensure_segment("run", run)
     _ensure_segment("var", var)
     return discovery_v2.list_frames(model, region, run, var)
+
+
+@router.get("/{model}/{region}/{run}/manifest.json")
+def get_run_manifest(model: str, region: str, run: str) -> dict:
+    del region
+    _ensure_segment("model", model)
+    _ensure_segment("run", run)
+    return load_published_run_manifest(model, run)

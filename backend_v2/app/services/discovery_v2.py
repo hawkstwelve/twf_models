@@ -1,24 +1,19 @@
 from __future__ import annotations
 
-import json
-import logging
-import re
 import time
-from datetime import datetime
-from pathlib import Path
+from typing import Any
 
-from fastapi import HTTPException
+from app.services.offline_tiles import (
+    list_published_models,
+    list_published_runs,
+    list_published_vars,
+    load_published_var_manifest,
+    resolve_published_run,
+)
+from app.services.run_resolution import RUN_RE
 
-from app.models import MODEL_REGISTRY, get_model
-from app.services.run_resolution import RUN_RE, get_data_root, resolve_run
-
-logger = logging.getLogger(__name__)
-
-CACHE_TTL_SECONDS = 15.0
-FH_RE = re.compile(r"^fh(\d{3})\.cog\.tif$")
-
-
-_CACHE: dict[tuple[str, str, str, str], tuple[float, list]] = {}
+CACHE_TTL_SECONDS = 5.0
+_CACHE: dict[tuple[str, str, str, str], tuple[float, list[Any]]] = {}
 
 
 def is_valid_run_id(value: str) -> bool:
@@ -26,60 +21,28 @@ def is_valid_run_id(value: str) -> bool:
 
 
 def parse_fh_filename(name: str) -> int | None:
-    match = FH_RE.match(name)
-    if not match:
+    # Legacy helper retained for compatibility with older tests.
+    if not name.startswith("fh") or not name.endswith(".cog.tif"):
         return None
-    return int(match.group(1))
+    body = name[len("fh") : -len(".cog.tif")]
+    if len(body) != 3 or not body.isdigit():
+        return None
+    return int(body)
 
 
-def _cache_get(key: tuple[str, str, str, str]) -> list | None:
+def _cache_get(key: tuple[str, str, str, str]) -> list[Any] | None:
     entry = _CACHE.get(key)
-    if not entry:
+    if entry is None:
         return None
-    cached_at, value = entry
+    cached_at, payload = entry
     if (time.time() - cached_at) > CACHE_TTL_SECONDS:
         _CACHE.pop(key, None)
         return None
-    return value
+    return payload
 
 
-def _cache_set(key: tuple[str, str, str, str], value: list) -> None:
-    _CACHE[key] = (time.time(), value)
-
-
-def _ensure_dir(path: Path, detail: str) -> None:
-    if not path.exists() or not path.is_dir():
-        raise HTTPException(status_code=404, detail=detail)
-
-
-def _safe_list_dirs(path: Path) -> list[Path]:
-    if not path.exists() or not path.is_dir():
-        return []
-    return [p for p in path.iterdir() if p.is_dir()]
-
-
-def _read_json(path: Path) -> dict | None:
-    if not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text())
-    except Exception:
-        logger.warning("Failed to read JSON: %s", path)
-        return None
-
-
-def _is_valid_cog(path: Path) -> bool:
-    if not path.exists() or not path.is_file():
-        return False
-    try:
-        if path.stat().st_size <= 8:
-            return False
-        with path.open("rb") as handle:
-            header = handle.read(4)
-    except OSError:
-        return False
-    # TIFF little-endian (II*\x00), big-endian (MM\x00*), BigTIFF variants.
-    return header in {b"II*\x00", b"MM\x00*", b"II+\x00", b"MM\x00+"}
+def _cache_set(key: tuple[str, str, str, str], payload: list[Any]) -> None:
+    _CACHE[key] = (time.time(), payload)
 
 
 def build_tile_url_template(
@@ -89,145 +52,73 @@ def build_tile_url_template(
     var: str,
     fh: int,
 ) -> str:
-    return f"/tiles/v2/{model}/{region}/{run}/{var}/{fh}/{{z}}/{{x}}/{{y}}.png"
+    del region
+    return f"/tiles/{model}/{run}/{var}/{fh:03d}.pmtiles"
 
 
 def list_models() -> list[dict[str, str]]:
-    root = get_data_root()
-    models = [p.name for p in _safe_list_dirs(root)]
-    models = sorted(model for model in models if model in MODEL_REGISTRY)
-    return [{"id": model, "name": MODEL_REGISTRY[model].name} for model in models]
+    cache_key = ("models", "", "", "")
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return [dict(item) for item in cached]
+    payload = list_published_models()
+    _cache_set(cache_key, payload)
+    return [dict(item) for item in payload]
 
 
 def list_regions(model: str) -> list[str]:
-    get_model(model)
-    model_root = get_data_root() / model
-    _ensure_dir(model_root, "Unknown model")
-    return sorted(p.name for p in _safe_list_dirs(model_root))
+    del model
+    # Offline manifests are model-scoped (no region partition in published contracts).
+    return ["published"]
 
 
 def list_runs(model: str, region: str) -> list[str]:
-    get_model(model)
-    model_root = get_data_root() / model
-    _ensure_dir(model_root, "Unknown model")
-    region_root = model_root / region
-    _ensure_dir(region_root, "Unknown region")
-
-    cache_key = ("runs", model, region, "")
+    del region
+    cache_key = ("runs", model, "", "")
     cached = _cache_get(cache_key)
     if cached is not None:
         return list(cached)
-
-    run_dirs = _safe_list_dirs(region_root)
-    if not run_dirs:
-        _cache_set(cache_key, [])
-        return []
-
-    matched: list[tuple[datetime, str]] = []
-    for path in run_dirs:
-        if not is_valid_run_id(path.name):
-            continue
-        try:
-            run_dt = datetime.strptime(path.name, "%Y%m%d_%Hz")
-        except ValueError:
-            continue
-        matched.append((run_dt, path.name))
-
-    if not matched:
-        _cache_set(cache_key, [])
-        return []
-
-    matched.sort(key=lambda item: item[0], reverse=True)
-    runs = [name for _, name in matched]
-
-    _cache_set(cache_key, runs)
-    return list(runs)
+    payload = list_published_runs(model)
+    _cache_set(cache_key, payload)
+    return list(payload)
 
 
 def list_vars(model: str, region: str, run: str) -> list[str]:
-    plugin = get_model(model)
-    resolved_run = resolve_run(model, region, run)
-    if run != "latest":
-        run_root = get_data_root() / model / region / resolved_run
-        _ensure_dir(run_root, "Unknown run")
-
-    cache_key = ("vars", model, region, resolved_run)
+    del region
+    resolved_run = resolve_published_run(model, run)
+    cache_key = ("vars", model, resolved_run, "")
     cached = _cache_get(cache_key)
     if cached is not None:
         return list(cached)
-
-    vars_root = get_data_root() / model / region / resolved_run
-    _ensure_dir(vars_root, "Unknown run")
-    vars_list = sorted(
-        p.name
-        for p in _safe_list_dirs(vars_root)
-        if plugin.get_var(plugin.normalize_var_id(p.name)) is not None
-    )
-    _cache_set(cache_key, vars_list)
-    return list(vars_list)
+    payload = list_published_vars(model, resolved_run)
+    _cache_set(cache_key, payload)
+    return list(payload)
 
 
-def list_frames(model: str, region: str, run: str, var: str) -> list[dict]:
-    plugin = get_model(model)
-    normalized_var = plugin.normalize_var_id(var)
-    if plugin.get_var(normalized_var) is None:
-        return []
-    try:
-        resolved_run = resolve_run(model, region, run)
-    except HTTPException as exc:
-        if run == "latest" and exc.status_code == 404:
-            return []
-        raise
-
-    run_root = get_data_root() / model / region / resolved_run
-    if not run_root.exists() or not run_root.is_dir():
-        if run == "latest":
-            return []
-        raise HTTPException(status_code=404, detail="Unknown run")
-
-    cache_key = ("frames", model, region, f"{resolved_run}:{normalized_var}")
+def list_frames(model: str, region: str, run: str, var: str) -> list[dict[str, Any]]:
+    del region
+    resolved_run = resolve_published_run(model, run)
+    cache_key = ("frames", model, resolved_run, var)
     cached = _cache_get(cache_key)
     if cached is not None:
-        return [frame.copy() for frame in cached]
+        return [dict(item) for item in cached]
 
-    var_root = get_data_root() / model / region / resolved_run / normalized_var
-    if not var_root.exists() or not var_root.is_dir():
-        _cache_set(cache_key, [])
-        return []
-
-    frames: list[dict] = []
-    seen_fhs: set[int] = set()
-    for entry in var_root.glob("fh*.cog.tif"):
-        if not _is_valid_cog(entry):
-            continue
-        fh = parse_fh_filename(entry.name)
-        if fh is None:
-            continue
-        if model == "gfs" and normalized_var == "precip_ptype":
-            # GFS precip_ptype is produced on 6-hour cadence starting at fh006.
-            if fh < 6 or (fh % 6) != 0:
-                continue
-        if fh in seen_fhs:
-            continue
-        seen_fhs.add(fh)
-        sidecar = _read_json(var_root / f"fh{fh:03d}.json")
-        meta = {"meta": sidecar} if sidecar is not None else None
-        frames.append(
+    manifest = load_published_var_manifest(model, resolved_run, var)
+    payload: list[dict[str, Any]] = []
+    for frame in manifest.get("frames", []):
+        frame_id = str(frame["frame_id"])
+        fh = int(frame.get("fhr", int(frame_id)))
+        payload.append(
             {
+                "frame_id": frame_id,
                 "fh": fh,
-                "has_cog": True,
-                "meta": meta,
+                "valid_time": frame.get("valid_time"),
                 "run": resolved_run,
-                "tile_url_template": build_tile_url_template(
-                    model=model,
-                    region=region,
-                    run=resolved_run,
-                    var=normalized_var,
-                    fh=fh,
-                ),
+                "url": frame.get("url"),
+                # Legacy key kept for compatibility with existing API consumers.
+                "tile_url_template": frame.get("url"),
             }
         )
 
-    frames.sort(key=lambda item: item["fh"])
-    _cache_set(cache_key, frames)
-    return [frame.copy() for frame in frames]
+    _cache_set(cache_key, payload)
+    return [dict(item) for item in payload]

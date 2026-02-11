@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
+from app.config import settings
 from app.models import get_model
 from app.services.fetch_engine import fetch_grib
 
@@ -407,7 +408,7 @@ def _run_build_task(task: dict) -> dict:
     ).strip(os.pathsep)
 
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
-    return {
+    output: dict[str, object] = {
         "run_id": task["run_id"],
         "var": task["var"],
         "fh": task["fh"],
@@ -415,6 +416,25 @@ def _run_build_task(task: dict) -> dict:
         "stdout": (result.stdout or "").strip(),
         "stderr": (result.stderr or "").strip(),
     }
+    if result.returncode != 0 or not settings.OFFLINE_TILES_ENABLED:
+        return output
+
+    try:
+        from app.services.offline_tiles import stage_and_publish_single_frame
+
+        publish_result = stage_and_publish_single_frame(
+            model=str(task["model"]),
+            region=str(task["region"]),
+            run=str(task["run_id"]),
+            var=str(task["var"]),
+            fh=int(task["fh"]),
+        )
+        output["offline"] = publish_result
+    except Exception as exc:
+        output["returncode"] = 8
+        stderr = str(output.get("stderr") or "").strip()
+        output["stderr"] = f"{stderr}\noffline tiles publish failed: {exc}".strip()
+    return output
 
 
 def _summarize_loop(
@@ -539,7 +559,11 @@ def run_scheduler(
     probe_var = primary_vars[0] if primary_vars else plugin.normalize_var_id(PRIMARY_VAR_DEFAULT)
     latest_path = _latest_pointer_path(out_root, model, region)
 
-    max_workers = workers if workers is not None else _workers()
+    if settings.OFFLINE_TILES_ENABLED:
+        configured_workers = workers if workers is not None else settings.OFFLINE_TILES_MAX_WORKERS
+        max_workers = max(1, min(int(configured_workers), 6))
+    else:
+        max_workers = workers if workers is not None else _workers()
     active_run_id: str | None = None
     active_cycle_hour: int | None = None
     newest_run_id: str | None = None
@@ -694,31 +718,32 @@ def run_scheduler(
                         pending.append((var, fh))
 
             latest_pointer_run = _read_latest_pointer(latest_path)
-            newest_promotion_fhs = _promotion_fhs_for_cycle(plugin, newest_cycle_hour)
-            active_promotion_fhs = _promotion_fhs_for_cycle(plugin, active_cycle_hour)
+            if not settings.OFFLINE_TILES_ENABLED:
+                newest_promotion_fhs = _promotion_fhs_for_cycle(plugin, newest_cycle_hour)
+                active_promotion_fhs = _promotion_fhs_for_cycle(plugin, active_cycle_hour)
 
-            if _should_promote_latest(
-                out_root,
-                model,
-                region,
-                newest_run_id,
-                primary_vars,
-                fhs=newest_promotion_fhs,
-            ):
-                if latest_pointer_run != newest_run_id:
-                    _write_latest_pointer(latest_path, newest_run_id)
-                    latest_pointer_run = newest_run_id
-            elif _should_promote_latest(
-                out_root,
-                model,
-                region,
-                active_run_id,
-                primary_vars,
-                fhs=active_promotion_fhs,
-            ):
-                if latest_pointer_run != active_run_id:
-                    _write_latest_pointer(latest_path, active_run_id)
-                    latest_pointer_run = active_run_id
+                if _should_promote_latest(
+                    out_root,
+                    model,
+                    region,
+                    newest_run_id,
+                    primary_vars,
+                    fhs=newest_promotion_fhs,
+                ):
+                    if latest_pointer_run != newest_run_id:
+                        _write_latest_pointer(latest_path, newest_run_id)
+                        latest_pointer_run = newest_run_id
+                elif _should_promote_latest(
+                    out_root,
+                    model,
+                    region,
+                    active_run_id,
+                    primary_vars,
+                    fhs=active_promotion_fhs,
+                ):
+                    if latest_pointer_run != active_run_id:
+                        _write_latest_pointer(latest_path, active_run_id)
+                        latest_pointer_run = active_run_id
 
             _summarize_loop(active_run_id, completed, total, len(pending), newest_run_id, latest_pointer_run)
 
