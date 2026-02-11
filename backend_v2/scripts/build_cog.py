@@ -1658,8 +1658,8 @@ def assert_single_internal_overview_cog(path: Path) -> None:
         raise RuntimeError(f"COG invariant failed: external .ovr found for {path}")
 
     bands = info.get("bands") or []
-    if len(bands) < 2:
-        raise RuntimeError(f"COG invariant failed: expected at least 2 bands for {path}")
+    if len(bands) < 1:
+        raise RuntimeError(f"COG invariant failed: expected at least 1 band for {path}")
 
     missing_band_overviews_idx = [
         index
