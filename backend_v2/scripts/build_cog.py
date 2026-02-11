@@ -285,7 +285,7 @@ def _is_discrete(var: str, meta: dict) -> bool:
     var_key = str(var or "").strip().lower()
     if str(meta.get("kind", "")).strip().lower() == "discrete":
         return True
-    return var_key in {"radar_ptype", "ptype", "radar", "radar_ptype_combo"}
+    return var_key in {"radar_ptype", "ptype", "radar", "radar_ptype_combo", "precip_ptype"}
 
 
 def _warp_tr_meters(model: str, var: str, meta: dict) -> tuple[float, float] | None:
@@ -3006,7 +3006,7 @@ def main() -> int:
             # artifacts caused by inconsistent mask/overview handling.
             addo_resampling = (
                 "nearest"
-                if meta.get("kind") == "discrete" or spec_key_used == "radar_ptype"
+                if meta.get("kind") == "discrete" or spec_key_used in ("radar_ptype", "precip_ptype")
                 else "average"
             )
 
