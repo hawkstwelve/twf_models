@@ -468,6 +468,10 @@ export function MapCanvas({
     });
 
     mapRef.current = map;
+    map.on("move", () => {
+      // zoom is fractional; round for readability
+      console.log("zoom", map.getZoom().toFixed(2));
+    });
 
     return () => {
       cancelCrossfade();
