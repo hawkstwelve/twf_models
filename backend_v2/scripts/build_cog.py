@@ -578,6 +578,7 @@ def _encode_with_nodata(
             "units": spec.get("units"),
             "levels": list(levels),
             "colors": list(colors),
+            "output_mode": "byte_alpha",
         }
         stats = {
             "vmin": float(np.nanmin(valid_values)),
@@ -621,6 +622,7 @@ def _encode_with_nodata(
         "range_source": range_source,
         "range_percentiles": range_percentiles,
         "colors": list(spec.get("colors", [])),
+            "output_mode": "byte_alpha",
     }
     stats = {
         "vmin": float(np.nanmin(valid_values)),
@@ -754,6 +756,7 @@ def _encode_radar_ptype_combo(
         "visible_pixels": int(np.count_nonzero(visible_mask)),
         "fallback_rain_pixels": fallback_rain_count,
         "ptype_recolor_counts": recolor_counts,
+        "output_mode": "byte_alpha",
     }
     if TWF_RADAR_PTYPE_DEBUG:
         logger.info(
@@ -915,6 +918,7 @@ def _encode_precip_ptype_blend(
         "ptype_pixel_counts": ptype_pixel_counts,
         "encoding": "singleband_nodata0",  # Mark for renderer
         "index_shift": 1,  # Renderer must subtract 1 from non-zero values
+        "output_mode": "byte_singleband",
     }
     return byte_band, meta
 
@@ -1173,6 +1177,8 @@ def write_byte_geotiff_from_arrays(
     byte_band: np.ndarray,
     alpha_band: np.ndarray,
     out_tif: Path,
+    *,
+    meta: dict | None = None,
 ) -> tuple[Path, bool]:
     used_latlon = False
     try:
@@ -1264,27 +1270,29 @@ def write_byte_geotiff_from_arrays(
     )
 
     require_gdal("gdal_translate")
-    run_cmd(
-        [
-            "gdal_translate",
-            "-of",
-            "GTiff",
-            "-co",
-            "TILED=YES",
-            "-co",
-            "COMPRESS=DEFLATE",
-            "-co",
-            "PHOTOMETRIC=MINISBLACK",
-            "-co",
-            "ALPHA=YES",
-            "-b",
-            "1",
-            "-b",
-            "2",
-            str(vrt_path),
-            str(out_tif),
-        ]
-    )
+    translate_cmd = [
+        "gdal_translate",
+        "-of",
+        "GTiff",
+        "-co",
+        "TILED=YES",
+        "-co",
+        "COMPRESS=DEFLATE",
+        "-co",
+        "PHOTOMETRIC=MINISBLACK",
+    ]
+    output_mode = (meta or {}).get("output_mode")
+    if output_mode == "byte_alpha":
+        translate_cmd.extend(["-co", "ALPHA=YES"])
+    translate_cmd.extend([
+        "-b",
+        "1",
+        "-b",
+        "2",
+        str(vrt_path),
+        str(out_tif),
+    ])
+    run_cmd(translate_cmd)
 
     for temp_path in (band1_path, band2_path, vrt_path):
         try:
@@ -1528,6 +1536,7 @@ def write_byte_geotiff_from_georef(
     out_tif: Path,
     geotransform: tuple[float, float, float, float, float, float],
     srs_wkt: str,
+    meta: dict | None = None,
 ) -> Path:
     if byte_band.shape != alpha_band.shape:
         raise ValueError(
@@ -1555,27 +1564,29 @@ def write_byte_geotiff_from_georef(
     )
 
     require_gdal("gdal_translate")
-    run_cmd(
-        [
-            "gdal_translate",
-            "-of",
-            "GTiff",
-            "-co",
-            "TILED=YES",
-            "-co",
-            "COMPRESS=DEFLATE",
-            "-co",
-            "PHOTOMETRIC=MINISBLACK",
-            "-co",
-            "ALPHA=YES",
-            "-b",
-            "1",
-            "-b",
-            "2",
-            str(vrt_path),
-            str(out_tif),
-        ]
-    )
+    translate_cmd = [
+        "gdal_translate",
+        "-of",
+        "GTiff",
+        "-co",
+        "TILED=YES",
+        "-co",
+        "COMPRESS=DEFLATE",
+        "-co",
+        "PHOTOMETRIC=MINISBLACK",
+    ]
+    output_mode = (meta or {}).get("output_mode")
+    if output_mode == "byte_alpha":
+        translate_cmd.extend(["-co", "ALPHA=YES"])
+    translate_cmd.extend([
+        "-b",
+        "1",
+        "-b",
+        "2",
+        str(vrt_path),
+        str(out_tif),
+    ])
+    run_cmd(translate_cmd)
 
     for temp_path in (band1_path, band2_path, vrt_path):
         try:
@@ -2938,6 +2949,7 @@ def main() -> int:
             f"spec_key_used={spec_key_used} units={meta.get('units')} "
             f"range={meta.get('range')} colors_len={len(meta.get('colors') or [])}"
         )
+        output_mode = str(meta.get("output_mode") or "byte_alpha")
 
         upstream_run_id = getattr(fetch_result, "upstream_run_id", None)
         run_id = _coerce_run_id(upstream_run_id, grib_path)
@@ -3044,7 +3056,13 @@ def main() -> int:
                     )
             else:
                 print(f"Writing byte GeoTIFF: {byte_tif}")
-                _, used_latlon = write_byte_geotiff_from_arrays(da, byte_band, alpha_band, byte_tif)
+                _, used_latlon = write_byte_geotiff_from_arrays(
+                    da,
+                    byte_band,
+                    alpha_band,
+                    byte_tif,
+                    meta=meta,
+                )
 
                 is_discrete = _is_discrete(args.var, meta)
                 warp_resampling = "near" if is_discrete else "bilinear"
@@ -3056,6 +3074,7 @@ def main() -> int:
                     resampling=warp_resampling,
                     tr_meters=tr_meters,
                     tap=tap,
+                    with_alpha=output_mode == "byte_alpha",
                 )
                 if args.debug:
                     print(
@@ -3101,6 +3120,9 @@ def main() -> int:
                         pass
                     singleband_tif.replace(warped_tif)
                     precip_ptype_singleband = True
+            if precip_ptype_singleband and output_mode != "byte_singleband":
+                output_mode = "byte_singleband"
+                meta["output_mode"] = output_mode
 
             info = gdalinfo_json(warped_tif)
             if args.debug:
@@ -3122,7 +3144,7 @@ def main() -> int:
                         f"alpha_band2_max={alpha_max if alpha_max is not None else 'n/a'}"
                     )
             # Skip alpha validation for single-band precip_ptype
-            if not precip_ptype_singleband:
+            if output_mode == "byte_alpha":
                 assert_alpha_present(info)
             log_warped_info(warped_tif, info)
 
@@ -3160,11 +3182,10 @@ def main() -> int:
                 "-co",
                 "PHOTOMETRIC=MINISBLACK",
             ]
-            # Only add ALPHA=YES for 2-band (byte+alpha) files, not for single-band NODATA files
-            if not precip_ptype_singleband:
+            # Only add ALPHA=YES for explicit byte+alpha outputs.
+            if output_mode == "byte_alpha":
                 translate_cmd.extend(["-co", "ALPHA=YES"])
-            else:
-                # Ensure no mask/alpha is carried forward for single-band precip_ptype
+            elif output_mode == "byte_singleband":
                 translate_cmd.extend(["-b", "1", "-mask", "none", "-co", "MASK=NO"])
             translate_cmd.extend([str(warped_tif), str(ovr_tif)])
             run_cmd(translate_cmd)
@@ -3208,9 +3229,9 @@ def main() -> int:
             # Now build the final COG and copy the already-built overviews.
             print(f"Writing COG: {cog_path}")
             cog_alpha_opt = (
-                ["-co", "ADD_ALPHA=NO", "-co", "MASK=NO"] if precip_ptype_singleband else []
+                ["-co", "ADD_ALPHA=NO", "-co", "MASK=NO"] if output_mode == "byte_singleband" else []
             )
-            cog_band_opts = ["-b", "1", "-mask", "none"] if precip_ptype_singleband else []
+            cog_band_opts = ["-b", "1", "-mask", "none"] if output_mode == "byte_singleband" else []
             try:
                 if use_copy_src_overviews:
                     run_cmd(
