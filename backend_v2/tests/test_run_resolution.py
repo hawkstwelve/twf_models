@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import os
-import time
+import json
 from pathlib import Path
 
 import pytest
@@ -26,17 +25,16 @@ def test_resolve_latest_lexicographic(monkeypatch: pytest.MonkeyPatch, tmp_path:
     assert resolve_run("hrrr", "pnw", "latest") == "20250204_12z"
 
 
-def test_resolve_latest_mtime_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_resolve_latest_falls_back_to_scan_when_pointer_invalid(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     root = tmp_path / "data"
-    run_a = _mkdir(root / "hrrr" / "pnw" / "runA")
-    run_b = _mkdir(root / "hrrr" / "pnw" / "runB")
-
-    now = time.time()
-    os.utime(run_a, (now - 100, now - 100))
-    os.utime(run_b, (now - 10, now - 10))
+    _mkdir(root / "hrrr" / "pnw" / "20250203_18z")
+    _mkdir(root / "hrrr" / "pnw" / "20250204_12z")
+    (root / "hrrr" / "pnw" / "LATEST.json").write_text(json.dumps({"run_id": "runB"}))
 
     monkeypatch.setenv("TWF_DATA_V2_ROOT", str(root))
 
     runs = list_runs("hrrr", "pnw")
-    assert runs[0] == "runB"
-    assert resolve_run("hrrr", "pnw", "latest") == "runB"
+    assert runs == ["20250204_12z", "20250203_18z"]
+    assert resolve_run("hrrr", "pnw", "latest") == "20250204_12z"

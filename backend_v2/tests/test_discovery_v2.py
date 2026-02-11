@@ -28,4 +28,4 @@ def test_build_tile_url_template() -> None:
         var="tmp2m",
         fh=6,
     )
-    assert template == "/tiles/hrrr/pnw/20260207_21z/tmp2m/6/{z}/{x}/{y}.png"
+    assert template == "/tiles/v2/hrrr/pnw/20260207_21z/tmp2m/6/{z}/{x}/{y}.png"

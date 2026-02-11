@@ -52,8 +52,6 @@ venv/
 ## Additional ignores for specific directories
 backend_v2/.python-version
 venv_v2/
-docs/V2_RENDERING_MIGRATION_PLAN.md
-ROADMAP.md
 **/node_modules/
 **/dist/
 **/.next/

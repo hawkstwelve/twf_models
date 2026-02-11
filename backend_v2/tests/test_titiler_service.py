@@ -63,6 +63,8 @@ def test_titiler_tile_route_renders_png(monkeypatch, tmp_path: Path) -> None:
     assert response.media_type == "image/png"
     assert "immutable" in response.headers["cache-control"]
     assert "etag" in response.headers
+    assert response.headers["deprecation"] == "true"
+    assert response.headers["x-twf-deprecated-route"] == "runtime-png-tiles"
 
     img = Image.open(io.BytesIO(response.body))
     arr = np.asarray(img)
@@ -90,6 +92,7 @@ def test_titiler_legacy_v2_path_renders_png(monkeypatch, tmp_path: Path) -> None
     assert response.status_code == 200
     assert response.media_type == "image/png"
     assert "immutable" in response.headers["cache-control"]
+    assert response.headers["deprecation"] == "true"
 
 
 def test_titiler_invalid_segment_rejected(monkeypatch, tmp_path: Path) -> None:
@@ -149,6 +152,7 @@ def test_titiler_missing_source_returns_204(monkeypatch, tmp_path: Path) -> None
 
     assert response.status_code == 204
     assert response.headers["cache-control"].startswith("public, max-age=15")
+    assert response.headers["deprecation"] == "true"
 
 
 def test_titiler_missing_asset_during_render_returns_204(monkeypatch, tmp_path: Path) -> None:
@@ -173,3 +177,4 @@ def test_titiler_missing_asset_during_render_returns_204(monkeypatch, tmp_path: 
     )
 
     assert response.status_code == 204
+    assert response.headers["deprecation"] == "true"

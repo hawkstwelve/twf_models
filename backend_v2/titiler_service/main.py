@@ -34,6 +34,14 @@ logger = logging.getLogger(__name__)
 SEGMENT_RE = re.compile(r"^[a-z0-9_-]+$")
 TILE_CACHE_SECONDS = 31_536_000
 UNAVAILABLE_TILE_CACHE_SECONDS = 15
+RUNTIME_TILE_DEPRECATION_WARNING = (
+    '299 - "Runtime PNG tile routes are deprecated; migrate to manifest-driven PMTiles overlays."'
+)
+RUNTIME_TILE_DEPRECATION_HEADERS = {
+    "Deprecation": "true",
+    "Warning": RUNTIME_TILE_DEPRECATION_WARNING,
+    "X-TWF-Deprecated-Route": "runtime-png-tiles",
+}
 
 app = FastAPI(
     title="TWF TiTiler Service (V2)",
@@ -134,6 +142,7 @@ def _unavailable_tile_response() -> Response:
         status_code=204,
         headers={
             "Cache-Control": f"public, max-age={UNAVAILABLE_TILE_CACHE_SECONDS}",
+            **RUNTIME_TILE_DEPRECATION_HEADERS,
         },
     )
 
@@ -274,6 +283,7 @@ def _tile_response(
 
     headers = {
         "Cache-Control": f"public, max-age={TILE_CACHE_SECONDS}, immutable",
+        **RUNTIME_TILE_DEPRECATION_HEADERS,
     }
     try:
         stat = cog_path.stat()
