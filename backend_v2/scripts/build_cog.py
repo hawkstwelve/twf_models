@@ -3167,7 +3167,7 @@ def main() -> int:
                 translate_cmd.extend(["-co", "ALPHA=YES"])
             else:
                 # Ensure no mask/alpha is carried forward for single-band precip_ptype
-                translate_cmd.extend(["-b", "1", "-mask", "none"])
+                translate_cmd.extend(["-b", "1", "-mask", "none", "-co", "MASK=NO"])
             translate_cmd.extend([str(warped_tif), str(ovr_tif)])
             run_cmd(translate_cmd)
             
@@ -3209,7 +3209,9 @@ def main() -> int:
 
             # Now build the final COG and copy the already-built overviews.
             print(f"Writing COG: {cog_path}")
-            cog_alpha_opt = ["-co", "ADD_ALPHA=NO"] if precip_ptype_singleband else []
+            cog_alpha_opt = (
+                ["-co", "ADD_ALPHA=NO", "-co", "MASK=NO"] if precip_ptype_singleband else []
+            )
             cog_band_opts = ["-b", "1", "-mask", "none"] if precip_ptype_singleband else []
             try:
                 if use_copy_src_overviews:
