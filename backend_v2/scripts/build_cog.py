@@ -3163,7 +3163,7 @@ def main() -> int:
                 "PHOTOMETRIC=MINISBLACK",
             ]
             # Only add ALPHA=YES for 2-band (byte+alpha) files, not for single-band NODATA files
-            if not use_precip_ptype_prewarp:
+            if not precip_ptype_singleband:
                 translate_cmd.extend(["-co", "ALPHA=YES"])
             translate_cmd.extend([str(warped_tif), str(ovr_tif)])
             run_cmd(translate_cmd)
@@ -3206,6 +3206,7 @@ def main() -> int:
 
             # Now build the final COG and copy the already-built overviews.
             print(f"Writing COG: {cog_path}")
+            cog_alpha_opt = ["-co", "ADD_ALPHA=NO"] if precip_ptype_singleband else []
             try:
                 if use_copy_src_overviews:
                     run_cmd(
@@ -3215,6 +3216,9 @@ def main() -> int:
                             "COG",
                             "-co",
                             "COMPRESS=DEFLATE",
+                        ]
+                        + cog_alpha_opt
+                        + [
                             "-co",
                             "COPY_SRC_OVERVIEWS=YES",
                             str(ovr_tif),
@@ -3229,6 +3233,9 @@ def main() -> int:
                             "COG",
                             "-co",
                             "COMPRESS=DEFLATE",
+                        ]
+                        + cog_alpha_opt
+                        + [
                             "-co",
                             "OVERVIEWS=NONE",
                             str(ovr_tif),
@@ -3257,6 +3264,9 @@ def main() -> int:
                             "COG",
                             "-co",
                             "COMPRESS=DEFLATE",
+                        ]
+                        + cog_alpha_opt
+                        + [
                             "-co",
                             "OVERVIEWS=IGNORE_EXISTING",
                             "-co",
@@ -3281,6 +3291,9 @@ def main() -> int:
                             "COG",
                             "-co",
                             "COMPRESS=DEFLATE",
+                        ]
+                        + cog_alpha_opt
+                        + [
                             "-co",
                             "OVERVIEWS=NONE",
                             str(ovr_tif),
