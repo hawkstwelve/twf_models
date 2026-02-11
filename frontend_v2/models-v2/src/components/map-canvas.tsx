@@ -60,10 +60,9 @@ function prefetchLayerId(index: number): string {
 }
 
 function getResamplingMode(variable?: string): "nearest" | "linear" {
-  // radar_ptype (reflectivity composite) uses linear for smooth rendering
-  // precip_ptype (palette-indexed discrete) must use nearest to preserve colors
-  // All other discrete variables use nearest to preserve data integrity
-  if (variable === "radar_ptype") {
+  // radar_ptype needs bilinear/linear for better clarity
+  // All other variables use nearest to preserve discrete data
+  if (variable && (variable.includes("radar") || variable.includes("ptype"))) {
     return "linear";
   }
   return "nearest";

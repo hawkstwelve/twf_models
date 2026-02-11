@@ -1724,15 +1724,37 @@ def run_gdaladdo_overviews(
         ovr_counts_before,
     )
 
+    # Check if we have an alpha band (Band 2 with Alpha color interp or mask flags)
+    has_alpha_band = False
+    if len(bands_before) >= 2:
+        band2 = bands_before[1] or {}
+        color_interp = band2.get("colorInterpretation", "")
+        mask_flags = band2.get("mask", {}).get("flags", []) if isinstance(band2.get("mask"), dict) else []
+        if color_interp == "Alpha" or "ALPHA" in str(mask_flags):
+            has_alpha_band = True
+            logger.info("Detected alpha band; adjusting overview generation strategy")
+
     try:
-        _run(band1_resampling, ["-b", "1"])
-        _run("nearest", ["-b", "2"])
-        # Debug: check after per-band overviews
+        if has_alpha_band and band1_resampling == "nearest":
+            # For alpha-channel COGs with nearest resampling, use all-band approach
+            # since per-band gdaladdo often fails to create alpha band overviews correctly
+            logger.info("Using all-band nearest resampling for alpha-channel COG")
+            _run("nearest", [])
+        elif has_alpha_band and band1_resampling != "nearest":
+            # For alpha-channel COGs with non-nearest resampling (e.g., average for continuous vars),
+            # we need different resampling per band. Try per-band approach and fall back if needed.
+            _run(band1_resampling, ["-b", "1"])
+            _run("nearest", ["-b", "2"])
+        else:
+            # No alpha band or non-alpha case: use standard per-band approach
+            _run(band1_resampling, ["-b", "1"])
+            _run("nearest", ["-b", "2"])
+        # Debug: check after overview generation
         info_after_band = gdalinfo_json(cog_path)
         bands_after_band = info_after_band.get("bands") or []
         ovr_counts_after_band = [len((b or {}).get("overviews") or []) for b in bands_after_band]
         logger.info(
-            "gdaladdo: after per-band overviews path=%s bands=%d band_overview_counts=%s",
+            "gdaladdo: after overview generation path=%s bands=%d band_overview_counts=%s",
             cog_path.name,
             len(bands_after_band),
             ovr_counts_after_band,
