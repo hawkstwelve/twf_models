@@ -3023,22 +3023,56 @@ def main() -> int:
             _alpha_min_after, _alpha_max_after = _band_min_max(_info_after, 2)
             print(f"Debug: ovr_tif alpha after gdaladdo: min={_alpha_min_after} max={_alpha_max_after}")
 
+            # If band overviews are mismatched (common when alpha is treated as mask),
+            # skip COPY_SRC_OVERVIEWS and rebuild overviews on the COG instead.
+            use_copy_src_overviews = True
+            _bands = _info_after.get("bands") or []
+            _overview_counts = [len((band or {}).get("overviews") or []) for band in _bands]
+            if _overview_counts and len(set(_overview_counts)) > 1:
+                use_copy_src_overviews = False
+                logger.warning(
+                    "Skipping COPY_SRC_OVERVIEWS due to mismatched band overviews: counts=%s",
+                    _overview_counts,
+                )
+            elif _overview_counts and any(count == 0 for count in _overview_counts):
+                use_copy_src_overviews = False
+                logger.warning(
+                    "Skipping COPY_SRC_OVERVIEWS due to missing band overviews: counts=%s",
+                    _overview_counts,
+                )
+
             # Now build the final COG and copy the already-built overviews.
             print(f"Writing COG: {cog_path}")
             try:
-                run_cmd(
-                    [
-                        "gdal_translate",
-                        "-of",
-                        "COG",
-                        "-co",
-                        "COMPRESS=DEFLATE",
-                        "-co",
-                        "COPY_SRC_OVERVIEWS=YES",
-                        str(ovr_tif),
-                        str(cog_path),
-                    ]
-                )
+                if use_copy_src_overviews:
+                    run_cmd(
+                        [
+                            "gdal_translate",
+                            "-of",
+                            "COG",
+                            "-co",
+                            "COMPRESS=DEFLATE",
+                            "-co",
+                            "COPY_SRC_OVERVIEWS=YES",
+                            str(ovr_tif),
+                            str(cog_path),
+                        ]
+                    )
+                else:
+                    run_cmd(
+                        [
+                            "gdal_translate",
+                            "-of",
+                            "COG",
+                            "-co",
+                            "COMPRESS=DEFLATE",
+                            "-co",
+                            "OVERVIEWS=NONE",
+                            str(ovr_tif),
+                            str(cog_path),
+                        ]
+                    )
+                    run_gdaladdo_overviews(cog_path, addo_resampling, "nearest")
             except RuntimeError as exc:
                 if not _is_copy_src_overviews_unsupported(exc):
                     raise
