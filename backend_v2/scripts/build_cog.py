@@ -1467,11 +1467,11 @@ def write_byte_geotiff_singleband_from_georef(
     out_tif: Path,
     geotransform: tuple[float, float, float, float, float, float],
     srs_wkt: str,
-    nodata: int = 0,
+    nodata: int | None = None,
 ) -> Path:
-    """Write a single-band byte GeoTIFF with NODATA value (for precip_ptype).
-    
-    This avoids alpha band overview mismatch issues that cause zoom-dependent washout.
+    """Write a single-band byte GeoTIFF, optionally with NODATA.
+
+    If nodata is omitted, no dataset mask is created (prevents alpha band injection).
     """
     if byte_band.ndim != 2:
         raise ValueError(f"Expected 2D byte array, got shape={byte_band.shape}")
@@ -1490,29 +1490,27 @@ def write_byte_geotiff_singleband_from_georef(
         srs_wkt=srs_wkt,
         band_path=band1_path,
         data_type="Byte",
-        nodata=float(nodata),
+        nodata=float(nodata) if nodata is not None else None,
     )
 
     require_gdal("gdal_translate")
-    run_cmd(
-        [
-            "gdal_translate",
-            "-of",
-            "GTiff",
-            "-co",
-            "TILED=YES",
-            "-co",
-            "COMPRESS=DEFLATE",
-            "-co",
-            "PHOTOMETRIC=MINISBLACK",
-            "-a_nodata",
-            str(nodata),
-            "-b",
-            "1",
-            str(vrt_path),
-            str(out_tif),
-        ]
-    )
+    translate_cmd = [
+        "gdal_translate",
+        "-of",
+        "GTiff",
+        "-co",
+        "TILED=YES",
+        "-co",
+        "COMPRESS=DEFLATE",
+        "-co",
+        "PHOTOMETRIC=MINISBLACK",
+        "-b",
+        "1",
+    ]
+    if nodata is not None:
+        translate_cmd.extend(["-a_nodata", str(nodata)])
+    translate_cmd.extend([str(vrt_path), str(out_tif)])
+    run_cmd(translate_cmd)
 
     for temp_path in (band1_path, vrt_path):
         try:
@@ -3025,13 +3023,13 @@ def main() -> int:
                         "Warped precip_ptype shape mismatch: "
                         f"encoded={byte_band.shape} expected={(height, width)}"
                     )
-                print(f"Writing prewarped precip_ptype single-band GeoTIFF (NODATA=0): {warped_tif}")
+                print(f"Writing prewarped precip_ptype single-band GeoTIFF (no NODATA tag): {warped_tif}")
                 write_byte_geotiff_singleband_from_georef(
                     byte_band=byte_band,
                     out_tif=warped_tif,
                     geotransform=geotransform,
                     srs_wkt=srs_wkt,
-                    nodata=0,
+                    nodata=None,
                 )
                 # Debug: check byte band after writing warped_tif
                 _info = gdalinfo_json(warped_tif)
