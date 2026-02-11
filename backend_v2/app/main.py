@@ -60,15 +60,15 @@ def get_pmtiles_head(model: str, run: str, var: str, frame_id: str) -> Response:
 
 
 @app.get("/manifests/{model}/latest.json")
-def get_latest_manifest_pointer(model: str) -> Response:
-    _ensure_segment("model", model)
-    path = _manifest_latest_path(model)
-    if not path.exists() or not path.is_file():
-        raise HTTPException(status_code=404, detail="Latest manifest pointer not found")
+def get_latest_manifest_pointer(model: str):
+    path = settings.MANIFEST_ROOT / model / "latest.json"
+
+    headers = {"Cache-Control": "public, max-age=5, must-revalidate"}
+
     return FileResponse(
-        path=path,
+        path,
         media_type="application/json",
-        headers={"Cache-Control": "public, max-age=5, must-revalidate"},
+        headers=headers,
     )
 
 
