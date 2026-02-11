@@ -3165,6 +3165,9 @@ def main() -> int:
             # Only add ALPHA=YES for 2-band (byte+alpha) files, not for single-band NODATA files
             if not precip_ptype_singleband:
                 translate_cmd.extend(["-co", "ALPHA=YES"])
+            else:
+                # Ensure no mask/alpha is carried forward for single-band precip_ptype
+                translate_cmd.extend(["-b", "1", "-mask", "none"])
             translate_cmd.extend([str(warped_tif), str(ovr_tif)])
             run_cmd(translate_cmd)
             
@@ -3207,6 +3210,7 @@ def main() -> int:
             # Now build the final COG and copy the already-built overviews.
             print(f"Writing COG: {cog_path}")
             cog_alpha_opt = ["-co", "ADD_ALPHA=NO"] if precip_ptype_singleband else []
+            cog_band_opts = ["-b", "1", "-mask", "none"] if precip_ptype_singleband else []
             try:
                 if use_copy_src_overviews:
                     run_cmd(
@@ -3218,6 +3222,7 @@ def main() -> int:
                             "COMPRESS=DEFLATE",
                         ]
                         + cog_alpha_opt
+                        + cog_band_opts
                         + [
                             "-co",
                             "COPY_SRC_OVERVIEWS=YES",
@@ -3235,6 +3240,7 @@ def main() -> int:
                             "COMPRESS=DEFLATE",
                         ]
                         + cog_alpha_opt
+                        + cog_band_opts
                         + [
                             "-co",
                             "OVERVIEWS=NONE",
@@ -3266,6 +3272,7 @@ def main() -> int:
                             "COMPRESS=DEFLATE",
                         ]
                         + cog_alpha_opt
+                        + cog_band_opts
                         + [
                             "-co",
                             "OVERVIEWS=IGNORE_EXISTING",
@@ -3293,6 +3300,7 @@ def main() -> int:
                             "COMPRESS=DEFLATE",
                         ]
                         + cog_alpha_opt
+                        + cog_band_opts
                         + [
                             "-co",
                             "OVERVIEWS=NONE",
