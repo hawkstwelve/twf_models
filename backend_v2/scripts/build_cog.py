@@ -3066,10 +3066,48 @@ def main() -> int:
                         f"resampling={warp_resampling} tr_meters={tr_meters} tap={tap}"
                     )
 
+            precip_ptype_singleband = bool(use_precip_ptype_prewarp)
+            if spec_key_used == "precip_ptype" and not use_precip_ptype_prewarp:
+                info_prestrip = gdalinfo_json(warped_tif)
+                band_count_prestrip = len(info_prestrip.get("bands") or [])
+                if band_count_prestrip == 1:
+                    precip_ptype_singleband = True
+                if band_count_prestrip > 1:
+                    print(
+                        "precip_ptype: stripping alpha band to enforce single-band NODATA encoding"
+                    )
+                    singleband_tif = temp_root / f"{base_name}.3857.singleband.tif"
+                    require_gdal("gdal_translate")
+                    run_cmd(
+                        [
+                            "gdal_translate",
+                            "-of",
+                            "GTiff",
+                            "-co",
+                            "TILED=YES",
+                            "-co",
+                            "COMPRESS=DEFLATE",
+                            "-co",
+                            "PHOTOMETRIC=MINISBLACK",
+                            "-b",
+                            "1",
+                            "-a_nodata",
+                            "0",
+                            str(warped_tif),
+                            str(singleband_tif),
+                        ]
+                    )
+                    try:
+                        warped_tif.unlink()
+                    except OSError:
+                        pass
+                    singleband_tif.replace(warped_tif)
+                    precip_ptype_singleband = True
+
             info = gdalinfo_json(warped_tif)
             if args.debug:
                 band_count = len(info.get("bands") or [])
-                if use_precip_ptype_prewarp:
+                if use_precip_ptype_prewarp or precip_ptype_singleband:
                     byte_min, byte_max = _band_min_max(info, 1)
                     print(
                         "Warp debug: "
@@ -3086,7 +3124,7 @@ def main() -> int:
                         f"alpha_band2_max={alpha_max if alpha_max is not None else 'n/a'}"
                     )
             # Skip alpha validation for single-band precip_ptype
-            if not use_precip_ptype_prewarp:
+            if not precip_ptype_singleband:
                 assert_alpha_present(info)
             log_warped_info(warped_tif, info)
 
