@@ -3231,7 +3231,8 @@ def main() -> int:
             cog_alpha_opt = (
                 ["-co", "ADD_ALPHA=NO", "-co", "MASK=NO"] if output_mode == "byte_singleband" else []
             )
-            cog_band_opts = ["-b", "1", "-mask", "none"] if output_mode == "byte_singleband" else []
+            cog_band_opts = ["-b", "1"] if output_mode == "byte_singleband" else []
+            cog_mask_opt = ["-mask", "none"] if output_mode == "byte_singleband" else []
             try:
                 if use_copy_src_overviews:
                     run_cmd(
@@ -3244,6 +3245,7 @@ def main() -> int:
                         ]
                         + cog_alpha_opt
                         + cog_band_opts
+                        + cog_mask_opt
                         + [
                             "-co",
                             "COPY_SRC_OVERVIEWS=YES",
@@ -3262,6 +3264,7 @@ def main() -> int:
                         ]
                         + cog_alpha_opt
                         + cog_band_opts
+                        + cog_mask_opt
                         + [
                             "-co",
                             "OVERVIEWS=NONE",
@@ -3294,6 +3297,7 @@ def main() -> int:
                         ]
                         + cog_alpha_opt
                         + cog_band_opts
+                        + cog_mask_opt
                         + [
                             "-co",
                             "OVERVIEWS=IGNORE_EXISTING",
@@ -3322,6 +3326,7 @@ def main() -> int:
                         ]
                         + cog_alpha_opt
                         + cog_band_opts
+                        + cog_mask_opt
                         + [
                             "-co",
                             "OVERVIEWS=NONE",
