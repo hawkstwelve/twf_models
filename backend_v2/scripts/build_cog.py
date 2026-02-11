@@ -2997,7 +2997,9 @@ def main() -> int:
                     "-co",
                     "COMPRESS=DEFLATE",
                     "-co",
-                    "PHOTOMETRIC=RGB",
+                    "PHOTOMETRIC=MINISBLACK",
+                    "-co",
+                    "ALPHA=YES",
                     str(warped_tif),
                     str(ovr_tif),
                 ]
