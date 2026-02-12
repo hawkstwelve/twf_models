@@ -287,33 +287,76 @@ Implement offline per-frame PMTiles build/publish pipeline and published-only di
 
 ### Objective
 Switch frontend to manifest-driven per-frame PMTiles and remove runtime overlay rendering stack.
+Cut over the single existing frontend to manifest-driven PMTiles. Keep a temporary fallback switch (query param) to force legacy runtime overlays during soak.
 
 ### Deliverables
 
 1. Frontend integration
-- Implement MapLibre + PMTiles protocol flow from manifests
-- Replace readiness polling logic with manifest-driven frame state
+- Implement MapLibre + PMTiles protocol flow from manifests, including `maplibregl.addProtocol` via PMTiles `Protocol`.
+- Default renderer is offline PMTiles.
+- Add runtime override via query param:
+  - `?legacy=1` forces legacy runtime overlay path
+  - optional: persist the choice in `localStorage` until cleared
+- Delete readiness polling; drive UI state solely from manifests (`expected_frames`/`available_frames` + `frames` list).
+- UI lists ONLY published models/runs/vars returned by discovery; do not show placeholders for unpublished models.
+- Handle partial availability: animate only over frames present in manifest; show progress (`available_frames`/`expected_frames`) and explicit `still publishing` state.
 - Show explicit build-progress UX from `available_frames` vs `expected_frames`
+- No separate deploy environment, account allowlist, or IP allowlist is required.
 
 2. Runtime decommission
-- Remove runtime raster tile endpoints from active serving path
-- Remove frontend dependence on dynamic XYZ overlay endpoints
-- Keep only temporary compatibility paths behind explicit deprecation window, then remove
+- Sub-phase A - Soak fallback:
+  - Runtime stack remains functional only as fallback when `?legacy=1` is used (or when frontend flag forces it).
+- Sub-phase B - Soft disable:
+  - After soak, runtime endpoints return `410` (`Gone`) in prod.
+  - Remove/disable fallback path usage in frontend.
+- Sub-phase C - Hard removal:
+  - After longer soak, delete runtime rendering code/routes/config.
+- Remove frontend dependence on legacy XYZ/PNG overlay endpoints.
+- Do not remove runtime stack until offline PMTiles path is verified end-to-end through nginx and on the public domain.
 
 3. Optional query API
 - Add point/hover API only if needed:
   - `GET /api/value?...`
-- Read from source-of-truth grid artifacts, not rendered overlay tiles
+- If implemented, read from source-of-truth grid/query artifacts (not PMTiles, not rendered tiles) to avoid reintroducing runtime rendering complexity.
 
-4. Final hardening
+4. Edge/Proxy correctness
+- Verify nginx/public domain behavior for:
+  - `/manifests/{model}/latest.json`: `Cache-Control` around `max-age=5` and revalidation on `GET`.
+  - `/tiles/{model}/{run}/{var}/{frame_id}.pmtiles`: `Cache-Control` one year immutable and correct `Content-Length` on `GET`.
+  - PMTiles range access: `Range` `GET` returns `206 Partial Content` through nginx/public domain.
+  - CORS headers for manifests and PMTiles when frontend origin differs.
+
+5. Final hardening
 - Remove dead feature flags after soak period
 - Update docs/tests/runbooks to reflect final operating model
 
 ### Checkpoints
 
-- Checkpoint P2.1: frontend animates against per-frame PMTiles manifests without readiness race logic
-- Checkpoint P2.2: legacy runtime overlay endpoints disabled outside dev
-- Checkpoint P2.3: end-to-end tests pass for published-only manifest + PMTiles path
+- Checkpoint P2.0: public-domain verification passes for `/manifests/{model}/latest.json` and `/tiles/...pmtiles` through nginx; PMTiles range requests return `206`; caching headers are correct on `GET`.
+- Checkpoint P2.1: default path uses manifests -> PMTiles; no readiness polling; no legacy overlay requests during normal operation.
+- Checkpoint P2.1a: fallback works when `?legacy=1` is used (only during soak).
+- Checkpoint P2.2: after soak, runtime endpoints return `410` in prod and fallback is removed/disabled.
+- Checkpoint P2.3: end-to-end tests pass for published-only manifest + PMTiles.
+
+### Cutover Sequence
+
+1. Deploy PMTiles frontend as default.
+2. Validate public-domain behavior.
+3. Use `?legacy=1` only if needed during soak.
+4. After short soak, remove fallback usage and return `410` from runtime endpoints in prod.
+5. After longer soak, delete runtime stack.
+
+### Verification Commands
+
+```bash
+# latest.json GET headers (check Cache-Control on GET)
+curl -sD - -o /dev/null "https://<public-domain>/manifests/hrrr/latest.json"
+
+# PMTiles GET + Range through nginx/public domain (expect HTTP/1.1 206)
+curl -sv -H "Range: bytes=0-1023" "https://<public-domain>/tiles/hrrr/<run>/tmp2m/000.pmtiles" -o /dev/null
+```
+
+Prefer `GET` for header validation; `HEAD` behavior may differ by proxy configuration.
 
 ### Milestone
 

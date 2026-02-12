@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import maplibregl, { type StyleSpecification } from "maplibre-gl";
 
 import { DEFAULTS } from "@/lib/config";
+import { ensurePmtilesProtocol } from "@/lib/pmtiles";
 
 const BASEMAP_ATTRIBUTION =
   '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors ' +
@@ -38,6 +39,12 @@ const HIDDEN_OPACITY = 0.001;
 
 type OverlayBuffer = "a" | "b";
 type PlaybackMode = "autoplay" | "scrub";
+type SourceKind = "pmtiles" | "xyz";
+
+type MutableRasterSource = maplibregl.RasterTileSource & {
+  setTiles?: (tiles: string[]) => maplibregl.RasterTileSource;
+  setUrl?: (url: string) => maplibregl.RasterTileSource;
+};
 
 function sourceId(buffer: OverlayBuffer): string {
   return `twf-overlay-${buffer}`;
@@ -68,7 +75,55 @@ function getResamplingMode(variable?: string): "nearest" | "linear" {
   return "nearest";
 }
 
-function styleFor(overlayUrl: string, opacity: number, variable?: string, model?: string): StyleSpecification {
+function overlaySourceFor(url: string, sourceKind: SourceKind) {
+  if (sourceKind === "pmtiles") {
+    return {
+      type: "raster",
+      url,
+      tileSize: 256,
+    };
+  }
+  return {
+    type: "raster",
+    tiles: [url],
+    tileSize: 256,
+  };
+}
+
+function setOverlaySourceUrl(source: maplibregl.Source | undefined, sourceKind: SourceKind, url: string): boolean {
+  const rasterSource = source as MutableRasterSource | undefined;
+  if (!rasterSource) {
+    return false;
+  }
+  if (sourceKind === "pmtiles") {
+    if (typeof rasterSource.setUrl === "function") {
+      rasterSource.setUrl(url);
+      return true;
+    }
+    if (typeof rasterSource.setTiles === "function") {
+      rasterSource.setTiles([url]);
+      return true;
+    }
+    return false;
+  }
+  if (typeof rasterSource.setTiles === "function") {
+    rasterSource.setTiles([url]);
+    return true;
+  }
+  if (typeof rasterSource.setUrl === "function") {
+    rasterSource.setUrl(url);
+    return true;
+  }
+  return false;
+}
+
+function styleFor(
+  overlayUrl: string,
+  opacity: number,
+  sourceKind: SourceKind,
+  variable?: string,
+  model?: string
+): StyleSpecification {
   const resamplingMode = getResamplingMode(variable);
   const overlayOpacity: any = model === "gfs"
     ? ["interpolate", ["linear"], ["zoom"], 6, opacity, 7, 0]
@@ -82,42 +137,18 @@ function styleFor(overlayUrl: string, opacity: number, variable?: string, model?
         tileSize: 256,
         attribution: BASEMAP_ATTRIBUTION,
       },
-      [sourceId("a")]: {
-        type: "raster",
-        tiles: [overlayUrl],
-        tileSize: 256,
-      },
-      [sourceId("b")]: {
-        type: "raster",
-        tiles: [overlayUrl],
-        tileSize: 256,
-      },
-      [prefetchSourceId(1)]: {
-        type: "raster",
-        tiles: [overlayUrl],
-        tileSize: 256,
-      },
-      [prefetchSourceId(2)]: {
-        type: "raster",
-        tiles: [overlayUrl],
-        tileSize: 256,
-      },
-      [prefetchSourceId(3)]: {
-        type: "raster",
-        tiles: [overlayUrl],
-        tileSize: 256,
-      },
-      [prefetchSourceId(4)]: {
-        type: "raster",
-        tiles: [overlayUrl],
-        tileSize: 256,
-      },
+      [sourceId("a")]: overlaySourceFor(overlayUrl, sourceKind),
+      [sourceId("b")]: overlaySourceFor(overlayUrl, sourceKind),
+      [prefetchSourceId(1)]: overlaySourceFor(overlayUrl, sourceKind),
+      [prefetchSourceId(2)]: overlaySourceFor(overlayUrl, sourceKind),
+      [prefetchSourceId(3)]: overlaySourceFor(overlayUrl, sourceKind),
+      [prefetchSourceId(4)]: overlaySourceFor(overlayUrl, sourceKind),
       "twf-labels": {
         type: "raster",
         tiles: CARTO_LIGHT_LABEL_TILES,
         tileSize: 256,
       },
-    },
+    } as StyleSpecification["sources"],
     layers: [
       {
         id: "twf-basemap",
@@ -195,6 +226,7 @@ function styleFor(overlayUrl: string, opacity: number, variable?: string, model?
 
 type MapCanvasProps = {
   tileUrl: string;
+  sourceKind: SourceKind;
   region: string;
   opacity: number;
   mode: PlaybackMode;
@@ -205,10 +237,12 @@ type MapCanvasProps = {
   onFrameSettled?: (tileUrl: string) => void;
   onTileReady?: (tileUrl: string) => void;
   onZoomHint?: (show: boolean) => void;
+  onRequestUrl?: (url: string) => void;
 };
 
 export function MapCanvas({
   tileUrl,
+  sourceKind,
   region,
   opacity,
   mode,
@@ -219,6 +253,7 @@ export function MapCanvas({
   onFrameSettled,
   onTileReady,
   onZoomHint,
+  onRequestUrl,
 }: MapCanvasProps) {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -230,6 +265,11 @@ export function MapCanvas({
   const prefetchUrlsRef = useRef<string[]>(Array.from({ length: PREFETCH_BUFFER_COUNT }, () => ""));
   const fadeTokenRef = useRef(0);
   const fadeRafRef = useRef<number | null>(null);
+  const onRequestUrlRef = useRef(onRequestUrl);
+
+  useEffect(() => {
+    onRequestUrlRef.current = onRequestUrl;
+  }, [onRequestUrl]);
 
   const view = useMemo(() => {
     return REGION_VIEWS[region] ?? {
@@ -451,14 +491,21 @@ export function MapCanvas({
     if (!mapContainerRef.current || mapRef.current) {
       return;
     }
+    if (sourceKind === "pmtiles") {
+      ensurePmtilesProtocol();
+    }
 
     const map = new maplibregl.Map({
       container: mapContainerRef.current,
-      style: styleFor(tileUrl, opacity, variable, model),
+      style: styleFor(tileUrl, opacity, sourceKind, variable, model),
       center: view.center,
       zoom: view.zoom,
       minZoom: 3,
       maxZoom: 11,
+      transformRequest: (url) => {
+        onRequestUrlRef.current?.(url);
+        return { url };
+      },
     });
 
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-left");
@@ -468,10 +515,6 @@ export function MapCanvas({
     });
 
     mapRef.current = map;
-    map.on("move", () => {
-      // zoom is fractional; round for readability
-      console.log("zoom", map.getZoom().toFixed(2));
-    });
 
     return () => {
       cancelCrossfade();
@@ -479,7 +522,7 @@ export function MapCanvas({
       mapRef.current = null;
       setIsLoaded(false);
     };
-  }, [cancelCrossfade]);
+  }, [cancelCrossfade, sourceKind]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -540,14 +583,10 @@ export function MapCanvas({
     }
 
     const inactiveBuffer = otherBuffer(activeBufferRef.current);
-    const inactiveSource = map.getSource(sourceId(inactiveBuffer)) as
-      | maplibregl.RasterTileSource
-      | undefined;
-    if (!inactiveSource || typeof inactiveSource.setTiles !== "function") {
+    const inactiveSource = map.getSource(sourceId(inactiveBuffer));
+    if (!setOverlaySourceUrl(inactiveSource, sourceKind, tileUrl)) {
       return;
     }
-
-    inactiveSource.setTiles([tileUrl]);
     const token = ++swapTokenRef.current;
     console.debug("[map] swap start", { sourceId: sourceId(inactiveBuffer), tileUrl, mode, token });
 
@@ -602,6 +641,7 @@ export function MapCanvas({
     notifySettled,
     onTileReady,
     onFrameSettled,
+    sourceKind,
   ]);
 
   useEffect(() => {
@@ -615,8 +655,8 @@ export function MapCanvas({
     const cleanups: Array<() => void> = [];
 
     urls.forEach((url, idx) => {
-      const source = map.getSource(prefetchSourceId(idx + 1)) as maplibregl.RasterTileSource | undefined;
-      if (!source || typeof source.setTiles !== "function") {
+      const source = map.getSource(prefetchSourceId(idx + 1));
+      if (!source) {
         return;
       }
 
@@ -630,7 +670,9 @@ export function MapCanvas({
       }
 
       prefetchUrlsRef.current[idx] = url;
-      source.setTiles([url]);
+      if (!setOverlaySourceUrl(source, sourceKind, url)) {
+        return;
+      }
 
       const cleanup = waitForSourceReady(
         map,
@@ -673,7 +715,7 @@ export function MapCanvas({
     return () => {
       cleanups.forEach((cleanup) => cleanup());
     };
-  }, [prefetchTileUrls, isLoaded, waitForSourceReady, onTileReady]);
+  }, [prefetchTileUrls, isLoaded, waitForSourceReady, onTileReady, sourceKind]);
 
   useEffect(() => {
     const map = mapRef.current;

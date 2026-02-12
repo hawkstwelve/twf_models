@@ -26,6 +26,7 @@ type WeatherToolbarProps = {
   models: Option[];
   runs: Option[];
   variables: Option[];
+  showRegion?: boolean;
   disabled?: boolean;
 };
 
@@ -77,6 +78,7 @@ export function WeatherToolbar(props: WeatherToolbarProps) {
     models,
     runs,
     variables,
+    showRegion = true,
     disabled = false,
   } = props;
 
@@ -87,15 +89,17 @@ export function WeatherToolbar(props: WeatherToolbarProps) {
       className="sticky top-0 z-50 w-full border-b border-border/40 bg-[hsl(var(--toolbar))]/95 shadow-sm backdrop-blur-md"
     >
       <div className="flex flex-wrap items-end gap-2.5 px-4 py-2.5">
-        <ToolbarSelect
-          label="Region"
-          icon={Globe}
-          value={region}
-          onValueChange={onRegionChange}
-          options={regions}
-          disabled={disabled}
-          placeholder="Region"
-        />
+        {showRegion && (
+          <ToolbarSelect
+            label="Region"
+            icon={Globe}
+            value={region}
+            onValueChange={onRegionChange}
+            options={regions}
+            disabled={disabled}
+            placeholder="Region"
+          />
+        )}
 
         <ToolbarSelect
           label="Model"

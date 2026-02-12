@@ -9,6 +9,11 @@ const isLocalDevPort =
 
 export const API_BASE =
   isLocalDevHost && isLocalDevPort
+    ? "http://127.0.0.1:8099/api"
+    : "https://api.sodakweather.com/api";
+
+export const API_V2_BASE =
+  isLocalDevHost && isLocalDevPort
     ? "http://127.0.0.1:8099/api/v2"
     : "https://api.sodakweather.com/api/v2";
 
@@ -19,13 +24,17 @@ export const TILES_BASE =
 
 export const DEFAULTS = {
   model: "hrrr",
-  region: "pnw",
+  region: "published",
   run: "latest",
   variable: "tmp2m",
   center: [47.6, -122.3] as [number, number],
   zoom: 6,
   overlayOpacity: 0.85,
 };
+
+export const FORCE_LEGACY_RUNTIME = String(import.meta.env.VITE_FORCE_LEGACY_OVERLAYS ?? "")
+  .trim()
+  .toLowerCase() === "true";
 
 export const ALLOWED_VARIABLES = new Set(["tmp2m", "wspd10m", "radar_ptype", "precip_ptype", "qpf6h"]);
 

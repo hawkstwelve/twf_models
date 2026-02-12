@@ -58,6 +58,26 @@ def _runtime_tile_deprecation_headers() -> dict[str, str]:
     return headers
 
 
+def _runtime_tiles_soft_disabled() -> bool:
+    if not settings.RUNTIME_TILES_SOFT_DISABLE_PROD:
+        return False
+    if settings.APP_ENV == "development":
+        return False
+    return True
+
+
+def _runtime_tiles_disabled_response() -> Response:
+    return Response(
+        status_code=410,
+        media_type="text/plain",
+        content="Runtime overlay endpoints are disabled by configuration.",
+        headers={
+            "Cache-Control": "public, max-age=60",
+            **_runtime_tile_deprecation_headers(),
+        },
+    )
+
+
 def _ensure_segment(label: str, value: str) -> None:
     if not SEGMENT_RE.match(value):
         raise HTTPException(
@@ -197,6 +217,9 @@ def _tile_response(
     x: int,
     y: int,
 ) -> Response:
+    if _runtime_tiles_soft_disabled():
+        return _runtime_tiles_disabled_response()
+
     for label, value in (("model", model), ("region", region), ("run", run), ("var", var)):
         _ensure_segment(label, value)
     _validate_tile_request(fh, z, x, y)

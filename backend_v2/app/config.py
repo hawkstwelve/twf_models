@@ -53,6 +53,8 @@ class Settings:
     OFFLINE_TILES_MAX_WORKERS: int = _env_int("OFFLINE_TILES_MAX_WORKERS", default=4, minimum=1, maximum=6)
     RUNTIME_TILE_SUNSET_AT: str | None = os.environ.get("RUNTIME_TILE_SUNSET_AT", "").strip() or None
     WRITE_LEGACY_MODEL_LATEST_ALIAS: bool = _env_bool("WRITE_LEGACY_MODEL_LATEST_ALIAS", default=False)
+    APP_ENV: str = os.environ.get("APP_ENV", "development").strip().lower() or "development"
+    RUNTIME_TILES_SOFT_DISABLE_PROD: bool = _env_bool("RUNTIME_TILES_SOFT_DISABLE_PROD", default=False)
 
 
 settings = Settings()

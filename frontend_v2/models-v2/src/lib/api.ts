@@ -1,4 +1,4 @@
-import { API_BASE } from "@/lib/config";
+import { API_BASE, API_V2_BASE } from "@/lib/config";
 
 export type ModelOption = {
   id: string;
@@ -22,7 +22,7 @@ export type LegendMeta = {
   bins_per_ptype?: number;
 };
 
-export type FrameRow = {
+export type LegacyFrameRow = {
   fh: number;
   has_cog: boolean;
   run?: string;
@@ -30,6 +30,32 @@ export type FrameRow = {
   meta?: {
     meta?: LegendMeta | null;
   } | null;
+};
+
+export type OfflineManifestFrame = {
+  frame_id: string;
+  fhr: number;
+  valid_time: string;
+  url: string;
+};
+
+export type OfflineVariableManifest = {
+  contract_version: number;
+  model: string;
+  run: string;
+  variable: string;
+  expected_frames: number;
+  available_frames: number;
+  frames: OfflineManifestFrame[];
+  last_updated: string;
+};
+
+export type OfflineRunManifest = {
+  contract_version: number;
+  model: string;
+  run: string;
+  variables: Record<string, OfflineVariableManifest>;
+  last_updated: string;
 };
 
 export type VarRow =
@@ -53,32 +79,51 @@ export async function fetchModels(): Promise<ModelOption[]> {
   return fetchJson<ModelOption[]>(`${API_BASE}/models`);
 }
 
-export async function fetchRegions(model: string): Promise<string[]> {
-  return fetchJson<string[]>(`${API_BASE}/${encodeURIComponent(model)}/regions`);
+export async function fetchRuns(model: string): Promise<string[]> {
+  return fetchJson<string[]>(`${API_BASE}/runs?model=${encodeURIComponent(model)}`);
 }
 
-export async function fetchRuns(model: string, region: string): Promise<string[]> {
-  return fetchJson<string[]>(
-    `${API_BASE}/${encodeURIComponent(model)}/${encodeURIComponent(region)}/runs`
+export async function fetchVars(model: string, run: string): Promise<VarRow[]> {
+  const runKey = run || "latest";
+  const vars = await fetchJson<string[]>(
+    `${API_BASE}/vars?model=${encodeURIComponent(model)}&run=${encodeURIComponent(runKey)}`
+  );
+  return vars;
+}
+
+export async function fetchRunManifest(model: string, run: string): Promise<OfflineRunManifest> {
+  const runKey = run || "latest";
+  return fetchJson<OfflineRunManifest>(
+    `${API_BASE}/run/${encodeURIComponent(model)}/${encodeURIComponent(runKey)}/manifest.json`
   );
 }
 
-export async function fetchVars(model: string, region: string, run: string): Promise<VarRow[]> {
+export async function fetchLegacyRegions(model: string): Promise<string[]> {
+  return fetchJson<string[]>(`${API_V2_BASE}/${encodeURIComponent(model)}/regions`);
+}
+
+export async function fetchLegacyRuns(model: string, region: string): Promise<string[]> {
+  return fetchJson<string[]>(
+    `${API_V2_BASE}/${encodeURIComponent(model)}/${encodeURIComponent(region)}/runs`
+  );
+}
+
+export async function fetchLegacyVars(model: string, region: string, run: string): Promise<VarRow[]> {
   const runKey = run || "latest";
   return fetchJson<VarRow[]>(
-    `${API_BASE}/${encodeURIComponent(model)}/${encodeURIComponent(region)}/${encodeURIComponent(runKey)}/vars`
+    `${API_V2_BASE}/${encodeURIComponent(model)}/${encodeURIComponent(region)}/${encodeURIComponent(runKey)}/vars`
   );
 }
 
-export async function fetchFrames(
+export async function fetchLegacyFrames(
   model: string,
   region: string,
   run: string,
   varKey: string
-): Promise<FrameRow[]> {
+): Promise<LegacyFrameRow[]> {
   const runKey = run || "latest";
-  const response = await fetchJson<FrameRow[]>(
-    `${API_BASE}/${encodeURIComponent(model)}/${encodeURIComponent(region)}/${encodeURIComponent(runKey)}/${encodeURIComponent(varKey)}/frames`
+  const response = await fetchJson<LegacyFrameRow[]>(
+    `${API_V2_BASE}/${encodeURIComponent(model)}/${encodeURIComponent(region)}/${encodeURIComponent(runKey)}/${encodeURIComponent(varKey)}/frames`
   );
   if (!Array.isArray(response)) {
     return [];

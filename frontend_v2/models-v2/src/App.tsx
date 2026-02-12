@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertCircle } from "lucide-react";
 
 import { BottomForecastControls } from "@/components/bottom-forecast-controls";
@@ -6,27 +6,45 @@ import { MapCanvas } from "@/components/map-canvas";
 import { type LegendPayload, MapLegend } from "@/components/map-legend";
 import { WeatherToolbar } from "@/components/weather-toolbar";
 import {
-  type FrameRow,
+  type LegacyFrameRow,
   type LegendMeta,
+  type OfflineRunManifest,
   type VarRow,
-  fetchFrames,
+  fetchLegacyFrames,
+  fetchLegacyRegions,
+  fetchLegacyRuns,
+  fetchLegacyVars,
   fetchModels,
-  fetchRegions,
+  fetchRunManifest,
   fetchRuns,
   fetchVars,
 } from "@/lib/api";
-import { DEFAULTS, VARIABLE_LABELS } from "@/lib/config";
+import { DEFAULTS, FORCE_LEGACY_RUNTIME, VARIABLE_LABELS } from "@/lib/config";
 import { buildRunOptions } from "@/lib/run-options";
-import { buildTileUrlFromFrame } from "@/lib/tiles";
+import { buildLegacyTileUrlFromFrame, buildOfflinePmtilesUrl } from "@/lib/tiles";
 
-const AUTOPLAY_TICK_MS = 400;
-const AUTOPLAY_MAX_HOLD_MS = 1000;
-const READY_URL_TTL_MS = 30_000;
-const READY_URL_LIMIT = 160;
+const AUTOPLAY_TICK_MS = 500;
+const MANIFEST_REFRESH_ACTIVE_MS = 5_000;
+const MANIFEST_REFRESH_IDLE_MS = 30_000;
+const LEGACY_REFRESH_MS = 30_000;
+const RENDERER_MODE_STORAGE_KEY = "twf_renderer_mode";
 
 type Option = {
   value: string;
   label: string;
+};
+
+type RendererMode = "offline" | "legacy";
+type SourceKind = "pmtiles" | "xyz";
+type NetworkRequestSource = "fetch" | "map";
+
+type DisplayFrame = {
+  frameId: string;
+  fh: number;
+  run: string;
+  tileUrl: string;
+  validTime?: string;
+  legendMeta?: LegendMeta | null;
 };
 
 function pickPreferred(values: string[], preferred: string): string {
@@ -67,7 +85,7 @@ function normalizeVarRows(rows: VarRow[]): Array<{ id: string; displayName?: str
   return normalized;
 }
 
-function extractLegendMeta(row: FrameRow | null | undefined): LegendMeta | null {
+function extractLegacyLegendMeta(row: LegacyFrameRow | null | undefined): LegendMeta | null {
   const rawMeta = row?.meta?.meta ?? null;
   if (!rawMeta) return null;
   const nested = (rawMeta as { meta?: LegendMeta | null }).meta;
@@ -146,15 +164,11 @@ function buildLegend(meta: LegendMeta | null | undefined, opacity: number): Lege
     };
   }
 
-  const hasPtypeSegments =
-    Array.isArray(meta.ptype_order) && Boolean(meta.ptype_breaks) && Boolean(meta.ptype_levels);
-
   if (
     Array.isArray(meta.colors) &&
     meta.colors.length > 1 &&
     Array.isArray(meta.range) &&
-    meta.range.length === 2 &&
-    !hasPtypeSegments
+    meta.range.length === 2
   ) {
     const [min, max] = meta.range;
     const entries = meta.colors.map((color, index) => {
@@ -171,45 +185,17 @@ function buildLegend(meta: LegendMeta | null | undefined, opacity: number): Lege
     };
   }
 
-  if (Array.isArray(meta.colors) && meta.colors.length > 0) {
+  if (Array.isArray(meta.colors) && meta.colors.length > 0 && Array.isArray(meta.levels) && meta.levels.length > 0) {
+    const maxItems = Math.min(meta.levels.length, meta.colors.length);
     const entries: Array<{ value: number; color: string }> = [];
-
-    if (Array.isArray(meta.ptype_order) && meta.ptype_breaks && meta.ptype_levels) {
-      for (const ptype of meta.ptype_order) {
-        const ptypeBreak = meta.ptype_breaks[ptype];
-        const ptypeLevels = meta.ptype_levels[ptype];
-        if (!ptypeBreak || !Array.isArray(ptypeLevels)) {
-          continue;
-        }
-        const offset = Number(ptypeBreak.offset);
-        const count = Number(ptypeBreak.count);
-        if (!Number.isFinite(offset) || !Number.isFinite(count) || offset < 0 || count <= 0) {
-          continue;
-        }
-        const maxItems = Math.min(count, ptypeLevels.length, meta.colors.length - offset);
-        for (let index = 0; index < maxItems; index += 1) {
-          const value = Number(ptypeLevels[index]);
-          const color = meta.colors[offset + index];
-          if (!Number.isFinite(value) || !color) {
-            continue;
-          }
-          entries.push({ value, color });
-        }
+    for (let index = 0; index < maxItems; index += 1) {
+      const value = Number(meta.levels[index]);
+      const color = meta.colors[index];
+      if (!Number.isFinite(value) || !color) {
+        continue;
       }
+      entries.push({ value, color });
     }
-
-    if (entries.length === 0 && Array.isArray(meta.levels) && meta.levels.length > 0) {
-      const maxItems = Math.min(meta.levels.length, meta.colors.length);
-      for (let index = 0; index < maxItems; index += 1) {
-        const value = Number(meta.levels[index]);
-        const color = meta.colors[index];
-        if (!Number.isFinite(value) || !color) {
-          continue;
-        }
-        entries.push({ value, color });
-      }
-    }
-
     if (entries.length > 0) {
       return {
         title,
@@ -224,12 +210,129 @@ function buildLegend(meta: LegendMeta | null | undefined, opacity: number): Lege
   return null;
 }
 
+function readStoredRendererMode(): RendererMode | null {
+  try {
+    const value = window.localStorage.getItem(RENDERER_MODE_STORAGE_KEY);
+    if (value === "legacy" || value === "offline") {
+      return value;
+    }
+  } catch {
+    // ignore storage access failures
+  }
+  return null;
+}
+
+function writeStoredRendererMode(value: RendererMode | null): void {
+  try {
+    if (value) {
+      window.localStorage.setItem(RENDERER_MODE_STORAGE_KEY, value);
+      return;
+    }
+    window.localStorage.removeItem(RENDERER_MODE_STORAGE_KEY);
+  } catch {
+    // ignore storage access failures
+  }
+}
+
+function rendererModeQueryOverride(search: string): RendererMode | null {
+  const params = new URLSearchParams(search);
+  if (params.get("legacy") === "1") {
+    return "legacy";
+  }
+  if (params.get("legacy") === "0" || params.get("offline") === "1") {
+    return "offline";
+  }
+  return null;
+}
+
+function replaceRendererQuery(mode: RendererMode | null): void {
+  const params = new URLSearchParams(window.location.search);
+  params.delete("legacy");
+  params.delete("offline");
+  if (mode === "legacy") {
+    params.set("legacy", "1");
+  } else if (mode === "offline") {
+    params.set("offline", "1");
+  }
+  const query = params.toString();
+  const nextUrl = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`;
+  window.history.replaceState(null, "", nextUrl);
+}
+
+function resolveRendererMode(): RendererMode {
+  if (FORCE_LEGACY_RUNTIME) {
+    return "legacy";
+  }
+  const queryOverride = rendererModeQueryOverride(window.location.search);
+  if (queryOverride) {
+    writeStoredRendererMode(queryOverride);
+    return queryOverride;
+  }
+  return readStoredRendererMode() ?? "offline";
+}
+
+function isLegacyOverlayRequestUrl(inputUrl: string): boolean {
+  try {
+    const url = new URL(inputUrl, window.location.origin);
+    const path = url.pathname.toLowerCase();
+    if (path.includes("/api/v2/")) return true;
+    if (path.includes("/tiles/v2/")) return true;
+    if (path.includes("/tiles-titiler/")) return true;
+    // Runtime legacy overlay shape: /tiles/{model}/{region}/{run}/{var}/{fh}/{z}/{x}/{y}.png
+    if (/^\/tiles\/[^/]+\/[^/]+\/[^/]+\/[^/]+\/\d+\/\d+\/\d+\/\d+\.png$/.test(path)) {
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
+function getOfflineFrames(
+  manifest: OfflineRunManifest,
+  model: string,
+  variable: string
+): { frames: DisplayFrame[]; expected: number; available: number; runId: string } {
+  const variableManifest = manifest.variables[variable];
+  if (!variableManifest) {
+    return { frames: [], expected: 0, available: 0, runId: manifest.run };
+  }
+
+  const frames = variableManifest.frames
+    .slice()
+    .sort((a, b) => Number(a.fhr) - Number(b.fhr))
+    .map((frame) => ({
+      frameId: frame.frame_id,
+      fh: Number(frame.fhr),
+      run: manifest.run,
+      tileUrl: buildOfflinePmtilesUrl({
+        model,
+        run: manifest.run,
+        varKey: variable,
+        frameId: frame.frame_id,
+        frameUrl: frame.url,
+      }),
+      validTime: frame.valid_time,
+      legendMeta: null,
+    }));
+
+  return {
+    frames,
+    expected: variableManifest.expected_frames,
+    available: variableManifest.available_frames,
+    runId: manifest.run,
+  };
+}
+
 export default function App() {
+  const [rendererMode, setRendererMode] = useState<RendererMode>(() => resolveRendererMode());
+  const sourceKind: SourceKind = rendererMode === "offline" ? "pmtiles" : "xyz";
+
   const [models, setModels] = useState<Option[]>([]);
   const [regions, setRegions] = useState<Option[]>([]);
   const [runs, setRuns] = useState<string[]>([]);
   const [variables, setVariables] = useState<Option[]>([]);
-  const [frameRows, setFrameRows] = useState<FrameRow[]>([]);
+  const [frameRows, setFrameRows] = useState<DisplayFrame[]>([]);
 
   const [model, setModel] = useState(DEFAULTS.model);
   const [region, setRegion] = useState(DEFAULTS.region);
@@ -241,11 +344,11 @@ export default function App() {
   const [opacity, setOpacity] = useState(DEFAULTS.overlayOpacity);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [settledTileUrl, setSettledTileUrl] = useState<string | null>(null);
   const [showZoomHint, setShowZoomHint] = useState(false);
-  const latestTileUrlRef = useRef<string>("");
-  const readyTileUrlsRef = useRef<Map<string, number>>(new Map());
-  const autoplayHoldMsRef = useRef(0);
+  const [expectedFrames, setExpectedFrames] = useState(0);
+  const [availableFramesCount, setAvailableFramesCount] = useState(0);
+  const [resolvedRunId, setResolvedRunId] = useState<string | null>(null);
+  const [legacyRequestViolations, setLegacyRequestViolations] = useState<string[]>([]);
 
   const frameHours = useMemo(() => {
     const hours = frameRows.map((row) => Number(row.fh)).filter(Number.isFinite);
@@ -257,35 +360,26 @@ export default function App() {
   }, [frameRows]);
 
   const currentFrame = frameByHour.get(forecastHour) ?? frameRows[0] ?? null;
-  const latestRunId = frameRows[0]?.run ?? runs[0] ?? null;
+
+  const latestRunId = useMemo(() => {
+    if (rendererMode === "offline") {
+      return resolvedRunId ?? runs[0] ?? null;
+    }
+    return frameRows[0]?.run ?? runs[0] ?? null;
+  }, [rendererMode, resolvedRunId, runs, frameRows]);
+
   const resolvedRunForRequests = run === "latest" ? (latestRunId ?? "latest") : run;
 
   const runOptions = useMemo<Option[]>(() => {
     return buildRunOptions(runs, latestRunId);
   }, [runs, latestRunId]);
 
-  const tileUrlForHour = useCallback(
-    (fh: number): string => {
-      const fallbackFh = frameHours[0] ?? 0;
-      const resolvedFh = Number.isFinite(fh) ? fh : fallbackFh;
-      return buildTileUrlFromFrame({
-        model,
-        region,
-        run: resolvedRunForRequests,
-        varKey: variable,
-        fh: resolvedFh,
-        frameRow: frameByHour.get(resolvedFh) ?? frameRows[0] ?? null,
-      });
-    },
-    [model, region, resolvedRunForRequests, variable, frameHours, frameByHour, frameRows]
-  );
-
   const tileUrl = useMemo(() => {
-    return tileUrlForHour(forecastHour);
-  }, [tileUrlForHour, forecastHour]);
+    return currentFrame?.tileUrl ?? "";
+  }, [currentFrame]);
 
   const legend = useMemo(() => {
-    const normalizedMeta = extractLegendMeta(currentFrame) ?? extractLegendMeta(frameRows[0] ?? null);
+    const normalizedMeta = currentFrame?.legendMeta ?? frameRows[0]?.legendMeta ?? null;
     return buildLegend(normalizedMeta, opacity);
   }, [currentFrame, frameRows, opacity]);
 
@@ -293,72 +387,114 @@ export default function App() {
     if (frameHours.length < 2) return [];
     const currentIndex = frameHours.indexOf(forecastHour);
     const start = currentIndex >= 0 ? currentIndex : 0;
-    const isRadarLike = variable.includes("radar") || variable.includes("ptype");
-    const prefetchCount = isPlaying && isRadarLike ? 4 : 2;
+    const prefetchCount = rendererMode === "offline" ? 2 : 4;
     const nextHours = Array.from({ length: prefetchCount }, (_, idx) => {
       const i = start + idx + 1;
       return i >= frameHours.length ? Number.NaN : frameHours[i];
     });
     const dedup = Array.from(new Set(nextHours.filter((fh) => Number.isFinite(fh) && fh !== forecastHour)));
-    return dedup.map((fh) => tileUrlForHour(fh));
-  }, [frameHours, forecastHour, tileUrlForHour, variable, isPlaying]);
+    return dedup.map((fh) => frameByHour.get(fh)?.tileUrl).filter((url): url is string => Boolean(url));
+  }, [frameHours, forecastHour, frameByHour, rendererMode]);
 
   const effectiveRunId = currentFrame?.run ?? (run !== "latest" ? run : latestRunId);
   const runDateTimeISO = runIdToIso(effectiveRunId);
 
-  useEffect(() => {
-    if (frameHours.length > 0) {
-      console.log("[frames] frameHours sorted:", frameHours);
-    }
-  }, [frameHours]);
+  const isPublishing = rendererMode === "offline" && expectedFrames > 0 && availableFramesCount < expectedFrames;
+  const refreshMs = rendererMode === "offline"
+    ? isPublishing
+      ? MANIFEST_REFRESH_ACTIVE_MS
+      : MANIFEST_REFRESH_IDLE_MS
+    : LEGACY_REFRESH_MS;
 
-  const markTileReady = useCallback((readyUrl: string) => {
-    const now = Date.now();
-    const ready = readyTileUrlsRef.current;
-    ready.set(readyUrl, now);
-
-    for (const [url, ts] of ready) {
-      if (now - ts > READY_URL_TTL_MS) {
-        ready.delete(url);
+  const reportLegacyRequestViolation = useCallback(
+    (url: string, source: NetworkRequestSource) => {
+      if (rendererMode !== "offline") {
+        return;
       }
-    }
-
-    if (ready.size > READY_URL_LIMIT) {
-      const entries = [...ready.entries()].sort((a, b) => a[1] - b[1]);
-      for (const [url] of entries.slice(0, ready.size - READY_URL_LIMIT)) {
-        ready.delete(url);
+      if (!isLegacyOverlayRequestUrl(url)) {
+        return;
       }
-    }
-  }, []);
-
-  const isTileReady = useCallback((url: string): boolean => {
-    const ts = readyTileUrlsRef.current.get(url);
-    if (!ts) return false;
-    if (Date.now() - ts > READY_URL_TTL_MS) {
-      readyTileUrlsRef.current.delete(url);
-      return false;
-    }
-    return true;
-  }, []);
+      setLegacyRequestViolations((prev) => {
+        if (prev.includes(url)) {
+          return prev;
+        }
+        return [...prev.slice(-9), url];
+      });
+      console.error("[phase2] legacy overlay request detected in offline mode", { source, url });
+    },
+    [rendererMode]
+  );
 
   useEffect(() => {
-    latestTileUrlRef.current = tileUrl;
-    setSettledTileUrl(isTileReady(tileUrl) ? tileUrl : null);
-  }, [tileUrl, isTileReady]);
-
-  const handleFrameSettled = useCallback((loadedTileUrl: string) => {
-    markTileReady(loadedTileUrl);
-    if (loadedTileUrl === latestTileUrlRef.current) {
-      setSettledTileUrl(loadedTileUrl);
+    if (FORCE_LEGACY_RUNTIME) {
+      setRendererMode("legacy");
+      return;
     }
-  }, [markTileReady]);
 
-  const handleTileReady = useCallback((loadedTileUrl: string) => {
-    markTileReady(loadedTileUrl);
-    if (loadedTileUrl === latestTileUrlRef.current) {
-      setSettledTileUrl(loadedTileUrl);
+    const syncFromLocation = () => {
+      const queryOverride = rendererModeQueryOverride(window.location.search);
+      if (queryOverride) {
+        writeStoredRendererMode(queryOverride);
+        setRendererMode(queryOverride);
+        return;
+      }
+      setRendererMode(readStoredRendererMode() ?? "offline");
+    };
+
+    window.addEventListener("popstate", syncFromLocation);
+    return () => window.removeEventListener("popstate", syncFromLocation);
+  }, []);
+
+  const setRendererPreference = (nextMode: RendererMode) => {
+    if (FORCE_LEGACY_RUNTIME) {
+      setRendererMode("legacy");
+      return;
     }
-  }, [markTileReady]);
+    writeStoredRendererMode(nextMode);
+    replaceRendererQuery(nextMode);
+    setRendererMode(nextMode);
+    setLegacyRequestViolations([]);
+  };
+
+  const resetRendererPreference = () => {
+    if (FORCE_LEGACY_RUNTIME) {
+      setRendererMode("legacy");
+      return;
+    }
+    writeStoredRendererMode(null);
+    replaceRendererQuery(null);
+    setRendererMode("offline");
+    setLegacyRequestViolations([]);
+  };
+
+  useEffect(() => {
+    if (rendererMode !== "offline") {
+      return;
+    }
+
+    const originalFetch = window.fetch.bind(window);
+    const monitoredFetch: typeof window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const requestUrl =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      reportLegacyRequestViolation(requestUrl, "fetch");
+      return originalFetch(input, init);
+    };
+
+    window.fetch = monitoredFetch;
+    return () => {
+      window.fetch = originalFetch;
+    };
+  }, [rendererMode, reportLegacyRequestViolation]);
+
+  useEffect(() => {
+    if (rendererMode !== "offline") {
+      setLegacyRequestViolations([]);
+    }
+  }, [rendererMode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -396,13 +532,20 @@ export default function App() {
 
     async function loadRegions() {
       setError(null);
+      if (rendererMode === "offline") {
+        const offlineRegion = "published";
+        setRegions([{ value: offlineRegion, label: makeRegionLabel(offlineRegion) }]);
+        setRegion(offlineRegion);
+        return;
+      }
+
       try {
-        const data = await fetchRegions(model);
+        const data = await fetchLegacyRegions(model);
         if (cancelled) return;
         const options = data.map((id) => ({ value: id, label: makeRegionLabel(id) }));
         setRegions(options);
         const regionIds = options.map((opt) => opt.value);
-        const nextRegion = pickPreferred(regionIds, DEFAULTS.region);
+        const nextRegion = pickPreferred(regionIds, "pnw");
         setRegion((prev) => (regionIds.includes(prev) ? prev : nextRegion));
       } catch (err) {
         if (cancelled) return;
@@ -414,7 +557,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [model]);
+  }, [model, rendererMode]);
 
   useEffect(() => {
     if (!model || !region) return;
@@ -423,11 +566,15 @@ export default function App() {
     async function loadRunsAndVars() {
       setError(null);
       try {
-        const runData = await fetchRuns(model, region);
+        const runData =
+          rendererMode === "offline" ? await fetchRuns(model) : await fetchLegacyRuns(model, region);
         if (cancelled) return;
 
         const nextRun = run !== "latest" && runData.includes(run) ? run : "latest";
-        const varData = await fetchVars(model, region, nextRun);
+        const varData =
+          rendererMode === "offline"
+            ? await fetchVars(model, nextRun)
+            : await fetchLegacyVars(model, region, nextRun);
         if (cancelled) return;
 
         setRuns(runData);
@@ -438,7 +585,6 @@ export default function App() {
           label: makeVariableLabel(entry.id, entry.displayName),
         }));
         setVariables(variableOptions);
-
         setRun(nextRun);
 
         const variableIds = variableOptions.map((opt) => opt.value);
@@ -454,13 +600,15 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [model, region, run]);
+  }, [model, region, run, rendererMode]);
 
   useEffect(() => {
     setFrameRows([]);
     setForecastHour(0);
     setTargetForecastHour(0);
-  }, [model, region]);
+    setExpectedFrames(0);
+    setAvailableFramesCount(0);
+  }, [model, region, variable, rendererMode]);
 
   useEffect(() => {
     if (!model || !region || !variable) return;
@@ -469,19 +617,44 @@ export default function App() {
     async function loadFrames() {
       setError(null);
       try {
-        const rows = await fetchFrames(model, region, resolvedRunForRequests, variable);
-        if (cancelled) return;
-        setFrameRows(rows);
-        const frameMeta = extractLegendMeta(rows[0] ?? null);
-        const variableDisplayName = frameMeta?.display_name?.trim();
-        if (variableDisplayName && variable !== "precip_ptype") {
-          setVariables((prev) =>
-            prev.map((option) =>
-              option.value === variable ? { ...option, label: makeVariableLabel(option.value, variableDisplayName) } : option
-            )
-          );
+        if (rendererMode === "offline") {
+          const manifest = await fetchRunManifest(model, resolvedRunForRequests);
+          if (cancelled) return;
+          const payload = getOfflineFrames(manifest, model, variable);
+          setResolvedRunId(payload.runId);
+          setFrameRows(payload.frames);
+          setAvailableFramesCount(payload.available);
+          setExpectedFrames(payload.expected);
+          const frames = payload.frames.map((row) => Number(row.fh)).filter(Number.isFinite);
+          setForecastHour((prev) => nearestFrame(frames, prev));
+          setTargetForecastHour((prev) => nearestFrame(frames, prev));
+          return;
         }
-        const frames = rows.map((row) => Number(row.fh)).filter(Number.isFinite);
+
+        const rows = await fetchLegacyFrames(model, region, resolvedRunForRequests, variable);
+        if (cancelled) return;
+        const normalizedRows: DisplayFrame[] = rows.map((row) => {
+          const runId = row.run ?? resolvedRunForRequests;
+          return {
+            frameId: String(row.fh).padStart(3, "0"),
+            fh: Number(row.fh),
+            run: runId,
+            tileUrl: buildLegacyTileUrlFromFrame({
+              model,
+              region,
+              run: runId,
+              varKey: variable,
+              fh: row.fh,
+              frameRow: row,
+            }),
+            legendMeta: extractLegacyLegendMeta(row),
+          };
+        });
+        setFrameRows(normalizedRows);
+        setResolvedRunId(normalizedRows[0]?.run ?? null);
+        setAvailableFramesCount(normalizedRows.length);
+        setExpectedFrames(normalizedRows.length);
+        const frames = normalizedRows.map((row) => Number(row.fh)).filter(Number.isFinite);
         setForecastHour((prev) => nearestFrame(frames, prev));
         setTargetForecastHour((prev) => nearestFrame(frames, prev));
       } catch (err) {
@@ -495,27 +668,59 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [model, region, run, variable, resolvedRunForRequests]);
+  }, [model, region, run, variable, resolvedRunForRequests, rendererMode]);
 
   useEffect(() => {
-    const interval = window.setInterval(() => {
-      if (document.hidden || !model || !region || !variable) {
+    if (!model || !region || !variable) {
+      return;
+    }
+    const interval = window.setInterval(async () => {
+      if (document.hidden) {
         return;
       }
-      fetchFrames(model, region, resolvedRunForRequests, variable)
-        .then((rows) => {
-          setFrameRows(rows);
-          const frames = rows.map((row) => Number(row.fh)).filter(Number.isFinite);
+
+      try {
+        if (rendererMode === "offline") {
+          const manifest = await fetchRunManifest(model, resolvedRunForRequests);
+          const payload = getOfflineFrames(manifest, model, variable);
+          setResolvedRunId(payload.runId);
+          setFrameRows(payload.frames);
+          setAvailableFramesCount(payload.available);
+          setExpectedFrames(payload.expected);
+          const frames = payload.frames.map((row) => Number(row.fh)).filter(Number.isFinite);
           setForecastHour((prev) => nearestFrame(frames, prev));
           setTargetForecastHour((prev) => nearestFrame(frames, prev));
-        })
-        .catch(() => {
-          // Background refresh should not interrupt active UI.
+          return;
+        }
+
+        const rows = await fetchLegacyFrames(model, region, resolvedRunForRequests, variable);
+        const normalizedRows: DisplayFrame[] = rows.map((row) => {
+          const runId = row.run ?? resolvedRunForRequests;
+          return {
+            frameId: String(row.fh).padStart(3, "0"),
+            fh: Number(row.fh),
+            run: runId,
+            tileUrl: buildLegacyTileUrlFromFrame({
+              model,
+              region,
+              run: runId,
+              varKey: variable,
+              fh: row.fh,
+              frameRow: row,
+            }),
+            legendMeta: extractLegacyLegendMeta(row),
+          };
         });
-    }, 30000);
+        setFrameRows(normalizedRows);
+        setAvailableFramesCount(normalizedRows.length);
+        setExpectedFrames(normalizedRows.length);
+      } catch {
+        // Background refresh should not interrupt active UI.
+      }
+    }, refreshMs);
 
     return () => window.clearInterval(interval);
-  }, [model, region, run, variable, resolvedRunForRequests]);
+  }, [model, region, run, variable, resolvedRunForRequests, refreshMs, rendererMode]);
 
   useEffect(() => {
     if (!isPlaying || frameHours.length === 0) return;
@@ -524,52 +729,16 @@ export default function App() {
       const currentIndex = frameHours.indexOf(forecastHour);
       if (currentIndex < 0) return;
 
-      const isRadarLike = variable.includes("radar") || variable.includes("ptype");
       const nextIndex = currentIndex + 1;
       if (nextIndex >= frameHours.length) {
         setIsPlaying(false);
         return;
       }
-      const nextHour = frameHours[nextIndex];
-      const nextUrl = tileUrlForHour(nextHour);
-      if (isTileReady(nextUrl)) {
-        autoplayHoldMsRef.current = 0;
-        setTargetForecastHour(nextHour);
-        return;
-      }
-
-      autoplayHoldMsRef.current += AUTOPLAY_TICK_MS;
-      if (autoplayHoldMsRef.current < AUTOPLAY_MAX_HOLD_MS) {
-        return;
-      }
-
-      autoplayHoldMsRef.current = 0;
-
-      // For radar/ptype, do NOT skip ahead; hold on current frame until next is ready
-      if (isRadarLike) {
-        // Do not advance; stay on current frame and retry next tick
-        return;
-      }
-
-      const searchDepth = Math.min(frameHours.length - 1, 6);
-      for (let step = 2; step <= searchDepth; step += 1) {
-        const candidateIndex = currentIndex + step;
-        if (candidateIndex >= frameHours.length) {
-          break;
-        }
-        const candidateHour = frameHours[candidateIndex];
-        const candidateUrl = tileUrlForHour(candidateHour);
-        if (isTileReady(candidateUrl)) {
-          setTargetForecastHour(candidateHour);
-          return;
-        }
-      }
-
-      setTargetForecastHour(nextHour);
+      setTargetForecastHour(frameHours[nextIndex]);
     }, AUTOPLAY_TICK_MS);
 
     return () => window.clearInterval(interval);
-  }, [isPlaying, frameHours, forecastHour, isTileReady, tileUrlForHour, variable]);
+  }, [isPlaying, frameHours, forecastHour]);
 
   useEffect(() => {
     if (frameHours.length === 0 && isPlaying) {
@@ -578,16 +747,9 @@ export default function App() {
   }, [frameHours, isPlaying]);
 
   useEffect(() => {
-    if (!isPlaying) {
-      autoplayHoldMsRef.current = 0;
-    }
-  }, [isPlaying]);
-
-  useEffect(() => {
     if (frameHours.length === 0) {
       return;
     }
-
     const nextTarget = nearestFrame(frameHours, targetForecastHour);
     if (nextTarget === forecastHour) {
       return;
@@ -610,12 +772,14 @@ export default function App() {
         models={models}
         runs={runOptions}
         variables={variables}
+        showRegion={rendererMode === "legacy"}
         disabled={loading || models.length === 0}
       />
 
       <div className="relative flex-1 overflow-hidden">
         <MapCanvas
           tileUrl={tileUrl}
+          sourceKind={sourceKind}
           region={region}
           opacity={opacity}
           mode={isPlaying ? "autoplay" : "scrub"}
@@ -623,15 +787,58 @@ export default function App() {
           model={model}
           prefetchTileUrls={prefetchTileUrls}
           crossfade={false}
-          onFrameSettled={handleFrameSettled}
-          onTileReady={handleTileReady}
           onZoomHint={setShowZoomHint}
+          onRequestUrl={(url) => reportLegacyRequestViolation(url, "map")}
         />
 
+        <div className="absolute right-4 top-4 z-40 rounded-md border border-border/50 bg-[hsl(var(--toolbar))]/95 px-3 py-2 text-xs shadow-xl backdrop-blur-md">
+          <div className="font-medium">Renderer mode</div>
+          <div className="mt-2 flex items-center gap-2">
+            <button
+              type="button"
+              className="rounded border border-border/60 px-2 py-1 text-[11px] disabled:opacity-50"
+              onClick={() => setRendererPreference("offline")}
+              disabled={rendererMode === "offline"}
+            >
+              Offline
+            </button>
+            <button
+              type="button"
+              className="rounded border border-border/60 px-2 py-1 text-[11px] disabled:opacity-50"
+              onClick={() => setRendererPreference("legacy")}
+              disabled={rendererMode === "legacy" || FORCE_LEGACY_RUNTIME}
+            >
+              Legacy
+            </button>
+            <button
+              type="button"
+              className="rounded border border-border/60 px-2 py-1 text-[11px]"
+              onClick={resetRendererPreference}
+              disabled={FORCE_LEGACY_RUNTIME}
+            >
+              Reset
+            </button>
+          </div>
+        </div>
+
+        {rendererMode === "legacy" && (
+          <div className="absolute left-4 top-4 z-40 rounded-md border border-amber-500/40 bg-amber-500/15 px-3 py-2 text-xs shadow-lg backdrop-blur-md">
+            Legacy fallback mode enabled via <code>?legacy=1</code>
+          </div>
+        )}
+
         {error && (
-          <div className="absolute left-4 top-4 z-40 flex items-center gap-2 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-xs text-destructive shadow-lg backdrop-blur-md">
+          <div className="absolute left-4 top-16 z-40 flex items-center gap-2 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-xs text-destructive shadow-lg backdrop-blur-md">
             <AlertCircle className="h-3.5 w-3.5" />
             {error}
+          </div>
+        )}
+
+        {rendererMode === "offline" && legacyRequestViolations.length > 0 && (
+          <div className="absolute left-4 top-28 z-40 rounded-md border border-red-500/50 bg-red-500/10 px-3 py-2 text-xs text-red-200 shadow-lg backdrop-blur-md">
+            Legacy network check failed ({legacyRequestViolations.length}) - latest:
+            {" "}
+            <code>{legacyRequestViolations[legacyRequestViolations.length - 1]}</code>
           </div>
         )}
 
@@ -647,6 +854,10 @@ export default function App() {
         <BottomForecastControls
           forecastHour={forecastHour}
           availableFrames={frameHours}
+          availableFramesCount={availableFramesCount}
+          expectedFramesCount={expectedFrames}
+          isPublishing={isPublishing}
+          rendererMode={rendererMode}
           onForecastHourChange={setTargetForecastHour}
           isPlaying={isPlaying}
           setIsPlaying={setIsPlaying}

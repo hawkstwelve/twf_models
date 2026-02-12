@@ -44,6 +44,16 @@ def _touch_cog(tmp_path: Path) -> Path:
     return cog_path
 
 
+def _settings_stub(**overrides):
+    values = {
+        "RUNTIME_TILE_SUNSET_AT": None,
+        "RUNTIME_TILES_SOFT_DISABLE_PROD": False,
+        "APP_ENV": "development",
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
 def test_titiler_tile_route_renders_png(monkeypatch, tmp_path: Path) -> None:
     _touch_cog(tmp_path)
     monkeypatch.setattr(titiler_main, "get_data_root", lambda: tmp_path)
@@ -187,7 +197,7 @@ def test_titiler_sunset_header_only_emitted_when_configured(monkeypatch, tmp_pat
     monkeypatch.setattr(titiler_main, "resolve_run", lambda model, region, run: "20260207_19z")
     monkeypatch.setattr(titiler_main, "COGReader", _FakeCOGReader)
 
-    monkeypatch.setattr(titiler_main, "settings", SimpleNamespace(RUNTIME_TILE_SUNSET_AT=None))
+    monkeypatch.setattr(titiler_main, "settings", _settings_stub(RUNTIME_TILE_SUNSET_AT=None))
     response_without_sunset = titiler_main.tile_canonical(
         model="hrrr",
         region="pnw",
@@ -203,7 +213,7 @@ def test_titiler_sunset_header_only_emitted_when_configured(monkeypatch, tmp_pat
     monkeypatch.setattr(
         titiler_main,
         "settings",
-        SimpleNamespace(RUNTIME_TILE_SUNSET_AT="Tue, 31 Dec 2030 23:59:59 GMT"),
+        _settings_stub(RUNTIME_TILE_SUNSET_AT="Tue, 31 Dec 2030 23:59:59 GMT"),
     )
     response_with_sunset = titiler_main.tile_canonical(
         model="hrrr",
@@ -216,3 +226,52 @@ def test_titiler_sunset_header_only_emitted_when_configured(monkeypatch, tmp_pat
         y=22,
     )
     assert response_with_sunset.headers["sunset"] == "Tue, 31 Dec 2030 23:59:59 GMT"
+
+
+def test_titiler_runtime_tiles_soft_disabled_when_flag_enabled(monkeypatch, tmp_path: Path) -> None:
+    _touch_cog(tmp_path)
+    monkeypatch.setattr(
+        titiler_main,
+        "settings",
+        _settings_stub(RUNTIME_TILES_SOFT_DISABLE_PROD=True, APP_ENV="staging"),
+    )
+
+    response = titiler_main.tile_canonical(
+        model="hrrr",
+        region="pnw",
+        run="latest",
+        var="tmp2m",
+        fh=0,
+        z=6,
+        x=10,
+        y=22,
+    )
+
+    assert response.status_code == 410
+    assert response.headers["deprecation"] == "true"
+    assert response.headers["x-twf-deprecated-route"] == "runtime-png-tiles"
+
+
+def test_titiler_soft_disable_flag_ignored_in_development(monkeypatch, tmp_path: Path) -> None:
+    _touch_cog(tmp_path)
+    monkeypatch.setattr(titiler_main, "get_data_root", lambda: tmp_path)
+    monkeypatch.setattr(titiler_main, "resolve_run", lambda model, region, run: "20260207_19z")
+    monkeypatch.setattr(titiler_main, "COGReader", _FakeCOGReader)
+    monkeypatch.setattr(
+        titiler_main,
+        "settings",
+        _settings_stub(RUNTIME_TILES_SOFT_DISABLE_PROD=True, APP_ENV="development"),
+    )
+
+    response = titiler_main.tile_canonical(
+        model="hrrr",
+        region="pnw",
+        run="latest",
+        var="tmp2m",
+        fh=0,
+        z=6,
+        x=10,
+        y=22,
+    )
+
+    assert response.status_code == 200
