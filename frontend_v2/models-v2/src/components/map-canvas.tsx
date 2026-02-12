@@ -24,6 +24,12 @@ const CARTO_LIGHT_LABEL_TILES = [
 
 const REGION_VIEWS: Record<string, { center: [number, number]; zoom: number }> = {
   pnw: { center: [-120.8, 45.6], zoom: 6 },
+  published: { center: [-120.8, 45.6], zoom: 6 },
+};
+
+const REGION_BOUNDS: Record<string, [number, number, number, number]> = {
+  pnw: [-125.5, 41.5, -111.0, 49.5],
+  published: [-125.5, 41.5, -111.0, 49.5],
 };
 
 const SCRUB_SWAP_TIMEOUT_MS = 650;
@@ -66,19 +72,19 @@ function prefetchLayerId(index: number): string {
 }
 
 function getResamplingMode(variable?: string): "nearest" | "linear" {
-  // radar_ptype needs bilinear/linear for better clarity
-  // All other variables use nearest to preserve discrete data
+  // Preserve discrete bins to avoid category smearing near edges and borders.
   if (variable && (variable.includes("radar") || variable.includes("ptype"))) {
-    return "linear";
+    return "nearest";
   }
   return "nearest";
 }
 
-function overlaySourceFor(url: string) {
+function overlaySourceFor(url: string, bounds?: [number, number, number, number]) {
   return {
     type: "raster",
     url,
     tileSize: 256,
+    bounds,
   };
 }
 
@@ -102,9 +108,11 @@ function styleFor(
   overlayUrl: string,
   opacity: number,
   variable?: string,
-  model?: string
+  model?: string,
+  region?: string
 ): StyleSpecification {
   const resamplingMode = getResamplingMode(variable);
+  const overlayBounds = (region && REGION_BOUNDS[region]) || REGION_BOUNDS.pnw;
   const overlayOpacity: any = model === "gfs"
     ? ["interpolate", ["linear"], ["zoom"], 6, opacity, 7, 0]
     : opacity;
@@ -117,12 +125,12 @@ function styleFor(
         tileSize: 256,
         attribution: BASEMAP_ATTRIBUTION,
       },
-      [sourceId("a")]: overlaySourceFor(overlayUrl),
-      [sourceId("b")]: overlaySourceFor(overlayUrl),
-      [prefetchSourceId(1)]: overlaySourceFor(overlayUrl),
-      [prefetchSourceId(2)]: overlaySourceFor(overlayUrl),
-      [prefetchSourceId(3)]: overlaySourceFor(overlayUrl),
-      [prefetchSourceId(4)]: overlaySourceFor(overlayUrl),
+      [sourceId("a")]: overlaySourceFor(overlayUrl, overlayBounds),
+      [sourceId("b")]: overlaySourceFor(overlayUrl, overlayBounds),
+      [prefetchSourceId(1)]: overlaySourceFor(overlayUrl, overlayBounds),
+      [prefetchSourceId(2)]: overlaySourceFor(overlayUrl, overlayBounds),
+      [prefetchSourceId(3)]: overlaySourceFor(overlayUrl, overlayBounds),
+      [prefetchSourceId(4)]: overlaySourceFor(overlayUrl, overlayBounds),
       "twf-labels": {
         type: "raster",
         tiles: CARTO_LIGHT_LABEL_TILES,
@@ -142,7 +150,7 @@ function styleFor(
         paint: {
           "raster-opacity": overlayOpacity,
           "raster-resampling": resamplingMode,
-          "raster-fade-duration": 0,
+          "raster-fade-duration": 120,
         },
       },
       {
@@ -152,7 +160,7 @@ function styleFor(
         paint: {
           "raster-opacity": overlayOpacity,
           "raster-resampling": resamplingMode,
-          "raster-fade-duration": 0,
+          "raster-fade-duration": 120,
         },
       },
       {
@@ -162,7 +170,7 @@ function styleFor(
         paint: {
           "raster-opacity": overlayOpacity,
           "raster-resampling": resamplingMode,
-          "raster-fade-duration": 0,
+          "raster-fade-duration": 120,
         },
       },
       {
@@ -172,7 +180,7 @@ function styleFor(
         paint: {
           "raster-opacity": overlayOpacity,
           "raster-resampling": resamplingMode,
-          "raster-fade-duration": 0,
+          "raster-fade-duration": 120,
         },
       },
       {
@@ -182,7 +190,7 @@ function styleFor(
         paint: {
           "raster-opacity": overlayOpacity,
           "raster-resampling": resamplingMode,
-          "raster-fade-duration": 0,
+          "raster-fade-duration": 120,
         },
       },
       {
@@ -192,7 +200,7 @@ function styleFor(
         paint: {
           "raster-opacity": overlayOpacity,
           "raster-resampling": resamplingMode,
-          "raster-fade-duration": 0,
+          "raster-fade-duration": 120,
         },
       },
       {
@@ -476,11 +484,12 @@ export function MapCanvas({
 
     const map = new maplibregl.Map({
       container: mapContainerRef.current,
-      style: styleFor(tileUrl, opacity, variable, model),
+      style: styleFor(tileUrl, opacity, variable, model, region),
       center: view.center,
       zoom: view.zoom,
       minZoom: 3,
       maxZoom: 11,
+      renderWorldCopies: false,
       transformRequest: (url) => {
         onRequestUrlRef.current?.(url);
         return { url };

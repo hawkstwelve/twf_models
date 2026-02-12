@@ -144,7 +144,6 @@ export function BottomForecastControls({
                 const next = availableFrames[Math.round(value ?? 0)];
                 if (Number.isFinite(next)) {
                   setPreviewHour(next);
-                  emitForecastHour(next, false);
                 }
               }}
               onValueCommit={([value]) => {

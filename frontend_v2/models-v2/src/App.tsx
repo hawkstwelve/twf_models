@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle } from "lucide-react";
 
 import { BottomForecastControls } from "@/components/bottom-forecast-controls";
@@ -21,6 +21,154 @@ import { buildOfflinePmtilesUrl } from "@/lib/tiles";
 const AUTOPLAY_TICK_MS = 500;
 const MANIFEST_REFRESH_ACTIVE_MS = 5_000;
 const MANIFEST_REFRESH_IDLE_MS = 30_000;
+
+const TMP2M_COLORS = [
+  "#e8d0d8", "#d8b0c8", "#c080b0", "#9050a0", "#703090",
+  "#a070b0", "#c8a0d0", "#e8e0f0", "#d0e0f0", "#a0c0e0",
+  "#7090c0", "#4070b0", "#2050a0", "#103070", "#204048",
+  "#406058", "#709078", "#a0c098", "#d0e0b0", "#f0f0c0",
+  "#e0d0a0", "#c0b080", "#a08060", "#805040", "#602018",
+  "#801010", "#a01010", "#702020", "#886666", "#a08888",
+  "#c0a0a0", "#d8c8c8", "#e8e0e0", "#b0a0a0", "#807070", "#504040",
+] as const;
+
+const PRECIP_COLORS = [
+  "#c0c0c0", "#909090", "#606060", "#b0f090", "#80e060", "#50c040",
+  "#3070f0", "#5090f0", "#80b0f0", "#b0d0f0", "#ffff80", "#ffd060",
+  "#ffa040", "#ff6030", "#e03020", "#a01010", "#700000", "#d0b0e0",
+  "#b080d0", "#9050c0", "#7020a0", "#c040c0",
+] as const;
+
+const PRECIP_LEVELS = [
+  0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.2, 1.6, 2.0,
+  3.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0, 25.0,
+] as const;
+
+const WSPD10M_LEGEND_STOPS: [number, string][] = [
+  [0, "#FFFFFF"], [4, "#E6F2FF"], [6, "#CCE5FF"], [8, "#99CCFF"], [9, "#66B2FF"], [10, "#3399FF"],
+  [12, "#66FF66"], [14, "#33FF33"], [16, "#00FF00"], [20, "#CCFF33"], [22, "#FFFF00"], [24, "#FFCC00"],
+  [26, "#FF9900"], [30, "#FF6600"], [34, "#FF3300"], [36, "#FF0000"], [40, "#CC0000"], [44, "#990000"],
+  [48, "#800000"], [52, "#660033"], [58, "#660066"], [64, "#800080"], [70, "#990099"], [75, "#B300B3"],
+  [85, "#CC00CC"], [95, "#E600E6"], [100, "#680868"],
+];
+
+const RAIN_LEVELS = [0.01, 0.1, 0.25, 0.5, 1.0, 1.5, 2.5, 4, 6, 10, 16, 24] as const;
+const SNOW_LEVELS = [0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 5.0, 6.0, 8.0, 10.0, 12.0, 14.0] as const;
+const WINTER_LEVELS = [0.1, 0.5, 1, 2, 3, 4, 6, 10, 14] as const;
+
+const RAIN_PTYPE_COLORS = [
+  "#90ee90", "#66dd66", "#33cc33", "#00bb00", "#009900", "#007700",
+  "#005500", "#ffff00", "#ffb300", "#ff6600", "#ff0000", "#ff00ff",
+] as const;
+const FRZR_PTYPE_COLORS = [
+  "#ffc0cb", "#ff69b4", "#ff1493", "#c71585", "#931040", "#b03060",
+  "#d20000", "#ff2400", "#ff4500",
+] as const;
+const SLEET_PTYPE_COLORS = [
+  "#e0ffff", "#add8e6", "#9370db", "#8a2be2", "#9400d3", "#800080",
+  "#4b0082", "#8b008b", "#b22222",
+] as const;
+const SNOW_PTYPE_COLORS = [
+  "#c0ffff", "#55ffff", "#4feaff", "#48d3ff", "#42bfff", "#3caaff",
+  "#3693ff", "#2a69f1", "#1d42ca", "#1b18dc", "#161fb8", "#130495",
+  "#130495", "#550a87", "#550a87", "#af068e", "#ea0081",
+] as const;
+
+const RADAR_RAIN_COLORS = [
+  "#ffffff", "#4efb4c", "#46e444", "#3ecd3d", "#36b536", "#2d9e2e", "#258528",
+  "#1d6e1f", "#155719", "#feff50", "#fad248", "#f8a442", "#f6763c", "#f5253a",
+  "#de0a35", "#c21230", "#9c0045", "#bc0f9c", "#e300c1", "#f600dc",
+] as const;
+const RADAR_SNOW_COLORS = [
+  "#ffffff", "#55ffff", "#4feaff", "#48d3ff", "#42bfff", "#3caaff", "#3693ff",
+  "#2a6aee", "#1e40d0", "#110ba7", "#2a009a", "#0c276f", "#540093", "#bc0f9c",
+  "#d30085", "#f5007f",
+] as const;
+const RADAR_SLEET_COLORS = [
+  "#ffffff", "#b49dff", "#b788ff", "#c56cff", "#c54ef9", "#c54ef9", "#b730e7",
+  "#a913d3", "#a913d3", "#9b02b4", "#bc0f9c", "#a50085", "#c52c7b", "#cf346f",
+  "#d83c64", "#e24556",
+] as const;
+const RADAR_FRZR_COLORS = [
+  "#ffffff", "#fbcad0", "#f893ba", "#e96c9f", "#dd88a5", "#dc4f8b", "#d03a80",
+  "#c62773", "#bd1366", "#b00145", "#c21230", "#da2d0d", "#e33403", "#f53c00",
+  "#f53c00", "#f54603",
+] as const;
+
+const FRONTEND_LEGEND_PRESETS: Record<string, LegendMeta> = {
+  tmp2m: {
+    kind: "tmp2m",
+    display_name: "2m Temperature",
+    legend_title: "Temperature (°F)",
+    units: "F",
+    range: [-40.0, 122.5],
+    colors: [...TMP2M_COLORS],
+  },
+  wspd10m: {
+    kind: "wspd10m",
+    display_name: "10m Wind Speed",
+    legend_title: "Wind Speed (mph)",
+    units: "mph",
+    range: [0.0, 100.0],
+    legend_stops: WSPD10M_LEGEND_STOPS,
+  },
+  qpf6h: {
+    kind: "qpf6h",
+    display_name: "6-hr Precip",
+    legend_title: "6-hr Precip (in)",
+    units: "in",
+    range: [0.0, 6.0],
+    legend_stops: PRECIP_LEVELS.map((level, idx) => [level, PRECIP_COLORS[idx]]),
+  },
+  precip_ptype: {
+    kind: "precip_ptype",
+    display_name: "Precipitation Intensity",
+    legend_title: "Precipitation Rate (mm/hr)",
+    units: "mm/hr",
+    ptype_order: ["frzr", "sleet", "snow", "rain"],
+    ptype_breaks: {
+      frzr: { offset: 0, count: FRZR_PTYPE_COLORS.length },
+      sleet: { offset: FRZR_PTYPE_COLORS.length, count: SLEET_PTYPE_COLORS.length },
+      snow: {
+        offset: FRZR_PTYPE_COLORS.length + SLEET_PTYPE_COLORS.length,
+        count: SNOW_PTYPE_COLORS.length,
+      },
+      rain: {
+        offset: FRZR_PTYPE_COLORS.length + SLEET_PTYPE_COLORS.length + SNOW_PTYPE_COLORS.length,
+        count: RAIN_PTYPE_COLORS.length,
+      },
+    },
+    bins_per_ptype: 16,
+    legend_stops: [
+      ...FRZR_PTYPE_COLORS.map((color, idx) => [WINTER_LEVELS[idx], color] as [number, string]),
+      ...SLEET_PTYPE_COLORS.map((color, idx) => [WINTER_LEVELS[idx], color] as [number, string]),
+      ...SNOW_PTYPE_COLORS.map((color, idx) => [SNOW_LEVELS[idx], color] as [number, string]),
+      ...RAIN_PTYPE_COLORS.map((color, idx) => [RAIN_LEVELS[idx], color] as [number, string]),
+    ],
+  },
+  radar_ptype: {
+    kind: "radar_ptype",
+    display_name: "Composite Reflectivity + P-Type",
+    legend_title: "Composite Reflectivity + P-Type (dBZ)",
+    units: "dBZ",
+    ptype_order: ["rain", "snow", "sleet", "frzr"],
+    ptype_breaks: {
+      rain: { offset: 0, count: RADAR_RAIN_COLORS.length },
+      snow: { offset: RADAR_RAIN_COLORS.length, count: RADAR_SNOW_COLORS.length },
+      sleet: { offset: RADAR_RAIN_COLORS.length + RADAR_SNOW_COLORS.length, count: RADAR_SLEET_COLORS.length },
+      frzr: {
+        offset: RADAR_RAIN_COLORS.length + RADAR_SNOW_COLORS.length + RADAR_SLEET_COLORS.length,
+        count: RADAR_FRZR_COLORS.length,
+      },
+    },
+    legend_stops: [
+      ...RADAR_RAIN_COLORS.map((color, idx) => [idx + 1, color] as [number, string]),
+      ...RADAR_SNOW_COLORS.map((color, idx) => [idx + 1, color] as [number, string]),
+      ...RADAR_SLEET_COLORS.map((color, idx) => [idx + 1, color] as [number, string]),
+      ...RADAR_FRZR_COLORS.map((color, idx) => [idx + 1, color] as [number, string]),
+    ],
+  },
+};
 
 type Option = {
   value: string;
@@ -229,7 +377,7 @@ function getOfflineFrames(
         frameUrl: frame.url,
       }),
       validTime: frame.valid_time,
-      legendMeta: null,
+      legendMeta: FRONTEND_LEGEND_PRESETS[variable] ?? null,
     }));
 
   return {
@@ -261,6 +409,8 @@ export default function App() {
   const [availableFramesCount, setAvailableFramesCount] = useState(0);
   const [resolvedRunId, setResolvedRunId] = useState<string | null>(null);
   const [legacyRequestViolations, setLegacyRequestViolations] = useState<string[]>([]);
+  const readyTileUrlsRef = useRef<Set<string>>(new Set());
+  const settledTileUrlRef = useRef<string | null>(null);
 
   const frameHours = useMemo(() => {
     const hours = frameRows.map((row) => Number(row.fh)).filter(Number.isFinite);
@@ -288,9 +438,10 @@ export default function App() {
   }, [currentFrame]);
 
   const legend = useMemo(() => {
-    const normalizedMeta = currentFrame?.legendMeta ?? frameRows[0]?.legendMeta ?? null;
+    const normalizedMeta =
+      currentFrame?.legendMeta ?? frameRows[0]?.legendMeta ?? FRONTEND_LEGEND_PRESETS[variable] ?? null;
     return buildLegend(normalizedMeta, opacity);
-  }, [currentFrame, frameRows, opacity]);
+  }, [currentFrame, frameRows, opacity, variable]);
 
   const prefetchTileUrls = useMemo(() => {
     if (frameHours.length < 2) return [];
@@ -325,6 +476,17 @@ export default function App() {
       return [...prev.slice(-9), url];
     });
     console.warn("[phase2] Legacy API/tile request detected", { source, url });
+  }, []);
+
+  const handleTileReady = useCallback((url: string) => {
+    if (!url) return;
+    readyTileUrlsRef.current.add(url);
+  }, []);
+
+  const handleFrameSettled = useCallback((url: string) => {
+    if (!url) return;
+    settledTileUrlRef.current = url;
+    readyTileUrlsRef.current.add(url);
   }, []);
 
   useEffect(() => {
@@ -425,7 +587,23 @@ export default function App() {
     setTargetForecastHour(0);
     setExpectedFrames(0);
     setAvailableFramesCount(0);
+    readyTileUrlsRef.current = new Set();
+    settledTileUrlRef.current = null;
   }, [model, run, variable]);
+
+  useEffect(() => {
+    const allowed = new Set(frameRows.map((row) => row.tileUrl));
+    const nextReady = new Set<string>();
+    for (const url of readyTileUrlsRef.current) {
+      if (allowed.has(url)) {
+        nextReady.add(url);
+      }
+    }
+    readyTileUrlsRef.current = nextReady;
+    if (settledTileUrlRef.current && !allowed.has(settledTileUrlRef.current)) {
+      settledTileUrlRef.current = null;
+    }
+  }, [frameRows]);
 
   useEffect(() => {
     if (!model || !variable) return;
@@ -490,17 +668,26 @@ export default function App() {
     const interval = window.setInterval(() => {
       const currentIndex = frameHours.indexOf(forecastHour);
       if (currentIndex < 0) return;
+      const currentUrl = frameByHour.get(frameHours[currentIndex])?.tileUrl;
+      if (currentUrl && settledTileUrlRef.current !== currentUrl) {
+        return;
+      }
 
       const nextIndex = currentIndex + 1;
       if (nextIndex >= frameHours.length) {
         setIsPlaying(false);
         return;
       }
-      setTargetForecastHour(frameHours[nextIndex]);
+      const nextHour = frameHours[nextIndex];
+      const nextUrl = frameByHour.get(nextHour)?.tileUrl;
+      if (!nextUrl || !readyTileUrlsRef.current.has(nextUrl)) {
+        return;
+      }
+      setTargetForecastHour(nextHour);
     }, AUTOPLAY_TICK_MS);
 
     return () => window.clearInterval(interval);
-  }, [isPlaying, frameHours, forecastHour]);
+  }, [isPlaying, frameHours, forecastHour, frameByHour]);
 
   useEffect(() => {
     if (frameHours.length === 0 && isPlaying) {
@@ -516,8 +703,14 @@ export default function App() {
     if (nextTarget === forecastHour) {
       return;
     }
+    if (isPlaying) {
+      const nextTargetUrl = frameByHour.get(nextTarget)?.tileUrl;
+      if (nextTargetUrl && !readyTileUrlsRef.current.has(nextTargetUrl)) {
+        return;
+      }
+    }
     setForecastHour(nextTarget);
-  }, [targetForecastHour, forecastHour, frameHours]);
+  }, [targetForecastHour, forecastHour, frameHours, frameByHour, isPlaying]);
 
   return (
     <div className="flex h-full flex-col">
@@ -550,6 +743,8 @@ export default function App() {
           model={model}
           prefetchTileUrls={prefetchTileUrls}
           crossfade={false}
+          onTileReady={handleTileReady}
+          onFrameSettled={handleFrameSettled}
           onZoomHint={setShowZoomHint}
           onRequestUrl={(url) => reportLegacyRequestViolation(url, "map")}
         />
