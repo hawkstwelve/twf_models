@@ -1,5 +1,4 @@
 import { API_BASE_URL, absolutizeUrl } from "@/lib/config";
-import type { LegacyFrameRow } from "@/lib/api";
 
 function rewriteFrontendOriginToApiOrigin(url: string): string {
   try {
@@ -31,33 +30,6 @@ export function toAbsoluteUrl(pathOrUrl: string): string {
 export function toPmtilesProtocolUrl(pathOrUrl: string): string {
   const absoluteUrl = toAbsoluteUrl(stripPmtilesProtocol(pathOrUrl));
   return `pmtiles://${absoluteUrl}`;
-}
-
-export function buildLegacyFallbackTileUrl(params: {
-  model: string;
-  region: string;
-  run: string;
-  varKey: string;
-  fh: number;
-}): string {
-  const enc = encodeURIComponent;
-  return absolutizeUrl(
-    `/tiles/v2/${enc(params.model)}/${enc(params.region)}/${enc(params.run)}/${enc(params.varKey)}/${enc(params.fh)}/{z}/{x}/{y}.png`
-  );
-}
-
-export function buildLegacyTileUrlFromFrame(params: {
-  model: string;
-  region: string;
-  run: string;
-  varKey: string;
-  fh: number;
-  frameRow?: LegacyFrameRow | null;
-}): string {
-  if (params.frameRow?.tile_url_template) {
-    return toAbsoluteUrl(params.frameRow.tile_url_template);
-  }
-  return buildLegacyFallbackTileUrl(params);
 }
 
 export function buildOfflinePmtilesUrl(params: {

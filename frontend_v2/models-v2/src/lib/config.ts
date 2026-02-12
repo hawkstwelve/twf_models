@@ -35,7 +35,6 @@ export function absolutizeUrl(pathOrUrl: string): string {
 }
 
 export const API_BASE = absolutizeUrl("/api");
-export const API_V2_BASE = absolutizeUrl("/api/v2");
 export const TILES_BASE = API_BASE_URL;
 
 export const DEFAULTS = {
@@ -47,10 +46,6 @@ export const DEFAULTS = {
   zoom: 6,
   overlayOpacity: 0.85,
 };
-
-export const FORCE_LEGACY_RUNTIME = String(import.meta.env.VITE_FORCE_LEGACY_OVERLAYS ?? "")
-  .trim()
-  .toLowerCase() === "true";
 
 export const ALLOWED_VARIABLES = new Set(["tmp2m", "wspd10m", "radar_ptype", "precip_ptype", "qpf6h"]);
 

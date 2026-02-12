@@ -1,4 +1,4 @@
-import { API_BASE, API_V2_BASE, absolutizeUrl } from "@/lib/config";
+import { API_BASE, absolutizeUrl } from "@/lib/config";
 
 export type ModelOption = {
   id: string;
@@ -20,16 +20,6 @@ export type LegendMeta = {
   ptype_levels?: Record<string, number[]>;
   range?: [number, number];
   bins_per_ptype?: number;
-};
-
-export type LegacyFrameRow = {
-  fh: number;
-  has_cog: boolean;
-  run?: string;
-  tile_url_template?: string;
-  meta?: {
-    meta?: LegendMeta | null;
-  } | null;
 };
 
 export type OfflineManifestFrame = {
@@ -96,39 +86,4 @@ export async function fetchRunManifest(model: string, run: string): Promise<Offl
   return fetchJson<OfflineRunManifest>(
     `${API_BASE}/run/${encodeURIComponent(model)}/${encodeURIComponent(runKey)}/manifest.json`
   );
-}
-
-export async function fetchLegacyRegions(model: string): Promise<string[]> {
-  return fetchJson<string[]>(`${API_V2_BASE}/${encodeURIComponent(model)}/regions`);
-}
-
-export async function fetchLegacyRuns(model: string, region: string): Promise<string[]> {
-  return fetchJson<string[]>(
-    `${API_V2_BASE}/${encodeURIComponent(model)}/${encodeURIComponent(region)}/runs`
-  );
-}
-
-export async function fetchLegacyVars(model: string, region: string, run: string): Promise<VarRow[]> {
-  const runKey = run || "latest";
-  return fetchJson<VarRow[]>(
-    `${API_V2_BASE}/${encodeURIComponent(model)}/${encodeURIComponent(region)}/${encodeURIComponent(runKey)}/vars`
-  );
-}
-
-export async function fetchLegacyFrames(
-  model: string,
-  region: string,
-  run: string,
-  varKey: string
-): Promise<LegacyFrameRow[]> {
-  const runKey = run || "latest";
-  const response = await fetchJson<LegacyFrameRow[]>(
-    `${API_V2_BASE}/${encodeURIComponent(model)}/${encodeURIComponent(region)}/${encodeURIComponent(runKey)}/${encodeURIComponent(varKey)}/frames`
-  );
-  if (!Array.isArray(response)) {
-    return [];
-  }
-  return response
-    .filter((row) => row && row.has_cog && Number.isFinite(Number(row.fh)))
-    .sort((a, b) => Number(a.fh) - Number(b.fh));
 }

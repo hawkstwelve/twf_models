@@ -16,7 +16,6 @@ type BottomForecastControlsProps = {
   availableFramesCount: number;
   expectedFramesCount: number;
   isPublishing: boolean;
-  rendererMode: "offline" | "legacy";
   onForecastHourChange: (fh: number) => void;
   isPlaying: boolean;
   setIsPlaying: (value: boolean) => void;
@@ -60,7 +59,6 @@ export function BottomForecastControls({
   availableFramesCount,
   expectedFramesCount,
   isPublishing,
-  rendererMode,
   onForecastHourChange,
   isPlaying,
   setIsPlaying,
@@ -173,17 +171,10 @@ export function BottomForecastControls({
                 <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70 transition-all duration-200">
                   {validTime.secondary}
                 </span>
-                {rendererMode === "offline" && (
-                  <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70 transition-all duration-200">
-                    {availableFramesCount}/{expectedFramesCount || availableFramesCount} frames
-                    {isPublishing ? " - still publishing" : ""}
-                  </span>
-                )}
-                {rendererMode === "legacy" && (
-                  <span className="text-[10px] font-medium uppercase tracking-wider text-amber-600 transition-all duration-200">
-                    Legacy fallback
-                  </span>
-                )}
+                <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70 transition-all duration-200">
+                  {availableFramesCount}/{expectedFramesCount || availableFramesCount} frames
+                  {isPublishing ? " - still publishing" : ""}
+                </span>
               </>
             ) : (
               <div className="flex items-center gap-1.5">
