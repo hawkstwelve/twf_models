@@ -491,6 +491,9 @@ export function MapCanvas({
     if (!mapContainerRef.current || mapRef.current) {
       return;
     }
+    if (!tileUrl) {
+      return;
+    }
     if (sourceKind === "pmtiles") {
       ensurePmtilesProtocol();
     }
@@ -522,7 +525,7 @@ export function MapCanvas({
       mapRef.current = null;
       setIsLoaded(false);
     };
-  }, [cancelCrossfade, sourceKind]);
+  }, [cancelCrossfade, sourceKind, tileUrl]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -555,6 +558,9 @@ export function MapCanvas({
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !isLoaded) {
+      return;
+    }
+    if (!tileUrl) {
       return;
     }
     let settledCleanup: (() => void) | undefined;

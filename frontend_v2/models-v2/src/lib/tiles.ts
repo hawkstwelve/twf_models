@@ -67,7 +67,8 @@ export function buildOfflinePmtilesUrl(params: {
   frameId: string;
   frameUrl?: string | null;
 }): string {
-  const fallback = `/tiles/${params.model}/${params.run}/${params.varKey}/${params.frameId}.pmtiles`;
+  const normalizedFrameId = /^\d+$/.test(params.frameId) ? params.frameId.padStart(3, "0") : params.frameId;
+  const fallback = `/tiles/${params.model}/${params.run}/${params.varKey}/${normalizedFrameId}.pmtiles`;
   const candidateUrl = params.frameUrl && params.frameUrl.trim() ? params.frameUrl.trim() : fallback;
   const absoluteUrl = toAbsoluteUrl(stripPmtilesProtocol(candidateUrl));
   const rewrittenUrl = rewriteFrontendOriginToApiOrigin(absoluteUrl);
