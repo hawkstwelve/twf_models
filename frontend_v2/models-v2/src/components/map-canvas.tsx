@@ -487,6 +487,11 @@ export function MapCanvas({
       },
     });
 
+    // Logging in console for zoom
+    map.on("zoomend", () => {
+      console.log("zoom:", map.getZoom().toFixed(2));
+    });
+
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-left");
 
     map.on("load", () => {
