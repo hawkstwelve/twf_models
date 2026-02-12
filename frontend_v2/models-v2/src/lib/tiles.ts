@@ -1,24 +1,36 @@
-import { TILES_BASE } from "@/lib/config";
+import { API_BASE_URL, absolutizeUrl } from "@/lib/config";
 import type { LegacyFrameRow } from "@/lib/api";
 
-function baseRoot() {
-  return TILES_BASE.replace(/\/?(api\/v2|api|tiles\/v2)\/?$/i, "");
+function rewriteFrontendOriginToApiOrigin(url: string): string {
+  try {
+    const resolved = new URL(url);
+    const apiOrigin = new URL(API_BASE_URL).origin;
+    const frontendOrigin = window.location.origin;
+    if (resolved.origin === frontendOrigin && resolved.origin !== apiOrigin) {
+      const rewritten = `${apiOrigin}${resolved.pathname}${resolved.search}${resolved.hash}`;
+      console.warn("[offline] Rewriting frame URL from frontend origin to API origin", {
+        from: url,
+        to: rewritten,
+      });
+      return rewritten;
+    }
+  } catch {
+    // fall through to original url
+  }
+  return url;
+}
+
+function stripPmtilesProtocol(pathOrUrl: string): string {
+  return pathOrUrl.startsWith("pmtiles://") ? pathOrUrl.slice("pmtiles://".length) : pathOrUrl;
 }
 
 export function toAbsoluteUrl(pathOrUrl: string): string {
-  if (pathOrUrl.startsWith("http://") || pathOrUrl.startsWith("https://")) {
-    return pathOrUrl;
-  }
-  const root = baseRoot().replace(/\/$/, "");
-  const path = pathOrUrl.startsWith("/") ? pathOrUrl : `/${pathOrUrl}`;
-  return `${root}${path}`;
+  return absolutizeUrl(pathOrUrl);
 }
 
 export function toPmtilesProtocolUrl(pathOrUrl: string): string {
-  if (pathOrUrl.startsWith("pmtiles://")) {
-    return pathOrUrl;
-  }
-  return `pmtiles://${toAbsoluteUrl(pathOrUrl)}`;
+  const absoluteUrl = toAbsoluteUrl(stripPmtilesProtocol(pathOrUrl));
+  return `pmtiles://${absoluteUrl}`;
 }
 
 export function buildLegacyFallbackTileUrl(params: {
@@ -28,9 +40,10 @@ export function buildLegacyFallbackTileUrl(params: {
   varKey: string;
   fh: number;
 }): string {
-  const root = baseRoot().replace(/\/$/, "");
   const enc = encodeURIComponent;
-  return `${root}/tiles/v2/${enc(params.model)}/${enc(params.region)}/${enc(params.run)}/${enc(params.varKey)}/${enc(params.fh)}/{z}/{x}/{y}.png`;
+  return absolutizeUrl(
+    `/tiles/v2/${enc(params.model)}/${enc(params.region)}/${enc(params.run)}/${enc(params.varKey)}/${enc(params.fh)}/{z}/{x}/{y}.png`
+  );
 }
 
 export function buildLegacyTileUrlFromFrame(params: {
@@ -54,9 +67,9 @@ export function buildOfflinePmtilesUrl(params: {
   frameId: string;
   frameUrl?: string | null;
 }): string {
-  if (params.frameUrl && params.frameUrl.trim()) {
-    return toPmtilesProtocolUrl(params.frameUrl);
-  }
   const fallback = `/tiles/${params.model}/${params.run}/${params.varKey}/${params.frameId}.pmtiles`;
-  return toPmtilesProtocolUrl(fallback);
+  const candidateUrl = params.frameUrl && params.frameUrl.trim() ? params.frameUrl.trim() : fallback;
+  const absoluteUrl = toAbsoluteUrl(stripPmtilesProtocol(candidateUrl));
+  const rewrittenUrl = rewriteFrontendOriginToApiOrigin(absoluteUrl);
+  return toPmtilesProtocolUrl(rewrittenUrl);
 }

@@ -7,20 +7,36 @@ const isLocalDevPort =
   window.location.port === "4173" ||
   window.location.port === "8080";
 
-export const API_BASE =
-  isLocalDevHost && isLocalDevPort
-    ? "http://127.0.0.1:8099/api"
-    : "https://api.sodakweather.com/api";
+function normalizeBaseUrl(url: string): string {
+  return url.trim().replace(/\/+$/, "");
+}
 
-export const API_V2_BASE =
-  isLocalDevHost && isLocalDevPort
-    ? "http://127.0.0.1:8099/api/v2"
-    : "https://api.sodakweather.com/api/v2";
-
-export const TILES_BASE =
-  isLocalDevHost && isLocalDevPort
-    ? "http://127.0.0.1:8101"
+const configuredApiBaseUrl = String(import.meta.env.VITE_API_BASE_URL ?? "").trim();
+const defaultApiBaseUrl = import.meta.env.PROD
+  ? "https://api.sodakweather.com"
+  : isLocalDevHost && isLocalDevPort
+    ? "http://127.0.0.1:8099"
     : "https://api.sodakweather.com";
+
+export const API_BASE_URL = normalizeBaseUrl(configuredApiBaseUrl || defaultApiBaseUrl);
+
+export function absolutizeUrl(pathOrUrl: string): string {
+  const candidate = pathOrUrl.trim();
+  if (!candidate) {
+    return API_BASE_URL;
+  }
+  if (candidate.startsWith("http://") || candidate.startsWith("https://")) {
+    return candidate;
+  }
+  if (candidate.startsWith("/")) {
+    return `${API_BASE_URL}${candidate}`;
+  }
+  return `${API_BASE_URL}/${candidate}`;
+}
+
+export const API_BASE = absolutizeUrl("/api");
+export const API_V2_BASE = absolutizeUrl("/api/v2");
+export const TILES_BASE = API_BASE_URL;
 
 export const DEFAULTS = {
   model: "hrrr",

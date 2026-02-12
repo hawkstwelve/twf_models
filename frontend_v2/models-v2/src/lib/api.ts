@@ -1,4 +1,4 @@
-import { API_BASE, API_V2_BASE } from "@/lib/config";
+import { API_BASE, API_V2_BASE, absolutizeUrl } from "@/lib/config";
 
 export type ModelOption = {
   id: string;
@@ -68,7 +68,7 @@ export type VarRow =
     };
 
 async function fetchJson<T>(url: string): Promise<T> {
-  const response = await fetch(url, { credentials: "omit" });
+  const response = await fetch(absolutizeUrl(url), { credentials: "omit" });
   if (!response.ok) {
     throw new Error(`Request failed: ${response.status} ${response.statusText}`);
   }
