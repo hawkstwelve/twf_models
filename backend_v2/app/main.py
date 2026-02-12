@@ -10,7 +10,6 @@ from fastapi.staticfiles import StaticFiles
 from app.config import settings
 
 from .api.offline import router as offline_router
-from .api.v2 import router as v2_router
 
 app = FastAPI(
     title="TWF Models API (V2)",
@@ -72,7 +71,6 @@ def get_latest_manifest_pointer(model: str):
     )
 
 
-app.include_router(v2_router)
 app.include_router(offline_router)
 
 app.mount("/published", StaticFiles(directory=settings.PUBLISH_ROOT, check_dir=False), name="published-static")
