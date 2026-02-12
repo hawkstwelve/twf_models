@@ -39,12 +39,19 @@ def _write_fake_cog(path: Path) -> None:
         dataset.write(band2, 2)
 
 
-def _reload_offline_tiles(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+def _reload_offline_tiles_with_publish_delta(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    publish_delta: int,
+):
     monkeypatch.setenv("TWF_DATA_V2_ROOT", str(tmp_path / "data_v2"))
     monkeypatch.setenv("STAGING_ROOT", str(tmp_path / "staging"))
     monkeypatch.setenv("PUBLISH_ROOT", str(tmp_path / "published"))
     monkeypatch.setenv("MANIFEST_ROOT", str(tmp_path / "manifests"))
     monkeypatch.setenv("OFFLINE_TILES_ENABLED", "true")
+    monkeypatch.setenv("OFFLINE_TILES_INITIAL_GATE", "6")
+    monkeypatch.setenv("OFFLINE_TILES_PUBLISH_DELTA", str(publish_delta))
     importlib.reload(config_module)
     return importlib.reload(offline_tiles_module)
 
@@ -64,11 +71,17 @@ def _write_source(root: Path, *, run: str, fh: int) -> None:
     (source_cog.parent / f"fh{frame_id}.json").write_text(json.dumps(payload))
 
 
+@pytest.mark.parametrize("publish_delta", [6, 2])
 def test_progressive_publish_gate_and_batching(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    publish_delta: int,
 ) -> None:
-    offline_tiles = _reload_offline_tiles(monkeypatch, tmp_path)
+    offline_tiles = _reload_offline_tiles_with_publish_delta(
+        monkeypatch,
+        tmp_path,
+        publish_delta=publish_delta,
+    )
     data_root = tmp_path / "data_v2"
     run = "20260207_01z"  # HRRR non-synoptic cycle => expected_frames=19
 
@@ -85,7 +98,8 @@ def test_progressive_publish_gate_and_batching(
     assert at_gate["published"] is True
     assert at_gate["published_frames"] == 6
 
-    for fh in range(6, 11):
+    next_publish_fh = 6 + publish_delta - 1
+    for fh in range(6, next_publish_fh):
         _write_source(data_root, run=run, fh=fh)
         offline_tiles.stage_single_frame(model="hrrr", region="pnw", run=run, var="tmp2m", fh=fh)
         result = offline_tiles.publish_from_staging(model="hrrr", run=run, var="tmp2m")
@@ -93,13 +107,13 @@ def test_progressive_publish_gate_and_batching(
         assert result["reason"] == "batch_threshold_not_met"
         assert result["published_frames"] == 6
 
-    _write_source(data_root, run=run, fh=11)
-    offline_tiles.stage_single_frame(model="hrrr", region="pnw", run=run, var="tmp2m", fh=11)
+    _write_source(data_root, run=run, fh=next_publish_fh)
+    offline_tiles.stage_single_frame(model="hrrr", region="pnw", run=run, var="tmp2m", fh=next_publish_fh)
     second_batch = offline_tiles.publish_from_staging(model="hrrr", run=run, var="tmp2m")
     assert second_batch["published"] is True
-    assert second_batch["published_frames"] == 12
+    assert second_batch["published_frames"] == 6 + publish_delta
 
-    for fh in range(12, 18):
+    for fh in range(next_publish_fh + 1, 18):
         _write_source(data_root, run=run, fh=fh)
         offline_tiles.stage_single_frame(model="hrrr", region="pnw", run=run, var="tmp2m", fh=fh)
         offline_tiles.publish_from_staging(model="hrrr", run=run, var="tmp2m")
@@ -110,3 +124,35 @@ def test_progressive_publish_gate_and_batching(
     assert completed["published"] is True
     assert completed["published_frames"] == 19
     assert completed["expected_frames"] == 19
+
+
+def test_progressive_publish_with_delta_one_advances_one_frame_at_a_time(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    offline_tiles = _reload_offline_tiles_with_publish_delta(
+        monkeypatch,
+        tmp_path,
+        publish_delta=1,
+    )
+    data_root = tmp_path / "data_v2"
+    run = "20260207_01z"
+
+    for fh in range(0, 6):
+        _write_source(data_root, run=run, fh=fh)
+        offline_tiles.stage_single_frame(model="hrrr", region="pnw", run=run, var="tmp2m", fh=fh)
+    at_gate = offline_tiles.publish_from_staging(model="hrrr", run=run, var="tmp2m")
+    assert at_gate["published"] is True
+    assert at_gate["published_frames"] == 6
+
+    _write_source(data_root, run=run, fh=6)
+    offline_tiles.stage_single_frame(model="hrrr", region="pnw", run=run, var="tmp2m", fh=6)
+    after_fh6 = offline_tiles.publish_from_staging(model="hrrr", run=run, var="tmp2m")
+    assert after_fh6["published"] is True
+    assert after_fh6["published_frames"] == 7
+
+    _write_source(data_root, run=run, fh=7)
+    offline_tiles.stage_single_frame(model="hrrr", region="pnw", run=run, var="tmp2m", fh=7)
+    after_fh7 = offline_tiles.publish_from_staging(model="hrrr", run=run, var="tmp2m")
+    assert after_fh7["published"] is True
+    assert after_fh7["published_frames"] == 8

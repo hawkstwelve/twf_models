@@ -12,6 +12,8 @@ def test_phase0_offline_tiles_settings(monkeypatch) -> None:
     monkeypatch.setenv("PUBLISH_ROOT", "/tmp/twf/published")
     monkeypatch.setenv("MANIFEST_ROOT", "/tmp/twf/manifests")
     monkeypatch.setenv("OFFLINE_TILES_MAX_WORKERS", "12")
+    monkeypatch.setenv("OFFLINE_TILES_INITIAL_GATE", "8")
+    monkeypatch.setenv("OFFLINE_TILES_PUBLISH_DELTA", "0")
     monkeypatch.setenv("RUNTIME_TILE_SUNSET_AT", "Tue, 31 Dec 2030 23:59:59 GMT")
     monkeypatch.setenv("WRITE_LEGACY_MODEL_LATEST_ALIAS", "true")
     monkeypatch.setenv("APP_ENV", "production")
@@ -24,6 +26,8 @@ def test_phase0_offline_tiles_settings(monkeypatch) -> None:
     assert reloaded.settings.PUBLISH_ROOT == Path("/tmp/twf/published").resolve()
     assert reloaded.settings.MANIFEST_ROOT == Path("/tmp/twf/manifests").resolve()
     assert reloaded.settings.OFFLINE_TILES_MAX_WORKERS == 6
+    assert reloaded.settings.OFFLINE_TILES_INITIAL_GATE == 8
+    assert reloaded.settings.OFFLINE_TILES_PUBLISH_DELTA == 1
     assert reloaded.settings.RUNTIME_TILE_SUNSET_AT == "Tue, 31 Dec 2030 23:59:59 GMT"
     assert reloaded.settings.WRITE_LEGACY_MODEL_LATEST_ALIAS is True
     assert reloaded.settings.APP_ENV == "production"

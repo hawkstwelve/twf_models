@@ -26,8 +26,6 @@ logger = logging.getLogger(__name__)
 CONTRACT_VERSION = 1
 ZOOM_MIN = 0
 ZOOM_MAX = 7
-INITIAL_PUBLISH_GATE = 6
-PUBLISH_BATCH_SIZE = 6
 COG_FRAME_RE = re.compile(r"^fh(?P<fh>\d{3})\.cog\.tif$")
 FRAME_ID_RE = re.compile(r"^\d{3}$")
 
@@ -533,29 +531,29 @@ def publish_from_staging(model: str, run: str, var: str) -> dict[str, Any]:
         staging_manifest = rebuild_staging_manifest(model, run, var)
         stage_available = int(staging_manifest["available_frames"])
         expected_frames = int(staging_manifest["expected_frames"])
-        if stage_available < INITIAL_PUBLISH_GATE:
-            return {
-                "published": False,
-                "reason": "gate_not_met",
-                "available_frames": stage_available,
-                "expected_frames": expected_frames,
-                "published_frames": int(
-                    ((_read_published_manifest(model, run, var) or {}).get("available_frames") or 0)
-                ),
-            }
 
         published_manifest = _read_published_manifest(model, run, var)
         published_available = int((published_manifest or {}).get("available_frames") or 0)
+        initial_gate = settings.OFFLINE_TILES_INITIAL_GATE
+        publish_delta = settings.OFFLINE_TILES_PUBLISH_DELTA
         target_available = published_available
 
         if published_available == 0:
+            if stage_available < initial_gate:
+                return {
+                    "published": False,
+                    "reason": "gate_not_met",
+                    "available_frames": stage_available,
+                    "expected_frames": expected_frames,
+                    "published_frames": published_available,
+                }
             target_available = stage_available
         else:
             delta = stage_available - published_available
-            if stage_available == expected_frames and stage_available > published_available:
+            if (delta >= publish_delta) or (
+                stage_available == expected_frames and stage_available > published_available
+            ):
                 target_available = stage_available
-            elif delta >= PUBLISH_BATCH_SIZE:
-                target_available = published_available + (delta // PUBLISH_BATCH_SIZE) * PUBLISH_BATCH_SIZE
 
         if target_available <= published_available:
             return {
