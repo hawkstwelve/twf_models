@@ -5,6 +5,8 @@ import logging
 import os
 import re
 import shutil
+import subprocess
+import sys
 import time
 import uuid
 from contextlib import contextmanager
@@ -246,22 +248,69 @@ def _source_var_root(model: str, region: str, run: str, var: str) -> Path:
     return settings.DATA_V2_ROOT / model / region / run / var
 
 
-def _build_reference_pmtiles(source_cog_path: Path, destination_pmtiles_path: Path, *, frame_id: str) -> None:
+def _build_pmtiles_from_cog(
+    source_cog_path: Path,
+    destination_pmtiles_path: Path,
+    *,
+    frame_id: str,
+    var: str,
+) -> None:
+    script_path = Path(__file__).resolve().parents[2] / "scripts" / "build_pmtiles.py"
+    if not script_path.exists():
+        raise RuntimeError(f"Missing PMTiles build script: {script_path}")
+
     destination_pmtiles_path.parent.mkdir(parents=True, exist_ok=True)
-    if not destination_pmtiles_path.exists():
-        shutil.copyfile(source_cog_path, destination_pmtiles_path)
+    if destination_pmtiles_path.exists():
+        destination_pmtiles_path.unlink()
+
     validation_path = destination_pmtiles_path.with_suffix(".tiles.json")
-    if not validation_path.exists():
-        _atomic_write_json(
-            validation_path,
-            {
-                "tile_presence": {
-                    "z0": {"z": 0, "x": 0, "y": 0},
-                    "z7": {"z": 7, "x": 0, "y": 0},
-                },
-                "frame_id": frame_id,
-            },
+    if validation_path.exists():
+        validation_path.unlink()
+
+    command = [
+        sys.executable,
+        str(script_path),
+        "--src",
+        str(source_cog_path),
+        "--dst",
+        str(destination_pmtiles_path),
+        "--var",
+        var,
+        "--zoom-min",
+        str(ZOOM_MIN),
+        "--zoom-max",
+        str(ZOOM_MAX),
+        "--validation-json",
+        str(validation_path),
+    ]
+
+    try:
+        subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
         )
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        stdout = (exc.stdout or "").strip()
+        details = stderr or stdout or f"exit_code={exc.returncode}"
+        raise RuntimeError(
+            f"COG->PMTiles conversion failed for frame_id={frame_id} source={source_cog_path}: {details}"
+        ) from exc
+
+
+def _validate_pmtiles_magic(pmtiles_path: Path) -> None:
+    with pmtiles_path.open("rb") as fp:
+        header = fp.read(8)
+    if len(header) < 8:
+        raise ValueError(f"PMTiles header too short: {pmtiles_path}")
+    if header.startswith(b"II*\x00") or header.startswith(b"MM\x00*"):
+        raise ValueError(
+            f"Invalid PMTiles magic for {pmtiles_path}: produced GeoTIFF, not PMTiles"
+        )
+    if not header.startswith(b"PMTiles"):
+        raise ValueError(f"Invalid PMTiles magic for {pmtiles_path}: header={header!r}")
 
 
 def validate_staged_pmtiles(pmtiles_path: Path) -> None:
@@ -269,6 +318,7 @@ def validate_staged_pmtiles(pmtiles_path: Path) -> None:
         raise ValueError(f"PMTiles missing: {pmtiles_path}")
     if pmtiles_path.stat().st_size <= 0:
         raise ValueError(f"PMTiles empty: {pmtiles_path}")
+    _validate_pmtiles_magic(pmtiles_path)
     validation_path = pmtiles_path.with_suffix(".tiles.json")
     payload = _read_json(validation_path)
     if payload is None:
@@ -278,6 +328,12 @@ def validate_staged_pmtiles(pmtiles_path: Path) -> None:
         raise ValueError("tile presence metadata missing 'tile_presence' object")
     if "z0" not in tile_presence or "z7" not in tile_presence:
         raise ValueError("tile presence metadata must include z0 and z7 checks")
+    z0_presence = tile_presence.get("z0")
+    z7_presence = tile_presence.get("z7")
+    if isinstance(z0_presence, dict) and z0_presence.get("present") is False:
+        raise ValueError("tile presence validation failed: z0 tile missing")
+    if isinstance(z7_presence, dict) and z7_presence.get("present") is False:
+        raise ValueError("tile presence validation failed: z7 tile missing")
 
 
 def stage_single_frame(
@@ -306,7 +362,12 @@ def stage_single_frame(
     staging_meta_root.mkdir(parents=True, exist_ok=True)
 
     staging_pmtiles_path = staging_frames_root / f"{frame_id}.pmtiles"
-    _build_reference_pmtiles(source_cog_path, staging_pmtiles_path, frame_id=frame_id)
+    _build_pmtiles_from_cog(
+        source_cog_path,
+        staging_pmtiles_path,
+        frame_id=frame_id,
+        var=normalized_var,
+    )
     validate_staged_pmtiles(staging_pmtiles_path)
 
     sidecar_payload = _read_json(source_var_root / f"fh{fh:03d}.json") or {}

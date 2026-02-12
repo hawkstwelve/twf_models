@@ -4,21 +4,45 @@ import importlib
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
+import rasterio
+from rasterio.transform import from_origin
 
 from app import config as config_module
 from app.services import discovery_v2
 from app.services import offline_tiles as offline_tiles_module
 
 
-def _touch(path: Path, content: bytes = b"") -> None:
+def _write_fake_cog(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(content)
+    width = 64
+    height = 64
+    transform = from_origin(-13_000_000.0, 6_000_000.0, 50_000.0, 50_000.0)
+    band1 = np.full((height, width), 10, dtype=np.uint8)
+    band2 = np.full((height, width), 255, dtype=np.uint8)
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        width=width,
+        height=height,
+        count=2,
+        dtype="uint8",
+        crs="EPSG:3857",
+        transform=transform,
+        tiled=True,
+        blockxsize=32,
+        blockysize=32,
+        compress="deflate",
+    ) as dataset:
+        dataset.write(band1, 1)
+        dataset.write(band2, 2)
 
 
 def _write_source_frame(root: Path, *, model: str, region: str, run: str, var: str, fh: int) -> None:
     frame_id = f"{fh:03d}"
-    _touch(root / model / region / run / var / f"fh{frame_id}.cog.tif", b"II*\x00cog")
+    _write_fake_cog(root / model / region / run / var / f"fh{frame_id}.cog.tif")
     sidecar = {
         "model": model,
         "region": region,
