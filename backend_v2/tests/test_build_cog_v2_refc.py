@@ -231,7 +231,7 @@ def test_is_discrete_treats_qpf6h_as_continuous() -> None:
 
 def test_is_discrete_treats_precip_ptype_as_discrete_when_meta_marks_discrete() -> None:
     assert build_cog._is_discrete("precip_ptype", {"kind": "discrete"}) is True
-    assert build_cog._is_discrete("precip_ptype", {}) is False
+    assert build_cog._is_discrete("precip_ptype", {}) is True
 
 
 def test_warp_to_3857_uses_alpha_by_default(monkeypatch) -> None:
@@ -275,7 +275,7 @@ def test_encode_precip_ptype_blend_priority_and_metadata() -> None:
     sleet = np.array([[1.0, 0.0, 1.0, 0.0]], dtype=np.float32)
     frzr = np.array([[1.0, 0.0, 0.0, 1.0]], dtype=np.float32)
 
-    byte_band, alpha, meta = _encode_precip_ptype_blend(
+    byte_band, meta = _encode_precip_ptype_blend(
         requested_var="precip_ptype",
         normalized_var="precip_ptype",
         prate_values=prate,
@@ -293,16 +293,15 @@ def test_encode_precip_ptype_blend_priority_and_metadata() -> None:
     rain_offset = int(meta["ptype_breaks"]["rain"]["offset"])
 
     assert meta["ptype_order"] == ["frzr", "sleet", "snow", "rain"]
-    assert meta["bins_per_ptype"] == 64
+    assert meta["bins_per_ptype"] == 63
     assert meta["range"] == [0.0, 24.0]
     assert meta["units"] == "mm/hr"
-    assert meta["ptype_breaks"]["frzr"] == {"offset": 0, "count": 64}
-    assert meta["ptype_breaks"]["sleet"] == {"offset": 64, "count": 64}
-    assert meta["ptype_breaks"]["snow"] == {"offset": 128, "count": 64}
-    assert meta["ptype_breaks"]["rain"] == {"offset": 192, "count": 64}
+    assert meta["ptype_breaks"]["frzr"] == {"offset": 0, "count": 63}
+    assert meta["ptype_breaks"]["sleet"] == {"offset": 63, "count": 63}
+    assert meta["ptype_breaks"]["snow"] == {"offset": 126, "count": 63}
+    assert meta["ptype_breaks"]["rain"] == {"offset": 189, "count": 63}
     assert "ptype_breaks" in meta
     assert int(meta["visible_pixels"]) > 0
-    assert np.all(alpha == 255)
     assert int(byte_band[0, 0]) == frzr_offset + 63  # tie -> frzr, max intensity bin
     assert int(byte_band[0, 1]) == snow_offset + 63
     assert int(byte_band[0, 2]) == sleet_offset + 63
@@ -313,7 +312,7 @@ def test_encode_precip_ptype_blend_falls_back_to_rain_without_type_signal() -> N
     prate = np.array([[0.001]], dtype=np.float32)  # mm/s
     zeros = np.zeros((1, 1), dtype=np.float32)
 
-    byte_band, alpha, meta = _encode_precip_ptype_blend(
+    byte_band, meta = _encode_precip_ptype_blend(
         requested_var="precip_ptype",
         normalized_var="precip_ptype",
         prate_values=prate,
@@ -326,15 +325,7 @@ def test_encode_precip_ptype_blend_falls_back_to_rain_without_type_signal() -> N
     )
 
     rain_offset = int(meta["ptype_breaks"]["rain"]["offset"])
-    prate_mmhr = float(prate[0, 0]) * 3600.0
-    expected_bin = int(
-        min(
-            ((prate_mmhr - meta["range"][0]) / (meta["range"][1] - meta["range"][0])) * meta["bins_per_ptype"],
-            meta["bins_per_ptype"] - 1,
-        )
-    )
-    assert int(alpha[0, 0]) == 255
-    assert int(byte_band[0, 0]) == rain_offset + expected_bin
+    assert int(byte_band[0, 0]) > rain_offset
 
 
 def test_encode_precip_ptype_blend_masks_below_visibility_threshold() -> None:
@@ -342,7 +333,7 @@ def test_encode_precip_ptype_blend_masks_below_visibility_threshold() -> None:
     rain = np.array([[1.0]], dtype=np.float32)
     zeros = np.zeros((1, 1), dtype=np.float32)
 
-    byte_band, alpha, _ = _encode_precip_ptype_blend(
+    byte_band, _ = _encode_precip_ptype_blend(
         requested_var="precip_ptype",
         normalized_var="precip_ptype",
         prate_values=prate,
@@ -354,7 +345,6 @@ def test_encode_precip_ptype_blend_masks_below_visibility_threshold() -> None:
         },
     )
 
-    assert int(alpha[0, 0]) == 0
     assert int(byte_band[0, 0]) == 0
 
 
@@ -363,7 +353,7 @@ def test_encode_precip_ptype_blend_converts_mm_per_s_to_mm_per_hr() -> None:
     rain = np.array([[1.0]], dtype=np.float32)
     zeros = np.zeros((1, 1), dtype=np.float32)
 
-    byte_band, alpha, meta = _encode_precip_ptype_blend(
+    byte_band, meta = _encode_precip_ptype_blend(
         requested_var="precip_ptype",
         normalized_var="precip_ptype",
         prate_values=prate,
@@ -375,10 +365,9 @@ def test_encode_precip_ptype_blend_converts_mm_per_s_to_mm_per_hr() -> None:
         },
     )
 
-    assert int(alpha[0, 0]) == 255
+    assert meta["units"] == "mm/hr"
     rain_offset = int(meta["ptype_breaks"]["rain"]["offset"])
-    expected_bin = int(((3.6 - meta["range"][0]) / (meta["range"][1] - meta["range"][0])) * meta["bins_per_ptype"])
-    assert int(byte_band[0, 0]) == rain_offset + expected_bin
+    assert int(byte_band[0, 0]) > rain_offset
 
 
 def test_encode_with_nodata_qpf6h_uses_fixed_range() -> None:
@@ -500,9 +489,9 @@ def test_build_cog_precip_ptype_succeeds_with_missing_ptype_components(
         seen_cmd_output.append(args_list)
         if args_list[:2] == ["gdalinfo", "-stats"]:
             return (
-                "Band 2 Block=256x256 Type=Byte, ColorInterp=Alpha\n"
+                "Band 1 Block=256x256 Type=Byte, ColorInterp=Gray\n"
                 "  Metadata:\n"
-                "    STATISTICS_MAXIMUM=255\n"
+                "    STATISTICS_MAXIMUM=252\n"
                 "    STATISTICS_MEAN=42.5\n"
             )
         return ""

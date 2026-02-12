@@ -31,6 +31,11 @@ def test_run_gdaladdo_overviews_no_mask_support_keeps_band_overviews(monkeypatch
     monkeypatch.setattr(build_cog, "require_gdal", lambda _cmd: None)
     monkeypatch.setattr(build_cog, "run_cmd", fake_run_cmd)
     monkeypatch.setattr(build_cog, "_gdaladdo_supports_mask", lambda: False)
+    monkeypatch.setattr(
+        build_cog,
+        "gdalinfo_json",
+        lambda _path: {"bands": [{"overviews": []}, {"overviews": []}]},
+    )
 
     build_cog.run_gdaladdo_overviews(Path("/tmp/sample.tif"), "average", "nearest")
 
@@ -59,6 +64,11 @@ def test_run_gdaladdo_overviews_external_conflict_falls_back_to_all_bands(
     monkeypatch.setattr(build_cog, "require_gdal", lambda _cmd: None)
     monkeypatch.setattr(build_cog, "run_cmd", fake_run_cmd)
     monkeypatch.setattr(build_cog, "_gdaladdo_supports_mask", lambda: False)
+    monkeypatch.setattr(
+        build_cog,
+        "gdalinfo_json",
+        lambda _path: {"bands": [{"overviews": []}, {"overviews": []}]},
+    )
 
     build_cog.run_gdaladdo_overviews(Path("/tmp/sample.tif"), "average", "nearest")
 
