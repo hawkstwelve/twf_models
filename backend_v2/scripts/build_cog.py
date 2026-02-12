@@ -50,6 +50,12 @@ _resolve_radar_blend_component_paths = _pipeline._resolve_radar_blend_component_
 _resolve_precip_ptype_component_paths = _pipeline._resolve_precip_ptype_component_paths
 _is_discrete = _pipeline._is_discrete
 _gdaladdo_supports_mask = _gdal_util._gdaladdo_supports_mask
+_ORIG_REQUIRE_GDAL = _gdal_util.require_gdal
+_ORIG_RUN_CMD = run_cmd
+_ORIG_RUN_CMD_OUTPUT = run_cmd_output
+_ORIG_RUN_CMD_JSON = run_cmd_json
+_ORIG_GDALINFO_JSON = getattr(_gdal_util, "gdalinfo_json", None)
+_ORIG_GDALADDO_SUPPORTS_MASK = _gdaladdo_supports_mask
 
 
 def _open_cfgrib_dataset(grib_path: object, var_spec: Any):
@@ -71,7 +77,7 @@ def _open_cfgrib_dataset_strict(grib_path: object, var_spec: Any):
 
 
 def require_gdal(cmd_name: str) -> None:
-    _gdal_util.require_gdal(cmd_name)
+    _ORIG_REQUIRE_GDAL(cmd_name)
 
 
 def gdalinfo_json(path: Path) -> dict:
@@ -106,7 +112,7 @@ def warp_to_3857(
 
 
 def _sync_gdal_util() -> None:
-    _gdal_util.require_gdal = require_gdal
+    _gdal_util.require_gdal = _ORIG_REQUIRE_GDAL
     _gdal_util.run_cmd = run_cmd
     _gdal_util.run_cmd_output = run_cmd_output
     _gdal_util.run_cmd_json = run_cmd_json
