@@ -32,22 +32,18 @@ const REGION_BOUNDS: Record<string, [number, number, number, number]> = {
   published: [-125.5, 41.5, -111.0, 49.5],
 };
 
-const SCRUB_SWAP_TIMEOUT_MS = 350;
-const AUTOPLAY_SWAP_TIMEOUT_MS = 1500;
-const SETTLE_TIMEOUT_MS = 1200;
-const CONTINUOUS_CROSSFADE_MS = 120;
-const MICRO_CROSSFADE_MS = 60;
+const TILE_SETTLE_TIMEOUT_MS = 1200;
 const PREFETCH_TILE_BUFFER_COUNT = 4;
-
-const IMAGE_PREFETCH_LOOKAHEAD = 16;
-const IMAGE_PREFETCH_THROTTLE_MS = 90;
-const IMAGE_CACHE_MAX_ENTRIES = 36;
-
+const IMAGE_PREFETCH_CONCURRENCY = 4;
+const IMAGE_CACHE_MAX_ENTRIES = 40;
 const HIDDEN_OPACITY = 0.001;
-const EMPTY_IMAGE_DATA_URL = "data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==";
 
-type OverlayBuffer = "a" | "b";
-type OverlayMode = "tile" | "image";
+const TILE_SOURCE_ID = "twf-overlay-tile";
+const TILE_LAYER_ID = "twf-overlay-tile";
+const CANVAS_SOURCE_ID = "twf-overlay-canvas";
+const CANVAS_LAYER_ID = "twf-overlay-canvas";
+
+type OverlayMode = "tile" | "canvas";
 type PlaybackMode = "autoplay" | "scrub";
 type ImageCoordinates = [[number, number], [number, number], [number, number], [number, number]];
 
@@ -56,43 +52,19 @@ type MutableRasterSource = maplibregl.RasterTileSource & {
   setUrl?: (url: string) => maplibregl.RasterTileSource;
 };
 
-type MutableImageSource = maplibregl.ImageSource & {
-  updateImage?: (options: { url: string; coordinates: ImageCoordinates }) => maplibregl.ImageSource;
+type MutableCanvasSource = maplibregl.CanvasSource & {
+  setCoordinates?: (coordinates: ImageCoordinates) => void;
 };
 
 type ImageCacheEntry = {
   status: "ready" | "error";
-  image?: HTMLImageElement;
+  bitmap?: ImageBitmap;
 };
 
 export type PrefetchFrameImage = {
   tileUrl: string;
   frameImageUrl?: string;
 };
-
-function tileSourceId(buffer: OverlayBuffer): string {
-  return `twf-overlay-${buffer}`;
-}
-
-function tileLayerId(buffer: OverlayBuffer): string {
-  return `twf-overlay-${buffer}`;
-}
-
-function imageSourceId(buffer: OverlayBuffer): string {
-  return `twf-img-${buffer}`;
-}
-
-function imageLayerId(buffer: OverlayBuffer): string {
-  return `twf-img-${buffer}`;
-}
-
-function overlayLayerId(mode: OverlayMode, buffer: OverlayBuffer): string {
-  return mode === "image" ? imageLayerId(buffer) : tileLayerId(buffer);
-}
-
-function otherBuffer(buffer: OverlayBuffer): OverlayBuffer {
-  return buffer === "a" ? "b" : "a";
-}
 
 function prefetchSourceId(index: number): string {
   return `twf-prefetch-${index}`;
@@ -128,14 +100,6 @@ function overlaySourceFor(url: string, bounds?: [number, number, number, number]
   };
 }
 
-function imageSourceFor(url: string, coordinates: ImageCoordinates) {
-  return {
-    type: "image",
-    url,
-    coordinates,
-  };
-}
-
 function setOverlaySourceUrl(source: maplibregl.Source | undefined, url: string): boolean {
   const rasterSource = source as MutableRasterSource | undefined;
   if (!rasterSource) {
@@ -152,22 +116,8 @@ function setOverlaySourceUrl(source: maplibregl.Source | undefined, url: string)
   return false;
 }
 
-function setImageSourceUrl(
-  source: maplibregl.Source | undefined,
-  url: string,
-  coordinates: ImageCoordinates
-): boolean {
-  const imageSource = source as MutableImageSource | undefined;
-  if (!imageSource || typeof imageSource.updateImage !== "function") {
-    return false;
-  }
-  imageSource.updateImage({ url, coordinates });
-  return true;
-}
-
 function styleFor(
-  overlayUrl: string,
-  initialImageUrl: string,
+  tileUrl: string,
   opacity: number,
   variable?: string,
   model?: string,
@@ -175,13 +125,12 @@ function styleFor(
 ): StyleSpecification {
   const resamplingMode = getResamplingMode(variable);
   const overlayBounds = (region && REGION_BOUNDS[region]) || REGION_BOUNDS.pnw;
-  const imageCoordinates = imageCoordinatesForRegion(region);
   const overlayMinZoom = model === "gfs" ? 6 : 3;
 
   const prefetchSources = Object.fromEntries(
     Array.from({ length: PREFETCH_TILE_BUFFER_COUNT }, (_, idx) => [
       prefetchSourceId(idx + 1),
-      overlaySourceFor(overlayUrl, overlayBounds),
+      overlaySourceFor(tileUrl, overlayBounds),
     ])
   );
 
@@ -206,11 +155,8 @@ function styleFor(
         tileSize: 256,
         attribution: BASEMAP_ATTRIBUTION,
       },
-      [tileSourceId("a")]: overlaySourceFor(overlayUrl, overlayBounds),
-      [tileSourceId("b")]: overlaySourceFor(overlayUrl, overlayBounds),
+      [TILE_SOURCE_ID]: overlaySourceFor(tileUrl, overlayBounds),
       ...prefetchSources,
-      [imageSourceId("a")]: imageSourceFor(initialImageUrl, imageCoordinates),
-      [imageSourceId("b")]: imageSourceFor(initialImageUrl, imageCoordinates),
       "twf-labels": {
         type: "raster",
         tiles: CARTO_LIGHT_LABEL_TILES,
@@ -224,9 +170,9 @@ function styleFor(
         source: "twf-basemap",
       },
       {
-        id: tileLayerId("a"),
+        id: TILE_LAYER_ID,
         type: "raster" as const,
-        source: tileSourceId("a"),
+        source: TILE_SOURCE_ID,
         minzoom: overlayMinZoom,
         paint: {
           "raster-opacity": opacity,
@@ -234,40 +180,7 @@ function styleFor(
           "raster-fade-duration": 0,
         },
       },
-      {
-        id: tileLayerId("b"),
-        type: "raster" as const,
-        source: tileSourceId("b"),
-        minzoom: overlayMinZoom,
-        paint: {
-          "raster-opacity": HIDDEN_OPACITY,
-          "raster-resampling": resamplingMode,
-          "raster-fade-duration": 0,
-        },
-      },
       ...prefetchLayers,
-      {
-        id: imageLayerId("a"),
-        type: "raster" as const,
-        source: imageSourceId("a"),
-        minzoom: overlayMinZoom,
-        paint: {
-          "raster-opacity": HIDDEN_OPACITY,
-          "raster-resampling": resamplingMode,
-          "raster-fade-duration": 0,
-        },
-      },
-      {
-        id: imageLayerId("b"),
-        type: "raster" as const,
-        source: imageSourceId("b"),
-        minzoom: overlayMinZoom,
-        paint: {
-          "raster-opacity": HIDDEN_OPACITY,
-          "raster-resampling": resamplingMode,
-          "raster-fade-duration": 0,
-        },
-      },
       {
         id: "twf-labels",
         type: "raster" as const,
@@ -306,7 +219,7 @@ export function MapCanvas({
   preferFrameImages = true,
   prefetchTileUrls = [],
   prefetchFrameImages = [],
-  crossfade = false,
+  crossfade: _crossfade = false,
   onFrameSettled,
   onTileReady,
   onZoomHint,
@@ -316,21 +229,16 @@ export function MapCanvas({
   const mapRef = useRef<maplibregl.Map | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
 
-  const activeBufferRef = useRef<OverlayBuffer>("a");
-  const activeModeRef = useRef<OverlayMode>("tile");
-  const activeTileUrlRef = useRef(tileUrl);
-  const activeFrameImageUrlRef = useRef<string | null>(null);
-  const imageSourceUrlsRef = useRef<Record<OverlayBuffer, string>>({
-    a: EMPTY_IMAGE_DATA_URL,
-    b: EMPTY_IMAGE_DATA_URL,
-  });
+  const canvasElementRef = useRef<HTMLCanvasElement | null>(null);
+  const canvasContextRef = useRef<CanvasRenderingContext2D | null>(null);
+  const activeOverlayModeRef = useRef<OverlayMode>("tile");
 
-  const swapTokenRef = useRef(0);
+  const renderTokenRef = useRef(0);
   const prefetchTokenRef = useRef(0);
   const prefetchTileUrlsRef = useRef<string[]>(Array.from({ length: PREFETCH_TILE_BUFFER_COUNT }, () => ""));
 
-  const fadeTokenRef = useRef(0);
-  const fadeRafRef = useRef<number | null>(null);
+  const activeTileUrlRef = useRef(tileUrl);
+  const activeFrameImageUrlRef = useRef<string | null>(null);
   const onRequestUrlRef = useRef(onRequestUrl);
 
   const imageCacheRef = useRef<Map<string, ImageCacheEntry>>(new Map());
@@ -348,6 +256,8 @@ export function MapCanvas({
     };
   }, [region]);
 
+  const overlayMinZoom = useMemo(() => (model === "gfs" ? 6 : 3), [model]);
+  const resamplingMode = useMemo(() => getResamplingMode(variable), [variable]);
   const imageCoordinates = useMemo(() => imageCoordinatesForRegion(region), [region]);
 
   const setLayerOpacity = useCallback((map: maplibregl.Map, id: string, value: number) => {
@@ -357,208 +267,13 @@ export function MapCanvas({
     map.setPaintProperty(id, "raster-opacity", value);
   }, []);
 
-  const notifySettled = useCallback(
-    (map: maplibregl.Map, source: string, url: string) => {
-      let done = false;
-      let timeoutId: number | null = null;
-
-      const cleanup = () => {
-        map.off("sourcedata", onSourceData);
-        if (timeoutId !== null) {
-          window.clearTimeout(timeoutId);
-          timeoutId = null;
-        }
-      };
-
-      const fire = () => {
-        if (done) return;
-        done = true;
-        cleanup();
-        onTileReady?.(url);
-        onFrameSettled?.(url);
-      };
-
-      const onSourceData = (event: maplibregl.MapSourceDataEvent) => {
-        if (event.sourceId !== source) {
-          return;
-        }
-        if (map.isSourceLoaded(source)) {
-          window.requestAnimationFrame(() => fire());
-        }
-      };
-
-      if (map.isSourceLoaded(source)) {
-        window.requestAnimationFrame(() => fire());
-        return () => {
-          done = true;
-          cleanup();
-        };
-      }
-
-      map.on("sourcedata", onSourceData);
-      timeoutId = window.setTimeout(() => {
-        fire();
-      }, SETTLE_TIMEOUT_MS);
-
-      return () => {
-        done = true;
-        cleanup();
-      };
+  const setActiveOverlayMode = useCallback(
+    (map: maplibregl.Map, modeValue: OverlayMode, targetOpacity: number) => {
+      activeOverlayModeRef.current = modeValue;
+      setLayerOpacity(map, TILE_LAYER_ID, modeValue === "tile" ? targetOpacity : HIDDEN_OPACITY);
+      setLayerOpacity(map, CANVAS_LAYER_ID, modeValue === "canvas" ? targetOpacity : HIDDEN_OPACITY);
     },
-    [onTileReady, onFrameSettled]
-  );
-
-  const cancelCrossfade = useCallback(() => {
-    fadeTokenRef.current += 1;
-    if (fadeRafRef.current !== null) {
-      window.cancelAnimationFrame(fadeRafRef.current);
-      fadeRafRef.current = null;
-    }
-  }, []);
-
-  const runLayerCrossfade = useCallback(
-    (
-      map: maplibregl.Map,
-      fromLayer: string,
-      toLayer: string,
-      targetOpacity: number,
-      durationMs: number,
-      swapToken: number,
-      onComplete?: () => void
-    ) => {
-      cancelCrossfade();
-
-      if (fromLayer === toLayer) {
-        setLayerOpacity(map, toLayer, targetOpacity);
-        onComplete?.();
-        return;
-      }
-
-      const fadeToken = ++fadeTokenRef.current;
-      const started = performance.now();
-
-      const tick = (now: number) => {
-        if (fadeToken !== fadeTokenRef.current || swapToken !== swapTokenRef.current) {
-          return;
-        }
-
-        const progress = Math.min(1, (now - started) / Math.max(1, durationMs));
-        const fromOpacity = targetOpacity * (1 - progress);
-        const toOpacity = targetOpacity * progress;
-
-        setLayerOpacity(map, fromLayer, Math.max(HIDDEN_OPACITY, fromOpacity));
-        setLayerOpacity(map, toLayer, Math.max(HIDDEN_OPACITY, toOpacity));
-
-        if (progress < 1) {
-          fadeRafRef.current = window.requestAnimationFrame(tick);
-          return;
-        }
-
-        setLayerOpacity(map, fromLayer, HIDDEN_OPACITY);
-        setLayerOpacity(map, toLayer, targetOpacity);
-        fadeRafRef.current = null;
-        onComplete?.();
-      };
-
-      setLayerOpacity(map, fromLayer, targetOpacity);
-      setLayerOpacity(map, toLayer, HIDDEN_OPACITY);
-      fadeRafRef.current = window.requestAnimationFrame(tick);
-    },
-    [cancelCrossfade, setLayerOpacity]
-  );
-
-  const waitForSourceReady = useCallback(
-    (
-      map: maplibregl.Map,
-      source: string,
-      modeValue: PlaybackMode,
-      onReady: () => void,
-      onTimeout?: () => void
-    ) => {
-      const timeoutMs = modeValue === "autoplay" ? AUTOPLAY_SWAP_TIMEOUT_MS : SCRUB_SWAP_TIMEOUT_MS;
-      let done = false;
-      let timeoutId: number | null = null;
-      let seenLoadedState = map.isSourceLoaded(source);
-      let scrubReadyQueued = false;
-
-      const cleanup = () => {
-        map.off("sourcedata", onSourceData);
-        map.off("idle", onIdle);
-        if (timeoutId !== null) {
-          window.clearTimeout(timeoutId);
-          timeoutId = null;
-        }
-      };
-
-      const finishReady = () => {
-        if (done) return;
-        done = true;
-        cleanup();
-        onReady();
-      };
-
-      const finishTimeout = () => {
-        if (done) return;
-        done = true;
-        cleanup();
-        onTimeout?.();
-      };
-
-      const finishReadyAfterRender = () => {
-        if (done) {
-          return;
-        }
-        window.requestAnimationFrame(() => {
-          window.requestAnimationFrame(() => {
-            if (!done) {
-              finishReady();
-            }
-          });
-        });
-      };
-
-      const onSourceData = (event: maplibregl.MapSourceDataEvent) => {
-        if (event.sourceId !== source) {
-          return;
-        }
-        if (modeValue === "autoplay" && map.isSourceLoaded(source)) {
-          seenLoadedState = true;
-        }
-        if (modeValue === "scrub" && map.isSourceLoaded(source) && !scrubReadyQueued) {
-          scrubReadyQueued = true;
-          finishReadyAfterRender();
-        }
-      };
-
-      const onIdle = () => {
-        if (modeValue !== "autoplay") {
-          return;
-        }
-        if (!seenLoadedState) {
-          return;
-        }
-        if (!map.isSourceLoaded(source)) {
-          return;
-        }
-        finishReady();
-      };
-
-      map.on("sourcedata", onSourceData);
-      if (modeValue === "autoplay") {
-        map.on("idle", onIdle);
-      } else if (seenLoadedState && !scrubReadyQueued) {
-        scrubReadyQueued = true;
-        finishReadyAfterRender();
-      }
-
-      timeoutId = window.setTimeout(() => finishTimeout(), timeoutMs);
-
-      return () => {
-        done = true;
-        cleanup();
-      };
-    },
-    []
+    [setLayerOpacity]
   );
 
   const touchImageCache = useCallback((url: string, entry: ImageCacheEntry) => {
@@ -572,9 +287,8 @@ export function MapCanvas({
         break;
       }
       const evicted = cache.get(oldestUrl);
-      if (evicted?.image) {
-        evicted.image.onload = null;
-        evicted.image.onerror = null;
+      if (evicted?.bitmap) {
+        evicted.bitmap.close();
       }
       cache.delete(oldestUrl);
     }
@@ -603,24 +317,37 @@ export function MapCanvas({
         img.decoding = "async";
         let done = false;
 
-        const finish = (ok: boolean) => {
+        const finish = (ok: boolean, bitmap?: ImageBitmap) => {
           if (done) return;
           done = true;
           img.onload = null;
           img.onerror = null;
           imagePendingRef.current.delete(normalizedUrl);
 
-          if (ok) {
+          if (ok && bitmap) {
             unavailableFrameImageUrlsRef.current.delete(normalizedUrl);
-            touchImageCache(normalizedUrl, { status: "ready", image: img });
+            touchImageCache(normalizedUrl, { status: "ready", bitmap });
           } else {
             unavailableFrameImageUrlsRef.current.add(normalizedUrl);
             touchImageCache(normalizedUrl, { status: "error" });
           }
+
           resolve(ok);
         };
 
-        img.onload = () => finish(true);
+        img.onload = async () => {
+          if (typeof createImageBitmap !== "function") {
+            finish(false);
+            return;
+          }
+          try {
+            const bitmap = await createImageBitmap(img);
+            finish(true, bitmap);
+          } catch {
+            finish(false);
+          }
+        };
+
         img.onerror = () => finish(false);
         img.src = normalizedUrl;
       });
@@ -631,6 +358,124 @@ export function MapCanvas({
     [touchImageCache]
   );
 
+  const drawImageBitmapToOverlay = useCallback((bitmap: ImageBitmap): boolean => {
+    const map = mapRef.current;
+    const canvas = canvasElementRef.current;
+    const context = canvasContextRef.current;
+    if (!map || !canvas || !context) {
+      return false;
+    }
+
+    if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+      canvas.width = Math.max(1, bitmap.width);
+      canvas.height = Math.max(1, bitmap.height);
+    }
+
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    map.triggerRepaint();
+    return true;
+  }, []);
+
+  const ensureCanvasOverlay = useCallback(
+    (map: maplibregl.Map) => {
+      const existing = map.getSource(CANVAS_SOURCE_ID) as MutableCanvasSource | undefined;
+      if (existing) {
+        existing.setCoordinates?.(imageCoordinates);
+        return;
+      }
+
+      const canvas = document.createElement("canvas");
+      canvas.width = 2;
+      canvas.height = 2;
+      const context = canvas.getContext("2d", { alpha: true });
+      if (!context) {
+        return;
+      }
+
+      canvasElementRef.current = canvas;
+      canvasContextRef.current = context;
+
+      map.addSource(
+        CANVAS_SOURCE_ID,
+        {
+          type: "canvas",
+          canvas,
+          coordinates: imageCoordinates,
+          animate: false,
+        } as any
+      );
+
+      map.addLayer(
+        {
+          id: CANVAS_LAYER_ID,
+          type: "raster",
+          source: CANVAS_SOURCE_ID,
+          minzoom: overlayMinZoom,
+          paint: {
+            "raster-opacity": HIDDEN_OPACITY,
+            "raster-resampling": resamplingMode,
+            "raster-fade-duration": 0,
+          },
+        } as any,
+        "twf-labels"
+      );
+    },
+    [imageCoordinates, overlayMinZoom, resamplingMode]
+  );
+
+  const notifyTileSettled = useCallback(
+    (map: maplibregl.Map, url: string, token: number) => {
+      let done = false;
+      let timeoutId: number | null = null;
+
+      const cleanup = () => {
+        map.off("sourcedata", onSourceData);
+        if (timeoutId !== null) {
+          window.clearTimeout(timeoutId);
+          timeoutId = null;
+        }
+      };
+
+      const fire = () => {
+        if (done) return;
+        if (token !== renderTokenRef.current) {
+          cleanup();
+          return;
+        }
+        done = true;
+        cleanup();
+        onFrameSettled?.(url);
+      };
+
+      const onSourceData = (event: maplibregl.MapSourceDataEvent) => {
+        if (event.sourceId !== TILE_SOURCE_ID) {
+          return;
+        }
+        if (map.isSourceLoaded(TILE_SOURCE_ID)) {
+          window.requestAnimationFrame(fire);
+        }
+      };
+
+      if (map.isSourceLoaded(TILE_SOURCE_ID)) {
+        window.requestAnimationFrame(fire);
+        return () => {
+          done = true;
+          cleanup();
+        };
+      }
+
+      map.on("sourcedata", onSourceData);
+      timeoutId = window.setTimeout(fire, TILE_SETTLE_TIMEOUT_MS);
+
+      return () => {
+        done = true;
+        cleanup();
+      };
+    },
+    [onFrameSettled]
+  );
+
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) {
       return;
@@ -638,21 +483,12 @@ export function MapCanvas({
     if (!tileUrl) {
       return;
     }
-    ensurePmtilesProtocol();
 
-    const initialFrameImageUrl = EMPTY_IMAGE_DATA_URL;
-    imageSourceUrlsRef.current = {
-      a: initialFrameImageUrl,
-      b: initialFrameImageUrl,
-    };
-    activeBufferRef.current = "a";
-    activeModeRef.current = "tile";
-    activeTileUrlRef.current = tileUrl;
-    activeFrameImageUrlRef.current = null;
+    ensurePmtilesProtocol();
 
     const map = new maplibregl.Map({
       container: mapContainerRef.current,
-      style: styleFor(tileUrl, initialFrameImageUrl, opacity, variable, model, region),
+      style: styleFor(tileUrl, opacity, variable, model, region),
       center: view.center,
       zoom: view.zoom,
       minZoom: 3,
@@ -665,24 +501,36 @@ export function MapCanvas({
     });
 
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-left");
+
     map.on("load", () => {
+      ensureCanvasOverlay(map);
       setIsLoaded(true);
     });
 
     mapRef.current = map;
-  }, [tileUrl, opacity, variable, model, region, view.center, view.zoom]);
+  }, [tileUrl, opacity, variable, model, region, view.center, view.zoom, ensureCanvasOverlay]);
 
   useEffect(() => {
     return () => {
-      cancelCrossfade();
       const map = mapRef.current;
       if (map) {
         map.remove();
         mapRef.current = null;
       }
+
+      for (const entry of imageCacheRef.current.values()) {
+        if (entry.bitmap) {
+          entry.bitmap.close();
+        }
+      }
+      imageCacheRef.current.clear();
+      imagePendingRef.current.clear();
+      unavailableFrameImageUrlsRef.current.clear();
+      canvasElementRef.current = null;
+      canvasContextRef.current = null;
       setIsLoaded(false);
     };
-  }, [cancelCrossfade]);
+  }, []);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -693,8 +541,7 @@ export function MapCanvas({
     const lastHintStateRef = { current: false };
 
     const checkZoom = () => {
-      const zoom = map.getZoom();
-      const shouldShow = model === "gfs" && zoom >= 7;
+      const shouldShow = model === "gfs" && map.getZoom() >= 7;
       if (shouldShow !== lastHintStateRef.current) {
         lastHintStateRef.current = shouldShow;
         onZoomHint(shouldShow);
@@ -718,12 +565,26 @@ export function MapCanvas({
       return;
     }
 
-    (["a", "b"] as OverlayBuffer[]).forEach((buffer) => {
-      const nextUrl = imageSourceUrlsRef.current[buffer] || EMPTY_IMAGE_DATA_URL;
-      const source = map.getSource(imageSourceId(buffer));
-      setImageSourceUrl(source, nextUrl, imageCoordinates);
-    });
-  }, [isLoaded, imageCoordinates]);
+    ensureCanvasOverlay(map);
+
+    const source = map.getSource(CANVAS_SOURCE_ID) as MutableCanvasSource | undefined;
+    source?.setCoordinates?.(imageCoordinates);
+
+    map.setPaintProperty(TILE_LAYER_ID, "raster-resampling", resamplingMode);
+    map.setLayerZoomRange(TILE_LAYER_ID, overlayMinZoom, 24);
+
+    if (map.getLayer(CANVAS_LAYER_ID)) {
+      map.setPaintProperty(CANVAS_LAYER_ID, "raster-resampling", resamplingMode);
+      map.setLayerZoomRange(CANVAS_LAYER_ID, overlayMinZoom, 24);
+    }
+
+    for (let idx = 1; idx <= PREFETCH_TILE_BUFFER_COUNT; idx += 1) {
+      const layer = prefetchLayerId(idx);
+      if (!map.getLayer(layer)) continue;
+      map.setPaintProperty(layer, "raster-resampling", resamplingMode);
+      map.setLayerZoomRange(layer, overlayMinZoom, 24);
+    }
+  }, [isLoaded, ensureCanvasOverlay, imageCoordinates, resamplingMode, overlayMinZoom]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -731,163 +592,110 @@ export function MapCanvas({
       return;
     }
 
+    const token = ++renderTokenRef.current;
     let settledCleanup: (() => void) | undefined;
-    let readyCleanup: (() => void) | undefined;
-    let cancelled = false;
 
-    const token = ++swapTokenRef.current;
-    const previousBuffer = activeBufferRef.current;
-    const nextBuffer = otherBuffer(previousBuffer);
-    const previousMode = activeModeRef.current;
-    const normalizedFrameImageUrl = frameImageUrl?.trim() || "";
-    const canTryFrameImage =
-      preferFrameImages &&
-      normalizedFrameImageUrl.length > 0 &&
-      !unavailableFrameImageUrlsRef.current.has(normalizedFrameImageUrl);
-    const desiredMode: OverlayMode = canTryFrameImage ? "image" : "tile";
+    const showCanvasFrame = (imageUrl: string): boolean => {
+      const entry = imageCacheRef.current.get(imageUrl);
+      if (!entry || entry.status !== "ready" || !entry.bitmap) {
+        return false;
+      }
+      touchImageCache(imageUrl, entry);
 
-    const alreadyShowingDesiredFrame =
-      activeTileUrlRef.current === tileUrl &&
-      previousMode === desiredMode &&
-      (desiredMode === "tile" || activeFrameImageUrlRef.current === normalizedFrameImageUrl);
+      if (!drawImageBitmapToOverlay(entry.bitmap)) {
+        return false;
+      }
 
-    if (alreadyShowingDesiredFrame) {
-      if (desiredMode === "image") {
-        onTileReady?.(tileUrl);
-        onFrameSettled?.(tileUrl);
+      if (token !== renderTokenRef.current) {
+        return false;
+      }
+
+      setActiveOverlayMode(map, "canvas", opacity);
+      activeTileUrlRef.current = tileUrl;
+      activeFrameImageUrlRef.current = imageUrl;
+      onTileReady?.(tileUrl);
+      onFrameSettled?.(tileUrl);
+      return true;
+    };
+
+    const showFallbackTile = () => {
+      if (token !== renderTokenRef.current) {
         return;
       }
 
-      const source = tileSourceId(activeBufferRef.current);
-      const readyExisting = waitForSourceReady(
-        map,
-        source,
-        mode,
-        () => {
-          settledCleanup = notifySettled(map, source, tileUrl);
-        },
-        () => {
-          if (mode === "autoplay") {
-            onTileReady?.(tileUrl);
-            onFrameSettled?.(tileUrl);
-          }
-        }
-      );
+      const source = map.getSource(TILE_SOURCE_ID);
+      if (!setOverlaySourceUrl(source, tileUrl)) {
+        return;
+      }
 
+      setActiveOverlayMode(map, "tile", opacity);
+      activeTileUrlRef.current = tileUrl;
+      activeFrameImageUrlRef.current = null;
+      onTileReady?.(tileUrl);
+      settledCleanup = notifyTileSettled(map, tileUrl, token);
+    };
+
+    const normalizedImageUrl = frameImageUrl?.trim() || "";
+    const canUseImage =
+      preferFrameImages &&
+      normalizedImageUrl.length > 0 &&
+      !unavailableFrameImageUrlsRef.current.has(normalizedImageUrl);
+
+    if (
+      canUseImage &&
+      activeOverlayModeRef.current === "canvas" &&
+      activeTileUrlRef.current === tileUrl &&
+      activeFrameImageUrlRef.current === normalizedImageUrl
+    ) {
+      setActiveOverlayMode(map, "canvas", opacity);
+      onTileReady?.(tileUrl);
+      onFrameSettled?.(tileUrl);
       return () => {
-        readyExisting?.();
         settledCleanup?.();
       };
     }
 
-    const finalizeSwap = (nextMode: OverlayMode, skipSettleNotify = false) => {
-      if (cancelled || token !== swapTokenRef.current) {
-        return;
-      }
+    if (canUseImage && showCanvasFrame(normalizedImageUrl)) {
+      return () => {
+        settledCleanup?.();
+      };
+    }
 
-      const fromLayer = overlayLayerId(previousMode, previousBuffer);
-      const toLayer = overlayLayerId(nextMode, nextBuffer);
-
-      activeBufferRef.current = nextBuffer;
-      activeModeRef.current = nextMode;
-      activeTileUrlRef.current = tileUrl;
-      activeFrameImageUrlRef.current = nextMode === "image" ? normalizedFrameImageUrl : null;
-
-      const durationMs = crossfade ? CONTINUOUS_CROSSFADE_MS : MICRO_CROSSFADE_MS;
-      runLayerCrossfade(map, fromLayer, toLayer, opacity, durationMs, token, () => {
-        if (cancelled || token !== swapTokenRef.current) {
-          return;
-        }
-
-        if (nextMode === "image") {
-          onTileReady?.(tileUrl);
-          onFrameSettled?.(tileUrl);
-          return;
-        }
-
-        if (!skipSettleNotify) {
-          settledCleanup = notifySettled(map, tileSourceId(nextBuffer), tileUrl);
-        }
-      });
-    };
-
-    const swapToTile = () => {
-      const nextSource = map.getSource(tileSourceId(nextBuffer));
-      if (!setOverlaySourceUrl(nextSource, tileUrl)) {
-        return;
-      }
-
-      readyCleanup = waitForSourceReady(
-        map,
-        tileSourceId(nextBuffer),
-        mode,
-        () => {
-          finalizeSwap("tile");
-        },
-        () => {
-          if (token !== swapTokenRef.current || cancelled) {
-            return;
-          }
-          if (mode === "autoplay") {
-            onTileReady?.(tileUrl);
-            onFrameSettled?.(tileUrl);
-            finalizeSwap("tile", true);
-            return;
-          }
-          finalizeSwap("tile", true);
-        }
-      );
-    };
-
-    if (canTryFrameImage && normalizedFrameImageUrl) {
-      preloadFrameImage(normalizedFrameImageUrl)
+    if (canUseImage) {
+      preloadFrameImage(normalizedImageUrl)
         .then((ready) => {
-          if (token !== swapTokenRef.current || cancelled) {
+          if (token !== renderTokenRef.current) {
             return;
           }
-          if (!ready) {
-            swapToTile();
+          if (ready && showCanvasFrame(normalizedImageUrl)) {
             return;
           }
-
-          const nextImageSource = map.getSource(imageSourceId(nextBuffer));
-          const updated = setImageSourceUrl(nextImageSource, normalizedFrameImageUrl, imageCoordinates);
-          if (!updated) {
-            swapToTile();
-            return;
-          }
-
-          imageSourceUrlsRef.current[nextBuffer] = normalizedFrameImageUrl;
-          window.requestAnimationFrame(() => finalizeSwap("image", true));
+          showFallbackTile();
         })
         .catch(() => {
-          if (token !== swapTokenRef.current || cancelled) {
+          if (token !== renderTokenRef.current) {
             return;
           }
-          swapToTile();
+          showFallbackTile();
         });
     } else {
-      swapToTile();
+      showFallbackTile();
     }
 
     return () => {
-      cancelled = true;
-      readyCleanup?.();
       settledCleanup?.();
     };
   }, [
     tileUrl,
     frameImageUrl,
     preferFrameImages,
-    imageCoordinates,
-    isLoaded,
     mode,
     opacity,
-    crossfade,
-    runLayerCrossfade,
-    notifySettled,
-    waitForSourceReady,
+    drawImageBitmapToOverlay,
+    touchImageCache,
     preloadFrameImage,
+    setActiveOverlayMode,
+    notifyTileSettled,
     onTileReady,
     onFrameSettled,
   ]);
@@ -898,110 +706,67 @@ export function MapCanvas({
       return;
     }
 
-    const token = ++prefetchTokenRef.current;
     const urls = Array.from({ length: PREFETCH_TILE_BUFFER_COUNT }, (_, idx) => prefetchTileUrls[idx] ?? "");
-    const cleanups: Array<() => void> = [];
-
     urls.forEach((url, idx) => {
-      const source = map.getSource(prefetchSourceId(idx + 1));
-      if (!source) {
+      if (!url || prefetchTileUrlsRef.current[idx] === url) {
         return;
       }
-
-      if (!url) {
-        prefetchTileUrlsRef.current[idx] = "";
-        return;
-      }
-
-      if (prefetchTileUrlsRef.current[idx] === url) {
-        return;
-      }
-
       prefetchTileUrlsRef.current[idx] = url;
-      if (!setOverlaySourceUrl(source, url)) {
-        return;
-      }
-
-      const cleanup = waitForSourceReady(
-        map,
-        prefetchSourceId(idx + 1),
-        "scrub",
-        () => {
-          if (token !== prefetchTokenRef.current) {
-            return;
-          }
-          if (prefetchTileUrlsRef.current[idx] !== url) {
-            return;
-          }
-          onTileReady?.(url);
-        },
-        () => {
-          if (token !== prefetchTokenRef.current) {
-            return;
-          }
-          if (prefetchTileUrlsRef.current[idx] !== url) {
-            return;
-          }
-          onTileReady?.(url);
-        }
-      );
-
-      if (cleanup) {
-        cleanups.push(cleanup);
-      }
+      const source = map.getSource(prefetchSourceId(idx + 1));
+      setOverlaySourceUrl(source, url);
     });
-
-    return () => {
-      cleanups.forEach((cleanup) => cleanup());
-    };
-  }, [prefetchTileUrls, isLoaded, waitForSourceReady, onTileReady]);
+  }, [prefetchTileUrls, isLoaded]);
 
   useEffect(() => {
     if (prefetchFrameImages.length === 0) {
       return;
     }
 
+    const token = ++prefetchTokenRef.current;
     const queue = prefetchFrameImages
-      .slice(0, IMAGE_PREFETCH_LOOKAHEAD)
-      .filter((entry) => entry.frameImageUrl && entry.frameImageUrl.trim())
-      .filter((entry) => !unavailableFrameImageUrlsRef.current.has(entry.frameImageUrl!.trim()));
+      .filter((item) => item.frameImageUrl && item.frameImageUrl.trim())
+      .filter((item) => !unavailableFrameImageUrlsRef.current.has(item.frameImageUrl!.trim()));
 
     if (queue.length === 0) {
       return;
     }
 
-    let cancelled = false;
+    let cursor = 0;
 
-    const run = async () => {
-      for (const entry of queue) {
-        if (cancelled) {
+    const runWorker = async () => {
+      while (token === prefetchTokenRef.current) {
+        const index = cursor;
+        cursor += 1;
+        if (index >= queue.length) {
           break;
         }
 
-        const url = entry.frameImageUrl?.trim();
-        if (!url) {
+        const item = queue[index];
+        const imageUrl = item.frameImageUrl?.trim();
+        if (!imageUrl) {
           continue;
         }
 
-        const ready = await preloadFrameImage(url);
-        if (cancelled) {
-          break;
+        const ready = await preloadFrameImage(imageUrl);
+        if (token !== prefetchTokenRef.current) {
+          return;
         }
 
         if (ready) {
-          onTileReady?.(entry.tileUrl);
+          onTileReady?.(item.tileUrl);
         }
-
-        await new Promise<void>((resolve) => {
-          window.setTimeout(() => resolve(), IMAGE_PREFETCH_THROTTLE_MS);
-        });
       }
     };
 
-    run();
+    const workerCount = Math.min(IMAGE_PREFETCH_CONCURRENCY, queue.length);
+    for (let i = 0; i < workerCount; i += 1) {
+      void runWorker();
+    }
 
     return () => {
-      cancelled = true;
+      if (prefetchTokenRef.current === token) {
+        prefetchTokenRef.current += 1;
+      }
     };
   }, [prefetchFrameImages, preloadFrameImage, onTileReady]);
 
@@ -1011,19 +776,17 @@ export function MapCanvas({
       return;
     }
 
-    cancelCrossfade();
+    setLayerOpacity(map, TILE_LAYER_ID, HIDDEN_OPACITY);
+    if (map.getLayer(CANVAS_LAYER_ID)) {
+      setLayerOpacity(map, CANVAS_LAYER_ID, HIDDEN_OPACITY);
+    }
 
-    setLayerOpacity(map, tileLayerId("a"), HIDDEN_OPACITY);
-    setLayerOpacity(map, tileLayerId("b"), HIDDEN_OPACITY);
-    setLayerOpacity(map, imageLayerId("a"), HIDDEN_OPACITY);
-    setLayerOpacity(map, imageLayerId("b"), HIDDEN_OPACITY);
     for (let idx = 1; idx <= PREFETCH_TILE_BUFFER_COUNT; idx += 1) {
       setLayerOpacity(map, prefetchLayerId(idx), HIDDEN_OPACITY);
     }
 
-    const activeLayer = overlayLayerId(activeModeRef.current, activeBufferRef.current);
-    setLayerOpacity(map, activeLayer, opacity);
-  }, [opacity, isLoaded, cancelCrossfade, setLayerOpacity]);
+    setActiveOverlayMode(map, activeOverlayModeRef.current, opacity);
+  }, [opacity, isLoaded, setLayerOpacity, setActiveOverlayMode]);
 
   useEffect(() => {
     const map = mapRef.current;

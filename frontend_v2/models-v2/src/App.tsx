@@ -21,6 +21,8 @@ import { buildOfflinePmtilesUrl } from "@/lib/tiles";
 
 const MANIFEST_REFRESH_ACTIVE_MS = 5_000;
 const MANIFEST_REFRESH_IDLE_MS = 30_000;
+const SCRUB_RENDER_THROTTLE_MS = 80;
+const PREFETCH_LOOKAHEAD = 20;
 
 const TMP2M_COLORS = [
   "#e8d0d8", "#d8b0c8", "#c080b0", "#9050a0", "#703090",
@@ -431,8 +433,10 @@ export default function App() {
   const [availableFramesCount, setAvailableFramesCount] = useState(0);
   const [resolvedRunId, setResolvedRunId] = useState<string | null>(null);
   const [legacyRequestViolations, setLegacyRequestViolations] = useState<string[]>([]);
+  const [readyVersion, setReadyVersion] = useState(0);
   const readyTileUrlsRef = useRef<Set<string>>(new Set());
-  const settledTileUrlRef = useRef<string | null>(null);
+  const scrubRenderTimerRef = useRef<number | null>(null);
+  const lastScrubRenderAtRef = useRef(0);
 
   const frameHours = useMemo(() => {
     const hours = frameRows.map((row) => Number(row.fh)).filter(Number.isFinite);
@@ -471,28 +475,38 @@ export default function App() {
 
   const prefetchTileUrls = useMemo(() => {
     if (frameHours.length < 2) return [];
-    const currentIndex = frameHours.indexOf(forecastHour);
-    const start = currentIndex >= 0 ? currentIndex : 0;
-    const prefetchCount = 2;
-    const nextHours = Array.from({ length: prefetchCount }, (_, idx) => {
-      const i = start + idx + 1;
-      return i >= frameHours.length ? Number.NaN : frameHours[i];
-    });
-    const dedup = Array.from(new Set(nextHours.filter((fh) => Number.isFinite(fh) && fh !== forecastHour)));
-    return dedup.map((fh) => frameByHour.get(fh)?.tileUrl).filter((url): url is string => Boolean(url));
-  }, [frameHours, forecastHour, frameByHour]);
+    const focusHour = nearestFrame(frameHours, isPlaying ? forecastHour : targetForecastHour);
+    const focusIndex = frameHours.indexOf(focusHour);
+    if (focusIndex < 0) return [];
+
+    const orderedHours: number[] = [];
+    for (let offset = 1; offset <= 2; offset += 1) {
+      const ahead = focusIndex + offset;
+      const behind = focusIndex - offset;
+      if (ahead < frameHours.length) orderedHours.push(frameHours[ahead]);
+      if (behind >= 0) orderedHours.push(frameHours[behind]);
+    }
+
+    return orderedHours
+      .map((fh) => frameByHour.get(fh)?.tileUrl)
+      .filter((url): url is string => Boolean(url));
+  }, [frameHours, frameByHour, forecastHour, targetForecastHour, isPlaying]);
 
   const prefetchFrameImages = useMemo<PrefetchFrameImage[]>(() => {
     if (frameHours.length < 2) return [];
-    const currentIndex = frameHours.indexOf(forecastHour);
-    const start = currentIndex >= 0 ? currentIndex : 0;
-    const prefetchCount = 16;
-    const nextHours = Array.from({ length: prefetchCount }, (_, idx) => {
-      const i = start + idx + 1;
-      return i >= frameHours.length ? Number.NaN : frameHours[i];
-    });
-    const dedup = Array.from(new Set(nextHours.filter((fh) => Number.isFinite(fh) && fh !== forecastHour)));
-    return dedup.reduce<PrefetchFrameImage[]>((items, fh) => {
+    const focusHour = nearestFrame(frameHours, isPlaying ? forecastHour : targetForecastHour);
+    const focusIndex = frameHours.indexOf(focusHour);
+    if (focusIndex < 0) return [];
+
+    const prioritizedHours: number[] = [focusHour];
+    for (let offset = 1; offset <= PREFETCH_LOOKAHEAD; offset += 1) {
+      const ahead = focusIndex + offset;
+      const behind = focusIndex - offset;
+      if (ahead < frameHours.length) prioritizedHours.push(frameHours[ahead]);
+      if (behind >= 0) prioritizedHours.push(frameHours[behind]);
+    }
+
+    return prioritizedHours.reduce<PrefetchFrameImage[]>((items, fh) => {
       const frame = frameByHour.get(fh);
       if (!frame?.tileUrl) return items;
       items.push({
@@ -501,7 +515,7 @@ export default function App() {
       });
       return items;
     }, []);
-  }, [frameHours, forecastHour, frameByHour]);
+  }, [frameHours, frameByHour, forecastHour, targetForecastHour, isPlaying]);
 
   const effectiveRunId = currentFrame?.run ?? (run !== "latest" ? run : latestRunId);
   const runDateTimeISO = runIdToIso(effectiveRunId);
@@ -525,16 +539,40 @@ export default function App() {
     console.warn("[phase2] Legacy API/tile request detected", { source, url });
   }, []);
 
-  const handleTileReady = useCallback((url: string) => {
+  const markFrameUrlReady = useCallback((url: string) => {
     if (!url) return;
+    if (readyTileUrlsRef.current.has(url)) return;
     readyTileUrlsRef.current.add(url);
+    setReadyVersion((prev) => prev + 1);
   }, []);
 
+  const handleTileReady = useCallback((url: string) => {
+    markFrameUrlReady(url);
+  }, [markFrameUrlReady]);
+
   const handleFrameSettled = useCallback((url: string) => {
-    if (!url) return;
-    settledTileUrlRef.current = url;
-    readyTileUrlsRef.current.add(url);
-  }, []);
+    markFrameUrlReady(url);
+  }, [markFrameUrlReady]);
+
+  const nearestReadyHour = useCallback(
+    (targetHour: number): number => {
+      let winner: number | null = null;
+      let winnerDistance = Number.POSITIVE_INFINITY;
+      for (const hour of frameHours) {
+        const url = frameByHour.get(hour)?.tileUrl;
+        if (!url || !readyTileUrlsRef.current.has(url)) {
+          continue;
+        }
+        const distance = Math.abs(hour - targetHour);
+        if (distance < winnerDistance) {
+          winner = hour;
+          winnerDistance = distance;
+        }
+      }
+      return winner ?? targetHour;
+    },
+    [frameHours, frameByHour]
+  );
 
   useEffect(() => {
     if (!import.meta.env.DEV) {
@@ -635,7 +673,7 @@ export default function App() {
     setExpectedFrames(0);
     setAvailableFramesCount(0);
     readyTileUrlsRef.current = new Set();
-    settledTileUrlRef.current = null;
+    setReadyVersion((prev) => prev + 1);
   }, [model, run, variable]);
 
   useEffect(() => {
@@ -646,9 +684,18 @@ export default function App() {
         nextReady.add(url);
       }
     }
+    let changed = nextReady.size !== readyTileUrlsRef.current.size;
+    if (!changed) {
+      for (const url of nextReady) {
+        if (!readyTileUrlsRef.current.has(url)) {
+          changed = true;
+          break;
+        }
+      }
+    }
     readyTileUrlsRef.current = nextReady;
-    if (settledTileUrlRef.current && !allowed.has(settledTileUrlRef.current)) {
-      settledTileUrlRef.current = null;
+    if (changed) {
+      setReadyVersion((prev) => prev + 1);
     }
   }, [frameRows]);
 
@@ -710,31 +757,43 @@ export default function App() {
   }, [model, run, variable, resolvedRunForRequests, refreshMs]);
 
   useEffect(() => {
-    if (!isPlaying || frameHours.length === 0) return;
+    if (!isPlaying || frameHours.length === 0) {
+      return;
+    }
 
-    const interval = window.setInterval(() => {
-      const currentIndex = frameHours.indexOf(forecastHour);
-      if (currentIndex < 0) return;
-      const currentUrl = frameByHour.get(frameHours[currentIndex])?.tileUrl;
-      if (currentUrl && settledTileUrlRef.current !== currentUrl) {
-        return;
+    const startHour = nearestFrame(frameHours, forecastHour);
+    const startIndex = Math.max(0, frameHours.indexOf(startHour));
+    const frameDurationMs = Math.max(1, autoplayTickMs);
+    const startedAt = performance.now();
+    let rafId: number | null = null;
+    let lastIndex = -1;
+
+    const tick = (now: number) => {
+      const elapsed = now - startedAt;
+      const advancedFrames = Math.floor(elapsed / frameDurationMs);
+      const nextIndex = Math.min(frameHours.length - 1, startIndex + advancedFrames);
+      if (nextIndex !== lastIndex) {
+        lastIndex = nextIndex;
+        const nextHour = frameHours[nextIndex];
+        setForecastHour((prev) => (prev === nextHour ? prev : nextHour));
+        setTargetForecastHour((prev) => (prev === nextHour ? prev : nextHour));
       }
 
-      const nextIndex = currentIndex + 1;
-      if (nextIndex >= frameHours.length) {
+      if (nextIndex >= frameHours.length - 1) {
         setIsPlaying(false);
         return;
       }
-      const nextHour = frameHours[nextIndex];
-      const nextUrl = frameByHour.get(nextHour)?.tileUrl;
-      if (!nextUrl || !readyTileUrlsRef.current.has(nextUrl)) {
-        return;
-      }
-      setTargetForecastHour(nextHour);
-    }, autoplayTickMs);
 
-    return () => window.clearInterval(interval);
-  }, [isPlaying, frameHours, forecastHour, frameByHour, autoplayTickMs]);
+      rafId = window.requestAnimationFrame(tick);
+    };
+
+    rafId = window.requestAnimationFrame(tick);
+    return () => {
+      if (rafId !== null) {
+        window.cancelAnimationFrame(rafId);
+      }
+    };
+  }, [isPlaying, frameHours, autoplayTickMs]);
 
   useEffect(() => {
     if (frameHours.length === 0 && isPlaying) {
@@ -743,21 +802,38 @@ export default function App() {
   }, [frameHours, isPlaying]);
 
   useEffect(() => {
-    if (frameHours.length === 0) {
+    if (isPlaying || frameHours.length === 0) {
       return;
     }
-    const nextTarget = nearestFrame(frameHours, targetForecastHour);
-    if (nextTarget === forecastHour) {
+
+    const target = nearestFrame(frameHours, targetForecastHour);
+    const desiredHour = nearestReadyHour(target);
+    const now = performance.now();
+    const elapsed = now - lastScrubRenderAtRef.current;
+
+    const apply = () => {
+      lastScrubRenderAtRef.current = performance.now();
+      setForecastHour((prev) => (prev === desiredHour ? prev : desiredHour));
+    };
+
+    if (elapsed >= SCRUB_RENDER_THROTTLE_MS) {
+      apply();
       return;
     }
-    if (isPlaying) {
-      const nextTargetUrl = frameByHour.get(nextTarget)?.tileUrl;
-      if (nextTargetUrl && !readyTileUrlsRef.current.has(nextTargetUrl)) {
-        return;
+
+    const delay = Math.max(0, SCRUB_RENDER_THROTTLE_MS - elapsed);
+    scrubRenderTimerRef.current = window.setTimeout(() => {
+      scrubRenderTimerRef.current = null;
+      apply();
+    }, delay);
+
+    return () => {
+      if (scrubRenderTimerRef.current !== null) {
+        window.clearTimeout(scrubRenderTimerRef.current);
+        scrubRenderTimerRef.current = null;
       }
-    }
-    setForecastHour(nextTarget);
-  }, [targetForecastHour, forecastHour, frameHours, frameByHour, isPlaying]);
+    };
+  }, [isPlaying, frameHours, targetForecastHour, readyVersion, nearestReadyHour]);
 
   return (
     <div className="flex h-full flex-col">
