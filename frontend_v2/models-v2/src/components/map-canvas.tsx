@@ -392,7 +392,7 @@ export function MapCanvas({
       
       // Start with old layer at full opacity, new layer hidden
       setLayerOpacity(map, layerId(fromBuffer), targetOpacity);
-      setLayerOpacity(map, layerId(toBuffer), 0);
+      setLayerOpacity(map, layerId(toBuffer), HIDDEN_OPACITY);
       window.requestAnimationFrame(tick);
     },
     [setLayerOpacity]
@@ -515,7 +515,7 @@ export function MapCanvas({
       mapRef.current = null;
       setIsLoaded(false);
     };
-  }, [cancelCrossfade, tileUrl]);
+  }, [cancelCrossfade]);
 
   useEffect(() => {
     const map = mapRef.current;
