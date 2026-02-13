@@ -113,9 +113,12 @@ function styleFor(
 ): StyleSpecification {
   const resamplingMode = getResamplingMode(variable);
   const overlayBounds = (region && REGION_BOUNDS[region]) || REGION_BOUNDS.pnw;
+  // NOTE: MapLibre expressions extrapolate outside stop ranges. The previous 6->7 fade
+  // caused opacity > 1.0 when zoom < 6. Clamp by holding constant until z6.
   const overlayOpacity: any = model === "gfs"
-    ? ["interpolate", ["linear"], ["zoom"], 6, opacity, 7, 0]
+    ? ["interpolate", ["linear"], ["zoom"], 3, opacity, 6, opacity, 7, 0]
     : opacity;
+  const overlayMinZoom = model === "gfs" ? 6 : 3;
   return {
     version: 8,
     sources: {
@@ -147,6 +150,7 @@ function styleFor(
         id: layerId("a"),
         type: "raster",
         source: sourceId("a"),
+        minzoom: overlayMinZoom,
         paint: {
           "raster-opacity": overlayOpacity,
           "raster-resampling": resamplingMode,
@@ -157,6 +161,7 @@ function styleFor(
         id: layerId("b"),
         type: "raster",
         source: sourceId("b"),
+        minzoom: overlayMinZoom,
         paint: {
           "raster-opacity": overlayOpacity,
           "raster-resampling": resamplingMode,
@@ -167,6 +172,7 @@ function styleFor(
         id: prefetchLayerId(1),
         type: "raster",
         source: prefetchSourceId(1),
+        minzoom: overlayMinZoom,
         paint: {
           "raster-opacity": overlayOpacity,
           "raster-resampling": resamplingMode,
@@ -177,6 +183,7 @@ function styleFor(
         id: prefetchLayerId(2),
         type: "raster",
         source: prefetchSourceId(2),
+        minzoom: overlayMinZoom,
         paint: {
           "raster-opacity": overlayOpacity,
           "raster-resampling": resamplingMode,
@@ -187,6 +194,7 @@ function styleFor(
         id: prefetchLayerId(3),
         type: "raster",
         source: prefetchSourceId(3),
+        minzoom: overlayMinZoom,
         paint: {
           "raster-opacity": overlayOpacity,
           "raster-resampling": resamplingMode,
@@ -197,6 +205,7 @@ function styleFor(
         id: prefetchLayerId(4),
         type: "raster",
         source: prefetchSourceId(4),
+        minzoom: overlayMinZoom,
         paint: {
           "raster-opacity": overlayOpacity,
           "raster-resampling": resamplingMode,
@@ -473,6 +482,7 @@ export function MapCanvas({
     []
   );
 
+  // Effect A: Create the map once when tileUrl is available, never removes map in cleanup
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) {
       return;
@@ -508,11 +518,18 @@ export function MapCanvas({
     });
 
     mapRef.current = map;
+    // No cleanup: map persists until unmount
+  }, [tileUrl, opacity, variable, model, region, view.center, view.zoom]);
 
+  // Effect B: Cleanup on unmount only
+  useEffect(() => {
     return () => {
       cancelCrossfade();
-      map.remove();
-      mapRef.current = null;
+      const map = mapRef.current;
+      if (map) {
+        map.remove();
+        mapRef.current = null;
+      }
       setIsLoaded(false);
     };
   }, [cancelCrossfade]);
