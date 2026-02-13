@@ -501,6 +501,7 @@ export function MapCanvas({
     });
 
     mapRef.current = map;
+    (window as any).__twfMap = map;
   }, []);
 
   useEffect(() => {
