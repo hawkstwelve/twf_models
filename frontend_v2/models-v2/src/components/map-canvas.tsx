@@ -33,13 +33,15 @@ const REGION_BOUNDS: Record<string, [number, number, number, number]> = {
 };
 
 const TILE_SETTLE_TIMEOUT_MS = 1200;
+const IMAGE_SOURCE_SETTLE_TIMEOUT_MS = 1500;
 const PREFETCH_TILE_BUFFER_COUNT = 4;
 const IMAGE_CACHE_MAX_ENTRIES = 40;
 const IMAGE_CROSSFADE_DURATION_MS = 60;
 const IMAGE_PREFETCH_THROTTLE_MS = 24;
-const HIDDEN_OPACITY = 0.001;
+const MAX_IMAGE_TEXTURE_SIZE = 4096;
+const HIDDEN_OPACITY = 0;
 const TRANSPARENT_IMAGE_URL =
-  "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVQImWP8z/D/PwMDAwMjIAMAFAIB7l9d0QAAAABJRU5ErkJggg==";
 
 const TILE_SOURCE_ID = "twf-overlay-tile";
 const TILE_LAYER_ID = "twf-overlay-tile";
@@ -61,6 +63,11 @@ type MutableRasterSource = maplibregl.RasterTileSource & {
 type MutableImageSource = maplibregl.ImageSource & {
   updateImage?: (options: { url: string; coordinates: ImageCoordinates }) => maplibregl.ImageSource;
   setCoordinates?: (coordinates: ImageCoordinates) => void;
+};
+
+type PreparedImage = {
+  mapUrl: string;
+  revokeUrl?: string;
 };
 
 function prefetchSourceId(index: number): string {
@@ -135,6 +142,50 @@ function setImageSourceUrl(
     return true;
   }
   return false;
+}
+
+function isPowerOfTwo(value: number): boolean {
+  if (!Number.isFinite(value) || value < 1) {
+    return false;
+  }
+  return (value & (value - 1)) === 0;
+}
+
+function nextPowerOfTwo(value: number): number {
+  if (!Number.isFinite(value) || value <= 1) {
+    return 1;
+  }
+  return 2 ** Math.ceil(Math.log2(value));
+}
+
+async function createPotImageBlobUrl(image: HTMLImageElement): Promise<string | null> {
+  const width = Math.max(1, image.naturalWidth || image.width || 1);
+  const height = Math.max(1, image.naturalHeight || image.height || 1);
+  if (isPowerOfTwo(width) && isPowerOfTwo(height)) {
+    return null;
+  }
+
+  const potWidth = Math.max(1, Math.min(MAX_IMAGE_TEXTURE_SIZE, nextPowerOfTwo(width)));
+  const potHeight = Math.max(1, Math.min(MAX_IMAGE_TEXTURE_SIZE, nextPowerOfTwo(height)));
+
+  const canvas = document.createElement("canvas");
+  canvas.width = potWidth;
+  canvas.height = potHeight;
+  const context = canvas.getContext("2d", { alpha: true });
+  if (!context) {
+    return null;
+  }
+
+  context.clearRect(0, 0, potWidth, potHeight);
+  context.drawImage(image, 0, 0, potWidth, potHeight);
+
+  const blob = await new Promise<Blob | null>((resolve) => {
+    canvas.toBlob((nextBlob) => resolve(nextBlob), "image/webp", 0.95);
+  });
+  if (!blob) {
+    return null;
+  }
+  return URL.createObjectURL(blob);
 }
 
 function styleFor(
@@ -292,9 +343,9 @@ export function MapCanvas({
   const prefetchTokenRef = useRef(0);
 
   const prefetchTileUrlsRef = useRef<string[]>(Array.from({ length: PREFETCH_TILE_BUFFER_COUNT }, () => ""));
-  const loadedImageUrlsRef = useRef<Map<string, true>>(new Map());
+  const loadedImageUrlsRef = useRef<Map<string, PreparedImage>>(new Map());
   const failedImageUrlsRef = useRef<Set<string>>(new Set());
-  const inflightImageLoadsRef = useRef<Map<string, Promise<boolean>>>(new Map());
+  const inflightImageLoadsRef = useRef<Map<string, Promise<PreparedImage | null>>>(new Map());
 
   useEffect(() => {
     onRequestUrlRef.current = onRequestUrl;
@@ -340,35 +391,45 @@ export function MapCanvas({
     [setLayerOpacity, setImageLayersForBuffer]
   );
 
-  const touchLoadedImage = useCallback((url: string) => {
+  const touchLoadedImage = useCallback((url: string, entry?: PreparedImage): PreparedImage | null => {
     const cache = loadedImageUrlsRef.current;
+    const candidate = entry ?? cache.get(url);
+    if (!candidate) {
+      return null;
+    }
     cache.delete(url);
-    cache.set(url, true);
+    cache.set(url, candidate);
 
     while (cache.size > IMAGE_CACHE_MAX_ENTRIES) {
       const oldest = cache.keys().next().value as string | undefined;
       if (!oldest) {
         break;
       }
+      const evicted = cache.get(oldest);
+      if (evicted?.revokeUrl) {
+        URL.revokeObjectURL(evicted.revokeUrl);
+      }
       cache.delete(oldest);
     }
+    return candidate;
   }, []);
 
   const preloadImageUrl = useCallback(
-    async (url: string): Promise<boolean> => {
+    async (url: string): Promise<PreparedImage | null> => {
       const normalizedUrl = url.trim();
       if (!normalizedUrl) {
-        return false;
+        return null;
       }
 
-      if (loadedImageUrlsRef.current.has(normalizedUrl)) {
-        touchLoadedImage(normalizedUrl);
+      const cached = loadedImageUrlsRef.current.get(normalizedUrl);
+      if (cached) {
+        touchLoadedImage(normalizedUrl, cached);
         onFrameImageReady?.(normalizedUrl);
-        return true;
+        return cached;
       }
 
       if (failedImageUrlsRef.current.has(normalizedUrl)) {
-        return false;
+        return null;
       }
 
       const inflight = inflightImageLoadsRef.current.get(normalizedUrl);
@@ -376,7 +437,7 @@ export function MapCanvas({
         return inflight;
       }
 
-      const promise = new Promise<boolean>((resolve) => {
+      const promise = new Promise<PreparedImage | null>((resolve) => {
         const image = new Image();
         image.crossOrigin = "anonymous";
         image.decoding = "async";
@@ -388,18 +449,38 @@ export function MapCanvas({
         };
 
         image.onload = () => {
-          cleanup();
-          failedImageUrlsRef.current.delete(normalizedUrl);
-          touchLoadedImage(normalizedUrl);
-          onFrameImageReady?.(normalizedUrl);
-          resolve(true);
+          void (async () => {
+            const width = Math.max(1, image.naturalWidth || image.width || 1);
+            const height = Math.max(1, image.naturalHeight || image.height || 1);
+            const needsPot = !isPowerOfTwo(width) || !isPowerOfTwo(height);
+            const potBlobUrl = await createPotImageBlobUrl(image);
+            cleanup();
+            if (needsPot && !potBlobUrl) {
+              failedImageUrlsRef.current.add(normalizedUrl);
+              onFrameImageError?.(normalizedUrl);
+              resolve(null);
+              return;
+            }
+            failedImageUrlsRef.current.delete(normalizedUrl);
+            const prepared: PreparedImage = {
+              mapUrl: potBlobUrl || normalizedUrl,
+              revokeUrl: potBlobUrl || undefined,
+            };
+            const previous = loadedImageUrlsRef.current.get(normalizedUrl);
+            if (previous?.revokeUrl && previous.revokeUrl !== prepared.revokeUrl) {
+              URL.revokeObjectURL(previous.revokeUrl);
+            }
+            touchLoadedImage(normalizedUrl, prepared);
+            onFrameImageReady?.(normalizedUrl);
+            resolve(prepared);
+          })();
         };
 
         image.onerror = () => {
           cleanup();
           failedImageUrlsRef.current.add(normalizedUrl);
           onFrameImageError?.(normalizedUrl);
-          resolve(false);
+          resolve(null);
         };
 
         image.src = normalizedUrl;
@@ -461,6 +542,55 @@ export function MapCanvas({
       };
     },
     [onFrameSettled]
+  );
+
+  const waitForImageSourceSettled = useCallback(
+    (map: maplibregl.Map, sourceId: string, token: number): Promise<boolean> => {
+      return new Promise((resolve) => {
+        let done = false;
+        let timeoutId: number | null = null;
+
+        const cleanup = () => {
+          map.off("sourcedata", onSourceData);
+          if (timeoutId !== null) {
+            window.clearTimeout(timeoutId);
+            timeoutId = null;
+          }
+        };
+
+        const finish = (ok: boolean) => {
+          if (done) return;
+          done = true;
+          cleanup();
+          resolve(ok && token === renderTokenRef.current);
+        };
+
+        const onSourceData = (event: maplibregl.MapSourceDataEvent) => {
+          if (event.sourceId !== sourceId) {
+            return;
+          }
+          if (map.isSourceLoaded(sourceId)) {
+            window.requestAnimationFrame(() => finish(true));
+          }
+        };
+
+        if (token !== renderTokenRef.current) {
+          finish(false);
+          return;
+        }
+
+        if (map.isSourceLoaded(sourceId)) {
+          window.requestAnimationFrame(() => finish(true));
+          return;
+        }
+
+        map.on("sourcedata", onSourceData);
+        timeoutId = window.setTimeout(() => {
+          finish(map.isSourceLoaded(sourceId));
+        }, IMAGE_SOURCE_SETTLE_TIMEOUT_MS);
+      });
+    },
+    []
   );
 
   const runImageCrossfade = useCallback(
@@ -558,6 +688,11 @@ export function MapCanvas({
       }
 
       setIsLoaded(false);
+      for (const entry of loadedImageUrlsRef.current.values()) {
+        if (entry.revokeUrl) {
+          URL.revokeObjectURL(entry.revokeUrl);
+        }
+      }
       loadedImageUrlsRef.current.clear();
       failedImageUrlsRef.current.clear();
       inflightImageLoadsRef.current.clear();
@@ -658,12 +793,21 @@ export function MapCanvas({
       };
     }
 
+    if (activeOverlayModeRef.current === "image" && activeImageUrlRef.current === targetImageUrl) {
+      setActiveOverlayMode(map, "image", opacity);
+      onTileReady?.(tileUrl);
+      onFrameSettled?.(tileUrl);
+      return () => {
+        settledCleanup?.();
+      };
+    }
+
     void preloadImageUrl(targetImageUrl)
-      .then((ok) => {
+      .then(async (prepared) => {
         if (token !== renderTokenRef.current) {
           return;
         }
-        if (!ok) {
+        if (!prepared) {
           fallbackToTile();
           return;
         }
@@ -672,7 +816,17 @@ export function MapCanvas({
         const sourceId = nextBuffer === "a" ? IMG_SOURCE_A : IMG_SOURCE_B;
         const imageSource = map.getSource(sourceId);
 
-        if (!setImageSourceUrl(imageSource, targetImageUrl, imageCoordinates)) {
+        if (!setImageSourceUrl(imageSource, prepared.mapUrl, imageCoordinates)) {
+          fallbackToTile();
+          return;
+        }
+        const sourceSettled = await waitForImageSourceSettled(map, sourceId, token);
+        if (token !== renderTokenRef.current) {
+          return;
+        }
+        if (!sourceSettled) {
+          failedImageUrlsRef.current.add(targetImageUrl);
+          onFrameImageError?.(targetImageUrl);
           fallbackToTile();
           return;
         }
@@ -705,6 +859,7 @@ export function MapCanvas({
     imageCoordinates,
     isLoaded,
     notifyTileSettled,
+    onFrameImageError,
     onFrameSettled,
     onTileReady,
     opacity,
@@ -715,6 +870,7 @@ export function MapCanvas({
     setImageLayersForBuffer,
     setLayerOpacity,
     tileUrl,
+    waitForImageSourceSettled,
   ]);
 
   useEffect(() => {
