@@ -95,10 +95,21 @@ function imageCoordinatesForRegion(region?: string): ImageCoordinates {
   ];
 }
 
+function toTileJsonUrl(url: string): string {
+  const trimmed = url.trim();
+  if (!trimmed) return "";
+  // Our offline pipeline writes `{frame_id}.tiles.json` next to `{frame_id}.pmtiles`.
+  if (trimmed.endsWith(".pmtiles")) {
+    return trimmed.replace(/\.pmtiles$/i, ".tiles.json");
+  }
+  return trimmed;
+}
+
 function overlaySourceFor(url: string, bounds?: [number, number, number, number]) {
   return {
     type: "raster",
-    url,
+    // MapLibre raster `url` expects TileJSON; never point it at a binary .pmtiles file.
+    url: toTileJsonUrl(url),
     tileSize: 256,
     bounds,
   };
@@ -117,12 +128,20 @@ function setOverlaySourceUrl(source: maplibregl.Source | undefined, url: string)
   if (!rasterSource) {
     return false;
   }
+
+  const tileJsonUrl = toTileJsonUrl(url);
+  if (!tileJsonUrl) {
+    return false;
+  }
+
   if (typeof rasterSource.setUrl === "function") {
-    rasterSource.setUrl(url);
+    rasterSource.setUrl(tileJsonUrl);
     return true;
   }
   if (typeof rasterSource.setTiles === "function") {
-    rasterSource.setTiles([url]);
+    // Some MapLibre internals accept a `tiles` array; if we fall back here,
+    // still provide TileJSON rather than a binary pmtiles path.
+    rasterSource.setTiles([tileJsonUrl]);
     return true;
   }
   return false;
