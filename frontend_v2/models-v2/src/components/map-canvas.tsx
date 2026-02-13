@@ -144,6 +144,13 @@ function setImageSourceUrl(
   return false;
 }
 
+function setLayerVisibility(map: maplibregl.Map, id: string, visible: boolean): void {
+  if (!map.getLayer(id)) {
+    return;
+  }
+  map.setLayoutProperty(id, "visibility", visible ? "visible" : "none");
+}
+
 function isPowerOfTwo(value: number): boolean {
   if (!Number.isFinite(value) || value < 1) {
     return false;
@@ -261,6 +268,9 @@ function styleFor(
         type: "raster" as const,
         source: IMG_SOURCE_A,
         minzoom: overlayMinZoom,
+        layout: {
+          visibility: "none",
+        },
         paint: {
           "raster-opacity": HIDDEN_OPACITY,
           "raster-resampling": resamplingMode,
@@ -272,6 +282,9 @@ function styleFor(
         type: "raster" as const,
         source: IMG_SOURCE_B,
         minzoom: overlayMinZoom,
+        layout: {
+          visibility: "none",
+        },
         paint: {
           "raster-opacity": HIDDEN_OPACITY,
           "raster-resampling": resamplingMode,
@@ -371,8 +384,12 @@ export function MapCanvas({
 
   const setImageLayersForBuffer = useCallback(
     (map: maplibregl.Map, activeBuffer: ActiveImageBuffer, targetOpacity: number) => {
-      setLayerOpacity(map, IMG_LAYER_A, activeBuffer === "a" ? targetOpacity : HIDDEN_OPACITY);
-      setLayerOpacity(map, IMG_LAYER_B, activeBuffer === "b" ? targetOpacity : HIDDEN_OPACITY);
+      const showA = activeBuffer === "a";
+      const showB = activeBuffer === "b";
+      setLayerVisibility(map, IMG_LAYER_A, showA);
+      setLayerVisibility(map, IMG_LAYER_B, showB);
+      setLayerOpacity(map, IMG_LAYER_A, showA ? targetOpacity : HIDDEN_OPACITY);
+      setLayerOpacity(map, IMG_LAYER_B, showB ? targetOpacity : HIDDEN_OPACITY);
     },
     [setLayerOpacity]
   );
@@ -384,6 +401,8 @@ export function MapCanvas({
       if (modeValue === "image") {
         setImageLayersForBuffer(map, activeImageBufferRef.current, targetOpacity);
       } else {
+        setLayerVisibility(map, IMG_LAYER_A, false);
+        setLayerVisibility(map, IMG_LAYER_B, false);
         setLayerOpacity(map, IMG_LAYER_A, HIDDEN_OPACITY);
         setLayerOpacity(map, IMG_LAYER_B, HIDDEN_OPACITY);
       }
@@ -611,6 +630,8 @@ export function MapCanvas({
       const fromLayer = fromBuffer === "a" ? IMG_LAYER_A : IMG_LAYER_B;
       const toLayer = toBuffer === "a" ? IMG_LAYER_A : IMG_LAYER_B;
       const startedAt = performance.now();
+      setLayerVisibility(map, fromLayer, true);
+      setLayerVisibility(map, toLayer, true);
 
       const tick = (now: number) => {
         const progress = Math.min(1, (now - startedAt) / IMAGE_CROSSFADE_DURATION_MS);
@@ -624,6 +645,8 @@ export function MapCanvas({
         if (progress >= 1) {
           activeImageBufferRef.current = toBuffer;
           activeOverlayModeRef.current = "image";
+          setLayerVisibility(map, fromLayer, false);
+          setLayerVisibility(map, toLayer, true);
           setLayerOpacity(map, fromLayer, HIDDEN_OPACITY);
           setLayerOpacity(map, toLayer, targetOpacity);
           crossfadeRafRef.current = null;
@@ -835,6 +858,8 @@ export function MapCanvas({
           runImageCrossfade(map, activeImageBufferRef.current, nextBuffer, opacity);
         } else {
           activeImageBufferRef.current = nextBuffer;
+          setLayerVisibility(map, nextBuffer === "a" ? IMG_LAYER_A : IMG_LAYER_B, true);
+          setLayerVisibility(map, nextBuffer === "a" ? IMG_LAYER_B : IMG_LAYER_A, false);
           setImageLayersForBuffer(map, nextBuffer, opacity);
           setLayerOpacity(map, TILE_LAYER_ID, HIDDEN_OPACITY);
           activeOverlayModeRef.current = "image";
@@ -942,6 +967,8 @@ export function MapCanvas({
     }
 
     setLayerOpacity(map, TILE_LAYER_ID, HIDDEN_OPACITY);
+    setLayerVisibility(map, IMG_LAYER_A, false);
+    setLayerVisibility(map, IMG_LAYER_B, false);
     setLayerOpacity(map, IMG_LAYER_A, HIDDEN_OPACITY);
     setLayerOpacity(map, IMG_LAYER_B, HIDDEN_OPACITY);
 
