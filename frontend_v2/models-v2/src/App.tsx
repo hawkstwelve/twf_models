@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle } from "lucide-react";
 
 import { BottomForecastControls } from "@/components/bottom-forecast-controls";
-import { MapCanvas } from "@/components/map-canvas";
+import { MapCanvas, type PrefetchFrameImage } from "@/components/map-canvas";
 import { type LegendPayload, MapLegend } from "@/components/map-legend";
 import { WeatherToolbar } from "@/components/weather-toolbar";
 import {
@@ -15,6 +15,7 @@ import {
   fetchVars,
 } from "@/lib/api";
 import { DEFAULTS, VARIABLE_LABELS } from "@/lib/config";
+import { buildOfflineFrameImageUrl } from "@/lib/frames";
 import { buildRunOptions } from "@/lib/run-options";
 import { buildOfflinePmtilesUrl } from "@/lib/tiles";
 
@@ -192,6 +193,7 @@ type DisplayFrame = {
   fh: number;
   run: string;
   tileUrl: string;
+  frameImageUrl?: string;
   validTime?: string;
   legendMeta?: LegendMeta | null;
 };
@@ -386,6 +388,13 @@ function getOfflineFrames(
         frameId: frame.frame_id,
         frameUrl: frame.url,
       }),
+      frameImageUrl: buildOfflineFrameImageUrl({
+        model,
+        run: manifest.run,
+        varKey: variable,
+        fh: frame.fhr,
+        frameImageUrl: frame.frame_image_url ?? frame.image_url,
+      }),
       validTime: frame.valid_time,
       legendMeta: FRONTEND_LEGEND_PRESETS[variable] ?? null,
     }));
@@ -450,6 +459,10 @@ export default function App() {
     return currentFrame?.tileUrl ?? "";
   }, [currentFrame]);
 
+  const frameImageUrl = useMemo(() => {
+    return currentFrame?.frameImageUrl ?? "";
+  }, [currentFrame]);
+
   const legend = useMemo(() => {
     const normalizedMeta =
       currentFrame?.legendMeta ?? frameRows[0]?.legendMeta ?? FRONTEND_LEGEND_PRESETS[variable] ?? null;
@@ -467,6 +480,27 @@ export default function App() {
     });
     const dedup = Array.from(new Set(nextHours.filter((fh) => Number.isFinite(fh) && fh !== forecastHour)));
     return dedup.map((fh) => frameByHour.get(fh)?.tileUrl).filter((url): url is string => Boolean(url));
+  }, [frameHours, forecastHour, frameByHour]);
+
+  const prefetchFrameImages = useMemo<PrefetchFrameImage[]>(() => {
+    if (frameHours.length < 2) return [];
+    const currentIndex = frameHours.indexOf(forecastHour);
+    const start = currentIndex >= 0 ? currentIndex : 0;
+    const prefetchCount = 16;
+    const nextHours = Array.from({ length: prefetchCount }, (_, idx) => {
+      const i = start + idx + 1;
+      return i >= frameHours.length ? Number.NaN : frameHours[i];
+    });
+    const dedup = Array.from(new Set(nextHours.filter((fh) => Number.isFinite(fh) && fh !== forecastHour)));
+    return dedup.reduce<PrefetchFrameImage[]>((items, fh) => {
+      const frame = frameByHour.get(fh);
+      if (!frame?.tileUrl) return items;
+      items.push({
+        tileUrl: frame.tileUrl,
+        frameImageUrl: frame.frameImageUrl,
+      });
+      return items;
+    }, []);
   }, [frameHours, forecastHour, frameByHour]);
 
   const effectiveRunId = currentFrame?.run ?? (run !== "latest" ? run : latestRunId);
@@ -749,12 +783,15 @@ export default function App() {
       <div className="relative flex-1 overflow-hidden">
         <MapCanvas
           tileUrl={tileUrl}
+          frameImageUrl={frameImageUrl}
           region="published"
           opacity={opacity}
           mode={isPlaying ? "autoplay" : "scrub"}
           variable={variable}
           model={model}
+          preferFrameImages
           prefetchTileUrls={prefetchTileUrls}
+          prefetchFrameImages={prefetchFrameImages}
           crossfade={false}
           onTileReady={handleTileReady}
           onFrameSettled={handleFrameSettled}

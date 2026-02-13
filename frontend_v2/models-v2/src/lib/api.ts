@@ -27,6 +27,8 @@ export type OfflineManifestFrame = {
   fhr: number;
   valid_time: string;
   url: string;
+  frame_image_url?: string;
+  image_url?: string;
 };
 
 export type OfflineVariableManifest = {
