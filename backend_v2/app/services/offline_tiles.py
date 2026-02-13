@@ -149,6 +149,17 @@ def _frame_image_url(model: str, run: str, var: str, frame_id: str) -> str:
     return f"/frames/{model}/{run}/{var}/{frame_id}.webp"
 
 
+def _coerce_frame_image_url(value: Any) -> str | None:
+    if value is None:
+        return None
+    image_url = str(value).strip()
+    if not image_url:
+        return None
+    if not image_url.startswith("/frames/") or not image_url.endswith(".webp"):
+        return None
+    return image_url
+
+
 def _validate_contract_version(value: Any) -> None:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError("contract_version must be an integer")
@@ -199,10 +210,8 @@ def validate_frame_meta_contract(meta: dict[str, Any]) -> None:
     if not str(meta["url"]).startswith("/tiles/"):
         raise ValueError("url must be a /tiles/ path")
     frame_image_url = meta.get("frame_image_url")
-    if frame_image_url is not None:
-        image_url_str = str(frame_image_url)
-        if not image_url_str.startswith("/frames/") or not image_url_str.endswith(".webp"):
-            raise ValueError("frame_image_url must be a /frames/ path ending in .webp")
+    if frame_image_url is not None and _coerce_frame_image_url(frame_image_url) is None:
+        raise ValueError("frame_image_url must be a /frames/ path ending in .webp")
 
 
 def validate_manifest_contract(manifest: dict[str, Any]) -> None:
@@ -243,10 +252,8 @@ def validate_manifest_contract(manifest: dict[str, Any]) -> None:
         if not str(frame["url"]).startswith("/tiles/"):
             raise ValueError("frame url must be a /tiles/ path")
         frame_image_url = frame.get("frame_image_url")
-        if frame_image_url is not None:
-            image_url_str = str(frame_image_url)
-            if not image_url_str.startswith("/frames/") or not image_url_str.endswith(".webp"):
-                raise ValueError("frame frame_image_url must be a /frames/ path ending in .webp")
+        if frame_image_url is not None and _coerce_frame_image_url(frame_image_url) is None:
+            raise ValueError("frame frame_image_url must be a /frames/ path ending in .webp")
 
 
 def _staging_var_root(model: str, run: str, var: str) -> Path:
@@ -474,7 +481,9 @@ def _build_manifest_payload(
     frames_meta: list[dict[str, Any]],
     artifacts_root: Path | None = None,
 ) -> dict[str, Any]:
+    del artifacts_root
     frames: list[dict[str, Any]] = []
+    images_enabled = settings.OFFLINE_FRAME_IMAGES_ENABLED
     for meta in frames_meta:
         frame_id = str(meta["frame_id"])
         entry: dict[str, Any] = {
@@ -483,15 +492,11 @@ def _build_manifest_payload(
             "valid_time": str(meta["valid_time"]),
             "url": str(meta["url"]),
         }
-        image_url = str(meta.get("frame_image_url") or "").strip()
-        if artifacts_root is not None:
-            image_path = artifacts_root / "frames" / f"{frame_id}.webp"
-            if image_path.exists():
-                if not image_url:
-                    image_url = _frame_image_url(model, run, var, frame_id)
-                entry["frame_image_url"] = image_url
-        elif image_url:
-            entry["frame_image_url"] = image_url
+        meta_image_url = _coerce_frame_image_url(meta.get("frame_image_url"))
+        if images_enabled:
+            entry["frame_image_url"] = meta_image_url or _frame_image_url(model, run, var, frame_id)
+        elif meta_image_url:
+            entry["frame_image_url"] = meta_image_url
         frames.append(entry)
     payload = {
         "contract_version": CONTRACT_VERSION,
@@ -643,7 +648,30 @@ def publish_from_staging(model: str, run: str, var: str) -> dict[str, Any]:
             _copy_if_missing(src_pmtiles, dst_pmtiles)
             _copy_if_missing(src_pmtiles.with_suffix(".tiles.json"), dst_pmtiles.with_suffix(".tiles.json"))
             src_webp = staging_var_root / "frames" / f"{frame_id}.webp"
-            if src_webp.exists():
+            if settings.OFFLINE_FRAME_IMAGES_ENABLED:
+                if not src_webp.exists():
+                    logger.debug(
+                        "Waiting for staged frame image: model=%s run=%s var=%s frame_id=%s",
+                        model,
+                        run,
+                        var,
+                        frame_id,
+                    )
+                    for _ in range(10):
+                        time.sleep(0.2)
+                        if src_webp.exists():
+                            break
+                if src_webp.exists():
+                    _copy_if_missing(src_webp, published_var_root / "frames" / f"{frame_id}.webp")
+                else:
+                    logger.warning(
+                        "Missing staged frame image after retries: model=%s run=%s var=%s frame_id=%s",
+                        model,
+                        run,
+                        var,
+                        frame_id,
+                    )
+            elif src_webp.exists():
                 _copy_if_missing(src_webp, published_var_root / "frames" / f"{frame_id}.webp")
             _copy_if_missing(src_meta, dst_meta)
 
@@ -672,6 +700,36 @@ def publish_from_staging(model: str, run: str, var: str) -> dict[str, Any]:
             "published_frames": target_available,
             "manifest_path": str(manifest_symlink),
         }
+
+
+def backfill_published_webps_from_staging(model: str, run: str, var: str) -> dict[str, Any]:
+    plugin = get_model(model)
+    normalized_var = plugin.normalize_var_id(var)
+
+    with model_run_lock(model, run):
+        staging_frames_root = _staging_var_root(model, run, normalized_var) / "frames"
+        published_frames_root = _published_var_root(model, run, normalized_var) / "frames"
+        published_frames_root.mkdir(parents=True, exist_ok=True)
+
+        staged_webps = sorted(staging_frames_root.glob("*.webp")) if staging_frames_root.exists() else []
+        copied = 0
+        already_present = 0
+        for src_webp in staged_webps:
+            dst_webp = published_frames_root / src_webp.name
+            if dst_webp.exists():
+                already_present += 1
+                continue
+            _copy_if_missing(src_webp, dst_webp)
+            copied += 1
+
+    return {
+        "model": model,
+        "run": run,
+        "variable": normalized_var,
+        "staged_webps": len(staged_webps),
+        "copied_webps": copied,
+        "already_present_webps": already_present,
+    }
 
 
 def stage_and_publish_single_frame(
