@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle } from "lucide-react";
 
 import { BottomForecastControls } from "@/components/bottom-forecast-controls";
-import { MapCanvas, type PrefetchFrameImage } from "@/components/map-canvas";
+import { MapCanvas } from "@/components/map-canvas";
 import { type LegendPayload, MapLegend } from "@/components/map-legend";
 import { WeatherToolbar } from "@/components/weather-toolbar";
 import {
@@ -435,9 +435,11 @@ export default function App() {
   const [legacyRequestViolations, setLegacyRequestViolations] = useState<string[]>([]);
   const [, setReadyVersionTiles] = useState(0);
   const [readyVersionImages, setReadyVersionImages] = useState(0);
+  const [badFrameImageVersion, setBadFrameImageVersion] = useState(0);
   const [scrubIsActive, setScrubIsActive] = useState(false);
   const readyTileUrlsRef = useRef<Set<string>>(new Set());
   const readyFrameImageUrlsRef = useRef<Set<string>>(new Set());
+  const badFrameImageUrlsRef = useRef<Set<string>>(new Set());
   const scrubRenderTimerRef = useRef<number | null>(null);
   const lastScrubRenderAtRef = useRef(0);
 
@@ -467,8 +469,15 @@ export default function App() {
   }, [currentFrame]);
 
   const frameImageUrl = useMemo(() => {
-    return currentFrame?.frameImageUrl ?? "";
-  }, [currentFrame]);
+    const normalized = currentFrame?.frameImageUrl?.trim() ?? "";
+    if (!normalized) {
+      return "";
+    }
+    if (badFrameImageUrlsRef.current.has(normalized)) {
+      return "";
+    }
+    return normalized;
+  }, [currentFrame, badFrameImageVersion]);
 
   const legend = useMemo(() => {
     const normalizedMeta =
@@ -495,7 +504,7 @@ export default function App() {
       .filter((url): url is string => Boolean(url));
   }, [frameHours, frameByHour, forecastHour, targetForecastHour, isPlaying]);
 
-  const prefetchFrameImages = useMemo<PrefetchFrameImage[]>(() => {
+  const prefetchFrameImageUrls = useMemo<string[]>(() => {
     if (frameHours.length < 2) return [];
     const focusHour = nearestFrame(frameHours, isPlaying ? forecastHour : targetForecastHour);
     const focusIndex = frameHours.indexOf(focusHour);
@@ -509,16 +518,16 @@ export default function App() {
       if (behind >= 0) prioritizedHours.push(frameHours[behind]);
     }
 
-    return prioritizedHours.reduce<PrefetchFrameImage[]>((items, fh) => {
+    return prioritizedHours.reduce<string[]>((items, fh) => {
       const frame = frameByHour.get(fh);
-      if (!frame?.tileUrl) return items;
-      items.push({
-        tileUrl: frame.tileUrl,
-        frameImageUrl: frame.frameImageUrl,
-      });
+      const imageUrl = frame?.frameImageUrl?.trim();
+      if (!imageUrl) return items;
+      if (badFrameImageUrlsRef.current.has(imageUrl)) return items;
+      if (items.includes(imageUrl)) return items;
+      items.push(imageUrl);
       return items;
     }, []);
-  }, [frameHours, frameByHour, forecastHour, targetForecastHour, isPlaying]);
+  }, [frameHours, frameByHour, forecastHour, targetForecastHour, isPlaying, badFrameImageVersion]);
 
   const effectiveRunId = currentFrame?.run ?? (run !== "latest" ? run : latestRunId);
   const runDateTimeISO = runIdToIso(effectiveRunId);
@@ -560,9 +569,27 @@ export default function App() {
   const markFrameImageReady = useCallback((imageUrl: string) => {
     const normalized = imageUrl.trim();
     if (!normalized) return;
-    if (readyFrameImageUrlsRef.current.has(normalized)) return;
-    readyFrameImageUrlsRef.current.add(normalized);
-    setReadyVersionImages((prev) => prev + 1);
+    let changedImages = false;
+    if (!readyFrameImageUrlsRef.current.has(normalized)) {
+      readyFrameImageUrlsRef.current.add(normalized);
+      changedImages = true;
+    }
+    if (badFrameImageUrlsRef.current.delete(normalized)) {
+      setBadFrameImageVersion((prev) => prev + 1);
+    }
+    if (changedImages) {
+      setReadyVersionImages((prev) => prev + 1);
+    }
+  }, []);
+
+  const markFrameImageUnavailable = useCallback((imageUrl: string) => {
+    const normalized = imageUrl.trim();
+    if (!normalized) return;
+    if (badFrameImageUrlsRef.current.has(normalized)) {
+      return;
+    }
+    badFrameImageUrlsRef.current.add(normalized);
+    setBadFrameImageVersion((prev) => prev + 1);
   }, []);
 
   const nearestReadyImageHour = useCallback(
@@ -571,7 +598,7 @@ export default function App() {
       let winnerDistance = Number.POSITIVE_INFINITY;
       for (const hour of frameHours) {
         const imageUrl = frameByHour.get(hour)?.frameImageUrl?.trim();
-        if (!imageUrl || !readyFrameImageUrlsRef.current.has(imageUrl)) {
+        if (!imageUrl || badFrameImageUrlsRef.current.has(imageUrl) || !readyFrameImageUrlsRef.current.has(imageUrl)) {
           continue;
         }
         const distance = Math.abs(hour - targetHour);
@@ -686,8 +713,10 @@ export default function App() {
     setScrubIsActive(false);
     readyTileUrlsRef.current = new Set();
     readyFrameImageUrlsRef.current = new Set();
+    badFrameImageUrlsRef.current = new Set();
     setReadyVersionTiles((prev) => prev + 1);
     setReadyVersionImages((prev) => prev + 1);
+    setBadFrameImageVersion((prev) => prev + 1);
   }, [model, run, variable]);
 
   useEffect(() => {
@@ -735,6 +764,26 @@ export default function App() {
     readyFrameImageUrlsRef.current = nextReadyImages;
     if (changedImages) {
       setReadyVersionImages((prev) => prev + 1);
+    }
+
+    const nextBadImages = new Set<string>();
+    for (const imageUrl of badFrameImageUrlsRef.current) {
+      if (allowedImages.has(imageUrl)) {
+        nextBadImages.add(imageUrl);
+      }
+    }
+    let changedBadImages = nextBadImages.size !== badFrameImageUrlsRef.current.size;
+    if (!changedBadImages) {
+      for (const imageUrl of nextBadImages) {
+        if (!badFrameImageUrlsRef.current.has(imageUrl)) {
+          changedBadImages = true;
+          break;
+        }
+      }
+    }
+    badFrameImageUrlsRef.current = nextBadImages;
+    if (changedBadImages) {
+      setBadFrameImageVersion((prev) => prev + 1);
     }
   }, [frameRows]);
 
@@ -913,11 +962,12 @@ export default function App() {
           preferFrameImages
           scrubIsActive={scrubIsActive}
           prefetchTileUrls={prefetchTileUrls}
-          prefetchFrameImages={prefetchFrameImages}
+          prefetchFrameImageUrls={prefetchFrameImageUrls}
           crossfade={false}
           onTileReady={handleTileReady}
           onFrameSettled={handleFrameSettled}
           onFrameImageReady={markFrameImageReady}
+          onFrameImageError={markFrameImageUnavailable}
           onZoomHint={setShowZoomHint}
           onRequestUrl={(url) => reportLegacyRequestViolation(url, "map")}
         />

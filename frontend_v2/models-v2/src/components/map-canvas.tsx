@@ -34,20 +34,22 @@ const REGION_BOUNDS: Record<string, [number, number, number, number]> = {
 
 const TILE_SETTLE_TIMEOUT_MS = 1200;
 const PREFETCH_TILE_BUFFER_COUNT = 4;
-const IMAGE_PREFETCH_CONCURRENCY = 4;
 const IMAGE_CACHE_MAX_ENTRIES = 40;
-
-const CANVAS_POT_BASE_SIZE = 2048;
-const CANVAS_POT_DPR_REDUCED_SIZE = 1024;
+const IMAGE_CROSSFADE_DURATION_MS = 60;
+const IMAGE_PREFETCH_THROTTLE_MS = 24;
 const HIDDEN_OPACITY = 0.001;
-const DEV_STATS_LOG_INTERVAL_MS = 2000;
+const TRANSPARENT_IMAGE_URL =
+  "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
 
 const TILE_SOURCE_ID = "twf-overlay-tile";
 const TILE_LAYER_ID = "twf-overlay-tile";
-const CANVAS_SOURCE_ID = "twf-overlay-canvas";
-const CANVAS_LAYER_ID = "twf-overlay-canvas";
+const IMG_SOURCE_A = "twf-img-a";
+const IMG_SOURCE_B = "twf-img-b";
+const IMG_LAYER_A = "twf-img-a";
+const IMG_LAYER_B = "twf-img-b";
 
-type OverlayMode = "tile" | "canvas";
+type OverlayMode = "tile" | "image";
+type ActiveImageBuffer = "a" | "b";
 type PlaybackMode = "autoplay" | "scrub";
 type ImageCoordinates = [[number, number], [number, number], [number, number], [number, number]];
 
@@ -56,74 +58,10 @@ type MutableRasterSource = maplibregl.RasterTileSource & {
   setUrl?: (url: string) => maplibregl.RasterTileSource;
 };
 
-type MutableCanvasSource = maplibregl.CanvasSource & {
+type MutableImageSource = maplibregl.ImageSource & {
+  updateImage?: (options: { url: string; coordinates: ImageCoordinates }) => maplibregl.ImageSource;
   setCoordinates?: (coordinates: ImageCoordinates) => void;
 };
-
-type ImageCacheEntry = {
-  status: "ready" | "error";
-  bitmap?: ImageBitmap;
-};
-
-type LoadResult = "ready" | "aborted" | "http_error" | "decode_error" | "network_error";
-
-type DevStats = {
-  canvasDrawHits: number;
-  canvasDrawMisses: number;
-  tileFallbackCount: number;
-  httpErrorCount: number;
-  decodeErrorCount: number;
-  abortCount: number;
-};
-
-export type PrefetchFrameImage = {
-  tileUrl: string;
-  frameImageUrl?: string;
-};
-
-let cachedMaxTextureSize: number | null | undefined;
-
-function detectMaxTextureSize(): number | null {
-  if (cachedMaxTextureSize !== undefined) {
-    return cachedMaxTextureSize;
-  }
-
-  try {
-    const canvas = document.createElement("canvas");
-    const gl =
-      canvas.getContext("webgl2", { preserveDrawingBuffer: false }) ||
-      canvas.getContext("webgl", { preserveDrawingBuffer: false });
-    if (!gl) {
-      cachedMaxTextureSize = null;
-      return cachedMaxTextureSize;
-    }
-    const max = gl.getParameter(gl.MAX_TEXTURE_SIZE);
-    cachedMaxTextureSize = typeof max === "number" && Number.isFinite(max) ? max : null;
-    return cachedMaxTextureSize;
-  } catch {
-    cachedMaxTextureSize = null;
-    return cachedMaxTextureSize;
-  }
-}
-
-function floorPowerOfTwo(value: number): number {
-  if (!Number.isFinite(value) || value <= 1) {
-    return 1;
-  }
-  return 2 ** Math.floor(Math.log2(value));
-}
-
-function resolveCanvasPotSize(): number {
-  const dpr = window.devicePixelRatio || 1;
-  let preferred = dpr >= 2.5 ? CANVAS_POT_DPR_REDUCED_SIZE : CANVAS_POT_BASE_SIZE;
-
-  const maxTextureSize = detectMaxTextureSize();
-  if (typeof maxTextureSize === "number" && maxTextureSize > 0) {
-    preferred = Math.min(preferred, maxTextureSize);
-  }
-
-  return floorPowerOfTwo(Math.max(1, preferred));
-}
 
 function prefetchSourceId(index: number): string {
   return `twf-prefetch-${index}`;
@@ -159,6 +97,14 @@ function overlaySourceFor(url: string, bounds?: [number, number, number, number]
   };
 }
 
+function imageSourceFor(url: string, coordinates: ImageCoordinates) {
+  return {
+    type: "image",
+    url,
+    coordinates,
+  };
+}
+
 function setOverlaySourceUrl(source: maplibregl.Source | undefined, url: string): boolean {
   const rasterSource = source as MutableRasterSource | undefined;
   if (!rasterSource) {
@@ -175,8 +121,20 @@ function setOverlaySourceUrl(source: maplibregl.Source | undefined, url: string)
   return false;
 }
 
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === "AbortError";
+function setImageSourceUrl(
+  source: maplibregl.Source | undefined,
+  url: string,
+  coordinates: ImageCoordinates
+): boolean {
+  const imageSource = source as MutableImageSource | undefined;
+  if (!imageSource) {
+    return false;
+  }
+  if (typeof imageSource.updateImage === "function") {
+    imageSource.updateImage({ url, coordinates });
+    return true;
+  }
+  return false;
 }
 
 function styleFor(
@@ -189,6 +147,7 @@ function styleFor(
   const resamplingMode = getResamplingMode(variable);
   const overlayBounds = (region && REGION_BOUNDS[region]) || REGION_BOUNDS.pnw;
   const overlayMinZoom = model === "gfs" ? 6 : 3;
+  const imageCoordinates = imageCoordinatesForRegion(region);
 
   const prefetchSources = Object.fromEntries(
     Array.from({ length: PREFETCH_TILE_BUFFER_COUNT }, (_, idx) => [
@@ -220,6 +179,8 @@ function styleFor(
       },
       [TILE_SOURCE_ID]: overlaySourceFor(tileUrl, overlayBounds),
       ...prefetchSources,
+      [IMG_SOURCE_A]: imageSourceFor(TRANSPARENT_IMAGE_URL, imageCoordinates),
+      [IMG_SOURCE_B]: imageSourceFor(TRANSPARENT_IMAGE_URL, imageCoordinates),
       "twf-labels": {
         type: "raster",
         tiles: CARTO_LIGHT_LABEL_TILES,
@@ -245,6 +206,28 @@ function styleFor(
       },
       ...prefetchLayers,
       {
+        id: IMG_LAYER_A,
+        type: "raster" as const,
+        source: IMG_SOURCE_A,
+        minzoom: overlayMinZoom,
+        paint: {
+          "raster-opacity": HIDDEN_OPACITY,
+          "raster-resampling": resamplingMode,
+          "raster-fade-duration": 0,
+        },
+      },
+      {
+        id: IMG_LAYER_B,
+        type: "raster" as const,
+        source: IMG_SOURCE_B,
+        minzoom: overlayMinZoom,
+        paint: {
+          "raster-opacity": HIDDEN_OPACITY,
+          "raster-resampling": resamplingMode,
+          "raster-fade-duration": 0,
+        },
+      },
+      {
         id: "twf-labels",
         type: "raster" as const,
         source: "twf-labels",
@@ -264,11 +247,12 @@ type MapCanvasProps = {
   preferFrameImages?: boolean;
   scrubIsActive?: boolean;
   prefetchTileUrls?: string[];
-  prefetchFrameImages?: PrefetchFrameImage[];
+  prefetchFrameImageUrls?: string[];
   crossfade?: boolean;
   onFrameSettled?: (tileUrl: string) => void;
   onTileReady?: (tileUrl: string) => void;
   onFrameImageReady?: (imageUrl: string) => void;
+  onFrameImageError?: (imageUrl: string) => void;
   onZoomHint?: (show: boolean) => void;
   onRequestUrl?: (url: string) => void;
 };
@@ -278,17 +262,18 @@ export function MapCanvas({
   frameImageUrl,
   region,
   opacity,
-  mode,
+  mode: _mode,
   variable,
   model,
   preferFrameImages = true,
-  scrubIsActive = false,
+  scrubIsActive: _scrubIsActive = false,
   prefetchTileUrls = [],
-  prefetchFrameImages = [],
+  prefetchFrameImageUrls = [],
   crossfade: _crossfade = false,
   onFrameSettled,
   onTileReady,
   onFrameImageReady,
+  onFrameImageError,
   onZoomHint,
   onRequestUrl,
 }: MapCanvasProps) {
@@ -296,34 +281,20 @@ export function MapCanvas({
   const mapRef = useRef<maplibregl.Map | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
 
-  const canvasPotSizeRef = useRef(resolveCanvasPotSize());
-  const canvasElementRef = useRef<HTMLCanvasElement | null>(null);
-  const canvasContextRef = useRef<CanvasRenderingContext2D | null>(null);
-
-  const activeOverlayModeRef = useRef<OverlayMode>("tile");
-  const activeTileUrlRef = useRef(tileUrl);
-  const activeFrameImageUrlRef = useRef<string | null>(null);
-  const lastCanvasImageUrlRef = useRef<string | null>(null);
-
-  const renderTokenRef = useRef(0);
-  const renderAbortControllerRef = useRef<AbortController | null>(null);
-
-  const prefetchTokenRef = useRef(0);
-  const prefetchAbortControllersRef = useRef<Set<AbortController>>(new Set());
-  const prefetchTileUrlsRef = useRef<string[]>(Array.from({ length: PREFETCH_TILE_BUFFER_COUNT }, () => ""));
-
-  const imageCacheRef = useRef<Map<string, ImageCacheEntry>>(new Map());
-  const failedFrameImageUrlsRef = useRef<Set<string>>(new Set());
   const onRequestUrlRef = useRef(onRequestUrl);
 
-  const devStatsRef = useRef<DevStats>({
-    canvasDrawHits: 0,
-    canvasDrawMisses: 0,
-    tileFallbackCount: 0,
-    httpErrorCount: 0,
-    decodeErrorCount: 0,
-    abortCount: 0,
-  });
+  const activeOverlayModeRef = useRef<OverlayMode>("tile");
+  const activeImageBufferRef = useRef<ActiveImageBuffer>("a");
+  const activeImageUrlRef = useRef<string>("");
+
+  const crossfadeRafRef = useRef<number | null>(null);
+  const renderTokenRef = useRef(0);
+  const prefetchTokenRef = useRef(0);
+
+  const prefetchTileUrlsRef = useRef<string[]>(Array.from({ length: PREFETCH_TILE_BUFFER_COUNT }, () => ""));
+  const loadedImageUrlsRef = useRef<Map<string, true>>(new Map());
+  const failedImageUrlsRef = useRef<Set<string>>(new Set());
+  const inflightImageLoadsRef = useRef<Map<string, Promise<boolean>>>(new Map());
 
   useEffect(() => {
     onRequestUrlRef.current = onRequestUrl;
@@ -340,13 +311,6 @@ export function MapCanvas({
   const resamplingMode = useMemo(() => getResamplingMode(variable), [variable]);
   const imageCoordinates = useMemo(() => imageCoordinatesForRegion(region), [region]);
 
-  const bumpStat = useCallback((name: keyof DevStats) => {
-    if (!import.meta.env.DEV) {
-      return;
-    }
-    devStatsRef.current[name] += 1;
-  }, []);
-
   const setLayerOpacity = useCallback((map: maplibregl.Map, id: string, value: number) => {
     if (!map.getLayer(id)) {
       return;
@@ -354,187 +318,97 @@ export function MapCanvas({
     map.setPaintProperty(id, "raster-opacity", value);
   }, []);
 
-  const setActiveOverlayMode = useCallback(
-    (map: maplibregl.Map, modeValue: OverlayMode, targetOpacity: number) => {
-      activeOverlayModeRef.current = modeValue;
-      if (map.getLayer(TILE_LAYER_ID)) {
-        setLayerOpacity(map, TILE_LAYER_ID, modeValue === "tile" ? targetOpacity : HIDDEN_OPACITY);
-      }
-      if (map.getLayer(CANVAS_LAYER_ID)) {
-        setLayerOpacity(map, CANVAS_LAYER_ID, modeValue === "canvas" ? targetOpacity : HIDDEN_OPACITY);
-      }
+  const setImageLayersForBuffer = useCallback(
+    (map: maplibregl.Map, activeBuffer: ActiveImageBuffer, targetOpacity: number) => {
+      setLayerOpacity(map, IMG_LAYER_A, activeBuffer === "a" ? targetOpacity : HIDDEN_OPACITY);
+      setLayerOpacity(map, IMG_LAYER_B, activeBuffer === "b" ? targetOpacity : HIDDEN_OPACITY);
     },
     [setLayerOpacity]
   );
 
-  const touchImageCache = useCallback((url: string, entry: ImageCacheEntry) => {
-    const cache = imageCacheRef.current;
+  const setActiveOverlayMode = useCallback(
+    (map: maplibregl.Map, modeValue: OverlayMode, targetOpacity: number) => {
+      activeOverlayModeRef.current = modeValue;
+      setLayerOpacity(map, TILE_LAYER_ID, modeValue === "tile" ? targetOpacity : HIDDEN_OPACITY);
+      if (modeValue === "image") {
+        setImageLayersForBuffer(map, activeImageBufferRef.current, targetOpacity);
+      } else {
+        setLayerOpacity(map, IMG_LAYER_A, HIDDEN_OPACITY);
+        setLayerOpacity(map, IMG_LAYER_B, HIDDEN_OPACITY);
+      }
+    },
+    [setLayerOpacity, setImageLayersForBuffer]
+  );
+
+  const touchLoadedImage = useCallback((url: string) => {
+    const cache = loadedImageUrlsRef.current;
     cache.delete(url);
-    cache.set(url, entry);
+    cache.set(url, true);
 
     while (cache.size > IMAGE_CACHE_MAX_ENTRIES) {
-      const oldestUrl = cache.keys().next().value as string | undefined;
-      if (!oldestUrl) {
+      const oldest = cache.keys().next().value as string | undefined;
+      if (!oldest) {
         break;
       }
-      const evicted = cache.get(oldestUrl);
-      if (evicted?.bitmap) {
-        evicted.bitmap.close();
-      }
-      cache.delete(oldestUrl);
+      cache.delete(oldest);
     }
   }, []);
 
-  const setImageBitmapInCache = useCallback(
-    (url: string, bitmap: ImageBitmap) => {
-      const cache = imageCacheRef.current;
-      const previous = cache.get(url);
-      if (previous?.bitmap && previous.bitmap !== bitmap) {
-        previous.bitmap.close();
-      }
-      touchImageCache(url, { status: "ready", bitmap });
-    },
-    [touchImageCache]
-  );
-
-  const loadFrameImageToCache = useCallback(
-    async (url: string, signal: AbortSignal): Promise<LoadResult> => {
+  const preloadImageUrl = useCallback(
+    async (url: string): Promise<boolean> => {
       const normalizedUrl = url.trim();
       if (!normalizedUrl) {
-        return "network_error";
+        return false;
       }
 
-      const cached = imageCacheRef.current.get(normalizedUrl);
-      if (cached?.status === "ready" && cached.bitmap) {
-        touchImageCache(normalizedUrl, cached);
+      if (loadedImageUrlsRef.current.has(normalizedUrl)) {
+        touchLoadedImage(normalizedUrl);
         onFrameImageReady?.(normalizedUrl);
-        return "ready";
+        return true;
       }
 
-      if (failedFrameImageUrlsRef.current.has(normalizedUrl)) {
-        return "http_error";
+      if (failedImageUrlsRef.current.has(normalizedUrl)) {
+        return false;
       }
 
-      if (signal.aborted) {
-        bumpStat("abortCount");
-        return "aborted";
+      const inflight = inflightImageLoadsRef.current.get(normalizedUrl);
+      if (inflight) {
+        return inflight;
       }
 
-      let response: Response;
-      try {
-        response = await fetch(normalizedUrl, { signal, credentials: "omit" });
-      } catch (error) {
-        if (isAbortError(error) || signal.aborted) {
-          bumpStat("abortCount");
-          return "aborted";
-        }
-        bumpStat("httpErrorCount");
-        return "network_error";
-      }
+      const promise = new Promise<boolean>((resolve) => {
+        const image = new Image();
+        image.crossOrigin = "anonymous";
+        image.decoding = "async";
 
-      if (!response.ok) {
-        failedFrameImageUrlsRef.current.add(normalizedUrl);
-        touchImageCache(normalizedUrl, { status: "error" });
-        bumpStat("httpErrorCount");
-        return "http_error";
-      }
+        const cleanup = () => {
+          image.onload = null;
+          image.onerror = null;
+          inflightImageLoadsRef.current.delete(normalizedUrl);
+        };
 
-      let blob: Blob;
-      try {
-        blob = await response.blob();
-      } catch (error) {
-        if (isAbortError(error) || signal.aborted) {
-          bumpStat("abortCount");
-          return "aborted";
-        }
-        bumpStat("httpErrorCount");
-        return "network_error";
-      }
+        image.onload = () => {
+          cleanup();
+          failedImageUrlsRef.current.delete(normalizedUrl);
+          touchLoadedImage(normalizedUrl);
+          onFrameImageReady?.(normalizedUrl);
+          resolve(true);
+        };
 
-      let bitmap: ImageBitmap;
-      try {
-        bitmap = await createImageBitmap(blob);
-      } catch {
-        failedFrameImageUrlsRef.current.add(normalizedUrl);
-        touchImageCache(normalizedUrl, { status: "error" });
-        bumpStat("decodeErrorCount");
-        return "decode_error";
-      }
+        image.onerror = () => {
+          cleanup();
+          failedImageUrlsRef.current.add(normalizedUrl);
+          onFrameImageError?.(normalizedUrl);
+          resolve(false);
+        };
 
-      if (signal.aborted) {
-        bitmap.close();
-        bumpStat("abortCount");
-        return "aborted";
-      }
+        image.src = normalizedUrl;
+      });
 
-      failedFrameImageUrlsRef.current.delete(normalizedUrl);
-      setImageBitmapInCache(normalizedUrl, bitmap);
-      onFrameImageReady?.(normalizedUrl);
-      return "ready";
+      inflightImageLoadsRef.current.set(normalizedUrl, promise);
+      return promise;
     },
-    [bumpStat, touchImageCache, setImageBitmapInCache, onFrameImageReady]
-  );
-
-  const drawImageBitmapToOverlay = useCallback((bitmap: ImageBitmap): boolean => {
-    const map = mapRef.current;
-    const canvas = canvasElementRef.current;
-    const context = canvasContextRef.current;
-    if (!map || !canvas || !context) {
-      return false;
-    }
-
-    context.clearRect(0, 0, canvas.width, canvas.height);
-    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-    map.triggerRepaint();
-    return true;
-  }, []);
-
-  const ensureCanvasOverlay = useCallback(
-    (map: maplibregl.Map) => {
-      const existingSource = map.getSource(CANVAS_SOURCE_ID) as MutableCanvasSource | undefined;
-      if (existingSource) {
-        existingSource.setCoordinates?.(imageCoordinates);
-        return;
-      }
-
-      const size = canvasPotSizeRef.current;
-      const canvas = document.createElement("canvas");
-      canvas.width = size;
-      canvas.height = size;
-      const context = canvas.getContext("2d", { alpha: true });
-      if (!context) {
-        return;
-      }
-
-      canvasElementRef.current = canvas;
-      canvasContextRef.current = context;
-
-      map.addSource(
-        CANVAS_SOURCE_ID,
-        {
-          type: "canvas",
-          canvas,
-          coordinates: imageCoordinates,
-          animate: false,
-        } as any
-      );
-
-      map.addLayer(
-        {
-          id: CANVAS_LAYER_ID,
-          type: "raster",
-          source: CANVAS_SOURCE_ID,
-          minzoom: overlayMinZoom,
-          paint: {
-            "raster-opacity": HIDDEN_OPACITY,
-            "raster-resampling": resamplingMode,
-            "raster-fade-duration": 0,
-          },
-        } as any,
-        "twf-labels"
-      );
-    },
-    [imageCoordinates, overlayMinZoom, resamplingMode]
+    [onFrameImageReady, onFrameImageError, touchLoadedImage]
   );
 
   const notifyTileSettled = useCallback(
@@ -589,6 +463,51 @@ export function MapCanvas({
     [onFrameSettled]
   );
 
+  const runImageCrossfade = useCallback(
+    (map: maplibregl.Map, fromBuffer: ActiveImageBuffer, toBuffer: ActiveImageBuffer, targetOpacity: number) => {
+      if (crossfadeRafRef.current !== null) {
+        window.cancelAnimationFrame(crossfadeRafRef.current);
+        crossfadeRafRef.current = null;
+      }
+
+      if (fromBuffer === toBuffer) {
+        activeImageBufferRef.current = toBuffer;
+        setImageLayersForBuffer(map, toBuffer, targetOpacity);
+        setLayerOpacity(map, TILE_LAYER_ID, HIDDEN_OPACITY);
+        activeOverlayModeRef.current = "image";
+        return;
+      }
+
+      const fromLayer = fromBuffer === "a" ? IMG_LAYER_A : IMG_LAYER_B;
+      const toLayer = toBuffer === "a" ? IMG_LAYER_A : IMG_LAYER_B;
+      const startedAt = performance.now();
+
+      const tick = (now: number) => {
+        const progress = Math.min(1, (now - startedAt) / IMAGE_CROSSFADE_DURATION_MS);
+        const fromOpacity = targetOpacity * (1 - progress) + HIDDEN_OPACITY * progress;
+        const toOpacity = HIDDEN_OPACITY * (1 - progress) + targetOpacity * progress;
+
+        setLayerOpacity(map, fromLayer, fromOpacity);
+        setLayerOpacity(map, toLayer, toOpacity);
+        setLayerOpacity(map, TILE_LAYER_ID, HIDDEN_OPACITY);
+
+        if (progress >= 1) {
+          activeImageBufferRef.current = toBuffer;
+          activeOverlayModeRef.current = "image";
+          setLayerOpacity(map, fromLayer, HIDDEN_OPACITY);
+          setLayerOpacity(map, toLayer, targetOpacity);
+          crossfadeRafRef.current = null;
+          return;
+        }
+
+        crossfadeRafRef.current = window.requestAnimationFrame(tick);
+      };
+
+      crossfadeRafRef.current = window.requestAnimationFrame(tick);
+    },
+    [setImageLayersForBuffer, setLayerOpacity]
+  );
+
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) {
       return;
@@ -616,22 +535,21 @@ export function MapCanvas({
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-left");
 
     map.on("load", () => {
-      ensureCanvasOverlay(map);
       setIsLoaded(true);
     });
 
     mapRef.current = map;
-  }, [tileUrl, opacity, variable, model, region, view.center, view.zoom, ensureCanvasOverlay]);
+  }, [tileUrl, opacity, variable, model, region, view.center, view.zoom]);
 
   useEffect(() => {
     return () => {
-      renderAbortControllerRef.current?.abort();
-      renderAbortControllerRef.current = null;
-
-      for (const controller of prefetchAbortControllersRef.current) {
-        controller.abort();
+      if (crossfadeRafRef.current !== null) {
+        window.cancelAnimationFrame(crossfadeRafRef.current);
+        crossfadeRafRef.current = null;
       }
-      prefetchAbortControllersRef.current.clear();
+
+      prefetchTokenRef.current += 1;
+      renderTokenRef.current += 1;
 
       const map = mapRef.current;
       if (map) {
@@ -639,38 +557,10 @@ export function MapCanvas({
         mapRef.current = null;
       }
 
-      for (const entry of imageCacheRef.current.values()) {
-        if (entry.bitmap) {
-          entry.bitmap.close();
-        }
-      }
-      imageCacheRef.current.clear();
-      failedFrameImageUrlsRef.current.clear();
-      canvasElementRef.current = null;
-      canvasContextRef.current = null;
       setIsLoaded(false);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!import.meta.env.DEV) {
-      return;
-    }
-
-    const interval = window.setInterval(() => {
-      const stats = devStatsRef.current;
-      const drawBase = stats.canvasDrawHits + stats.tileFallbackCount;
-      const canvasPct = drawBase > 0 ? Math.round((stats.canvasDrawHits / drawBase) * 1000) / 10 : 0;
-      console.debug("[map][canvas-stats]", {
-        ...stats,
-        canvasUsagePct: canvasPct,
-        cacheSize: imageCacheRef.current.size,
-        activeOverlayMode: activeOverlayModeRef.current,
-      });
-    }, DEV_STATS_LOG_INTERVAL_MS);
-
-    return () => {
-      window.clearInterval(interval);
+      loadedImageUrlsRef.current.clear();
+      failedImageUrlsRef.current.clear();
+      inflightImageLoadsRef.current.clear();
     };
   }, []);
 
@@ -707,19 +597,24 @@ export function MapCanvas({
       return;
     }
 
-    ensureCanvasOverlay(map);
-
-    const source = map.getSource(CANVAS_SOURCE_ID) as MutableCanvasSource | undefined;
-    source?.setCoordinates?.(imageCoordinates);
+    const sourceA = map.getSource(IMG_SOURCE_A) as MutableImageSource | undefined;
+    sourceA?.setCoordinates?.(imageCoordinates);
+    const sourceB = map.getSource(IMG_SOURCE_B) as MutableImageSource | undefined;
+    sourceB?.setCoordinates?.(imageCoordinates);
 
     if (map.getLayer(TILE_LAYER_ID)) {
       map.setPaintProperty(TILE_LAYER_ID, "raster-resampling", resamplingMode);
       map.setLayerZoomRange(TILE_LAYER_ID, overlayMinZoom, 24);
     }
 
-    if (map.getLayer(CANVAS_LAYER_ID)) {
-      map.setPaintProperty(CANVAS_LAYER_ID, "raster-resampling", resamplingMode);
-      map.setLayerZoomRange(CANVAS_LAYER_ID, overlayMinZoom, 24);
+    if (map.getLayer(IMG_LAYER_A)) {
+      map.setPaintProperty(IMG_LAYER_A, "raster-resampling", resamplingMode);
+      map.setLayerZoomRange(IMG_LAYER_A, overlayMinZoom, 24);
+    }
+
+    if (map.getLayer(IMG_LAYER_B)) {
+      map.setPaintProperty(IMG_LAYER_B, "raster-resampling", resamplingMode);
+      map.setLayerZoomRange(IMG_LAYER_B, overlayMinZoom, 24);
     }
 
     for (let idx = 1; idx <= PREFETCH_TILE_BUFFER_COUNT; idx += 1) {
@@ -728,7 +623,7 @@ export function MapCanvas({
       map.setPaintProperty(layer, "raster-resampling", resamplingMode);
       map.setLayerZoomRange(layer, overlayMinZoom, 24);
     }
-  }, [isLoaded, ensureCanvasOverlay, imageCoordinates, resamplingMode, overlayMinZoom]);
+  }, [isLoaded, imageCoordinates, overlayMinZoom, resamplingMode]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -739,160 +634,87 @@ export function MapCanvas({
     const token = ++renderTokenRef.current;
     let settledCleanup: (() => void) | undefined;
 
-    renderAbortControllerRef.current?.abort();
-    const renderController = new AbortController();
-    renderAbortControllerRef.current = renderController;
-
-    const normalizedImageUrl = frameImageUrl?.trim() || "";
-    const shouldTryCanvas = preferFrameImages && normalizedImageUrl.length > 0;
-    const realErrorForRequestedUrl =
-      normalizedImageUrl.length > 0 && failedFrameImageUrlsRef.current.has(normalizedImageUrl);
-    const holdCanvasDuringScrub = shouldTryCanvas && scrubIsActive && mode === "scrub";
-
-    const drawCanvasUrl = (imageUrl: string, countHit = true): boolean => {
-      const entry = imageCacheRef.current.get(imageUrl);
-      if (!entry || entry.status !== "ready" || !entry.bitmap) {
-        if (countHit) {
-          bumpStat("canvasDrawMisses");
-        }
-        return false;
-      }
-
-      touchImageCache(imageUrl, entry);
-      const drawn = drawImageBitmapToOverlay(entry.bitmap);
-      if (!drawn) {
-        if (countHit) {
-          bumpStat("canvasDrawMisses");
-        }
-        return false;
-      }
-
-      if (token !== renderTokenRef.current) {
-        return false;
-      }
-
-      if (countHit) {
-        bumpStat("canvasDrawHits");
-      }
-      setActiveOverlayMode(map, "canvas", opacity);
-      activeTileUrlRef.current = tileUrl;
-      activeFrameImageUrlRef.current = imageUrl;
-      lastCanvasImageUrlRef.current = imageUrl;
-      onTileReady?.(tileUrl);
-      onFrameSettled?.(tileUrl);
-      return true;
-    };
-
-    const holdLastCanvasFrame = (): boolean => {
-      const lastUrl = lastCanvasImageUrlRef.current;
-      if (!lastUrl) {
-        return false;
-      }
-      return drawCanvasUrl(lastUrl, false);
-    };
-
     const fallbackToTile = () => {
       if (token !== renderTokenRef.current) {
         return;
       }
-
-      const source = map.getSource(TILE_SOURCE_ID);
-      if (!setOverlaySourceUrl(source, tileUrl)) {
+      const tileSource = map.getSource(TILE_SOURCE_ID);
+      if (!setOverlaySourceUrl(tileSource, tileUrl)) {
         return;
       }
-
-      bumpStat("tileFallbackCount");
+      activeImageUrlRef.current = "";
       setActiveOverlayMode(map, "tile", opacity);
-      activeTileUrlRef.current = tileUrl;
-      activeFrameImageUrlRef.current = null;
       onTileReady?.(tileUrl);
       settledCleanup = notifyTileSettled(map, tileUrl, token);
     };
 
-    if (shouldTryCanvas && drawCanvasUrl(normalizedImageUrl)) {
+    const targetImageUrl = frameImageUrl?.trim() || "";
+    const shouldUseImageMode = preferFrameImages && targetImageUrl.length > 0;
+
+    if (!shouldUseImageMode) {
+      fallbackToTile();
       return () => {
-        renderController.abort();
-        if (renderAbortControllerRef.current === renderController) {
-          renderAbortControllerRef.current = null;
-        }
         settledCleanup?.();
       };
     }
 
-    if (shouldTryCanvas) {
-      void loadFrameImageToCache(normalizedImageUrl, renderController.signal)
-        .then((result) => {
-          if (token !== renderTokenRef.current) {
-            return;
-          }
-
-          if (result === "ready") {
-            drawCanvasUrl(normalizedImageUrl);
-            return;
-          }
-
-          if (result === "aborted") {
-            if (holdCanvasDuringScrub) {
-              holdLastCanvasFrame();
-            }
-            return;
-          }
-
-          const isRealError = result === "http_error" || result === "decode_error" || realErrorForRequestedUrl;
-          if (holdCanvasDuringScrub && !isRealError) {
-            holdLastCanvasFrame();
-            return;
-          }
-
+    void preloadImageUrl(targetImageUrl)
+      .then((ok) => {
+        if (token !== renderTokenRef.current) {
+          return;
+        }
+        if (!ok) {
           fallbackToTile();
-        })
-        .catch((error) => {
-          if (token !== renderTokenRef.current) {
-            return;
-          }
-          if (isAbortError(error)) {
-            bumpStat("abortCount");
-            if (holdCanvasDuringScrub) {
-              holdLastCanvasFrame();
-            }
-            return;
-          }
-          if (holdCanvasDuringScrub) {
-            holdLastCanvasFrame();
-            return;
-          }
-          fallbackToTile();
-        });
+          return;
+        }
 
-      if (holdCanvasDuringScrub) {
-        holdLastCanvasFrame();
-      }
-    } else {
-      fallbackToTile();
-    }
+        const nextBuffer: ActiveImageBuffer = activeImageBufferRef.current === "a" ? "b" : "a";
+        const sourceId = nextBuffer === "a" ? IMG_SOURCE_A : IMG_SOURCE_B;
+        const imageSource = map.getSource(sourceId);
+
+        if (!setImageSourceUrl(imageSource, targetImageUrl, imageCoordinates)) {
+          fallbackToTile();
+          return;
+        }
+
+        if (activeOverlayModeRef.current === "image" && activeImageUrlRef.current) {
+          runImageCrossfade(map, activeImageBufferRef.current, nextBuffer, opacity);
+        } else {
+          activeImageBufferRef.current = nextBuffer;
+          setImageLayersForBuffer(map, nextBuffer, opacity);
+          setLayerOpacity(map, TILE_LAYER_ID, HIDDEN_OPACITY);
+          activeOverlayModeRef.current = "image";
+        }
+
+        activeImageUrlRef.current = targetImageUrl;
+        onTileReady?.(tileUrl);
+        onFrameSettled?.(tileUrl);
+      })
+      .catch(() => {
+        if (token !== renderTokenRef.current) {
+          return;
+        }
+        fallbackToTile();
+      });
 
     return () => {
-      renderController.abort();
-      if (renderAbortControllerRef.current === renderController) {
-        renderAbortControllerRef.current = null;
-      }
       settledCleanup?.();
     };
   }, [
-    tileUrl,
     frameImageUrl,
-    mode,
+    imageCoordinates,
+    isLoaded,
+    notifyTileSettled,
+    onFrameSettled,
+    onTileReady,
     opacity,
     preferFrameImages,
-    scrubIsActive,
-    drawImageBitmapToOverlay,
-    touchImageCache,
-    bumpStat,
-    loadFrameImageToCache,
+    preloadImageUrl,
+    runImageCrossfade,
     setActiveOverlayMode,
-    notifyTileSettled,
-    onTileReady,
-    onFrameSettled,
+    setImageLayersForBuffer,
+    setLayerOpacity,
+    tileUrl,
   ]);
 
   useEffect(() => {
@@ -913,85 +735,49 @@ export function MapCanvas({
   }, [prefetchTileUrls, isLoaded]);
 
   useEffect(() => {
-    const previousControllers = prefetchAbortControllersRef.current;
-    for (const controller of previousControllers) {
-      controller.abort();
-    }
-    previousControllers.clear();
-
-    if (prefetchFrameImages.length === 0) {
-      return;
-    }
-
     const token = ++prefetchTokenRef.current;
 
-    const queue = prefetchFrameImages
-      .filter((item) => item.frameImageUrl && item.frameImageUrl.trim())
-      .map((item) => ({
-        tileUrl: item.tileUrl,
-        frameImageUrl: item.frameImageUrl!.trim(),
-      }));
+    const uniqueQueue: string[] = [];
+    const seen = new Set<string>();
+    for (const rawUrl of prefetchFrameImageUrls) {
+      const normalized = rawUrl.trim();
+      if (!normalized || seen.has(normalized)) {
+        continue;
+      }
+      seen.add(normalized);
+      uniqueQueue.push(normalized);
+    }
 
-    if (queue.length === 0) {
+    if (uniqueQueue.length === 0) {
       return;
     }
 
-    let cursor = 0;
+    let cancelled = false;
 
-    const runWorker = async () => {
-      while (token === prefetchTokenRef.current) {
-        const index = cursor;
-        cursor += 1;
-        if (index >= queue.length) {
-          break;
-        }
-
-        const item = queue[index];
-        const imageUrl = item.frameImageUrl;
-
-        const cached = imageCacheRef.current.get(imageUrl);
-        if (cached?.status === "ready") {
-          onFrameImageReady?.(imageUrl);
-          onTileReady?.(item.tileUrl);
-          continue;
-        }
-
-        if (failedFrameImageUrlsRef.current.has(imageUrl)) {
-          continue;
-        }
-
-        const controller = new AbortController();
-        prefetchAbortControllersRef.current.add(controller);
-
-        const result = await loadFrameImageToCache(imageUrl, controller.signal);
-
-        prefetchAbortControllersRef.current.delete(controller);
-
-        if (token !== prefetchTokenRef.current) {
+    const run = async () => {
+      for (const url of uniqueQueue) {
+        if (cancelled || token !== prefetchTokenRef.current) {
           return;
         }
-
-        if (result === "ready") {
-          onTileReady?.(item.tileUrl);
+        await preloadImageUrl(url);
+        if (cancelled || token !== prefetchTokenRef.current) {
+          return;
         }
+        await new Promise<void>((resolve) => {
+          window.setTimeout(() => resolve(), IMAGE_PREFETCH_THROTTLE_MS);
+        });
       }
     };
 
-    const workerCount = Math.min(IMAGE_PREFETCH_CONCURRENCY, queue.length);
-    for (let i = 0; i < workerCount; i += 1) {
-      void runWorker();
-    }
+    void run();
 
     return () => {
+      cancelled = true;
       if (prefetchTokenRef.current === token) {
         prefetchTokenRef.current += 1;
       }
-      for (const controller of prefetchAbortControllersRef.current) {
-        controller.abort();
-      }
-      prefetchAbortControllersRef.current.clear();
     };
-  }, [prefetchFrameImages, loadFrameImageToCache, onFrameImageReady, onTileReady]);
+  }, [prefetchFrameImageUrls, preloadImageUrl]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -1000,9 +786,8 @@ export function MapCanvas({
     }
 
     setLayerOpacity(map, TILE_LAYER_ID, HIDDEN_OPACITY);
-    if (map.getLayer(CANVAS_LAYER_ID)) {
-      setLayerOpacity(map, CANVAS_LAYER_ID, HIDDEN_OPACITY);
-    }
+    setLayerOpacity(map, IMG_LAYER_A, HIDDEN_OPACITY);
+    setLayerOpacity(map, IMG_LAYER_B, HIDDEN_OPACITY);
 
     for (let idx = 1; idx <= PREFETCH_TILE_BUFFER_COUNT; idx += 1) {
       setLayerOpacity(map, prefetchLayerId(idx), HIDDEN_OPACITY);
