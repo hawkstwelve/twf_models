@@ -88,11 +88,37 @@ function setImageSourceUrl(
   return true;
 }
 
+function isMapStyleReady(map: maplibregl.Map | null | undefined): map is maplibregl.Map {
+  if (!map) {
+    return false;
+  }
+  try {
+    return map.isStyleLoaded() === true;
+  } catch {
+    return false;
+  }
+}
+
+function hasSource(map: maplibregl.Map, sourceId: string): boolean {
+  try {
+    return Boolean(map.getSource(sourceId));
+  } catch {
+    return false;
+  }
+}
+
 function setLayerVisibility(map: maplibregl.Map, id: string, visible: boolean): void {
+  if (!isMapStyleReady(map)) {
+    return;
+  }
   if (!map.getLayer(id)) {
     return;
   }
-  map.setLayoutProperty(id, "visibility", visible ? "visible" : "none");
+  try {
+    map.setLayoutProperty(id, "visibility", visible ? "visible" : "none");
+  } catch {
+    // Style/source may have been torn down mid-frame.
+  }
 }
 
 function styleFor(opacity: number, variable?: string, model?: string, region?: string): StyleSpecification {
@@ -218,14 +244,24 @@ export function MapCanvas({
   const imageCoordinates = useMemo(() => imageCoordinatesForRegion(region), [region]);
 
   const setLayerOpacity = useCallback((map: maplibregl.Map, id: string, value: number) => {
+    if (!isMapStyleReady(map)) {
+      return;
+    }
     if (!map.getLayer(id)) {
       return;
     }
-    map.setPaintProperty(id, "raster-opacity", value);
+    try {
+      map.setPaintProperty(id, "raster-opacity", value);
+    } catch {
+      // Style/source may have been torn down mid-frame.
+    }
   }, []);
 
   const setImageLayersForBuffer = useCallback(
     (map: maplibregl.Map, activeBuffer: ActiveImageBuffer, targetOpacity: number) => {
+      if (!isMapStyleReady(map) || !hasSource(map, IMG_SOURCE_A) || !hasSource(map, IMG_SOURCE_B)) {
+        return;
+      }
       const showA = activeBuffer === "a";
       const showB = activeBuffer === "b";
       setLayerVisibility(map, IMG_LAYER_A, showA);
@@ -238,6 +274,9 @@ export function MapCanvas({
 
   const hideImageLayers = useCallback(
     (map: maplibregl.Map) => {
+      if (!isMapStyleReady(map) || !hasSource(map, IMG_SOURCE_A) || !hasSource(map, IMG_SOURCE_B)) {
+        return;
+      }
       setLayerVisibility(map, IMG_LAYER_A, false);
       setLayerVisibility(map, IMG_LAYER_B, false);
       setLayerOpacity(map, IMG_LAYER_A, HIDDEN_OPACITY);
@@ -297,17 +336,75 @@ export function MapCanvas({
     [onFrameImageError, onFrameImageReady]
   );
 
+  const waitForNextRenderOrIdle = useCallback((map: maplibregl.Map, token: number): Promise<boolean> => {
+    return new Promise((resolve) => {
+      if (!isMapStyleReady(map) || mapRef.current !== map) {
+        resolve(false);
+        return;
+      }
+
+      let done = false;
+      let timeoutId: number | null = null;
+
+      const cleanup = () => {
+        map.off("render", onRender);
+        map.off("idle", onIdle);
+        if (timeoutId !== null) {
+          window.clearTimeout(timeoutId);
+          timeoutId = null;
+        }
+      };
+
+      const finish = () => {
+        if (done) return;
+        done = true;
+        cleanup();
+        resolve(token === renderTokenRef.current && mapRef.current === map && isMapStyleReady(map));
+      };
+
+      const onRender = () => finish();
+      const onIdle = () => finish();
+
+      map.once("render", onRender);
+      map.once("idle", onIdle);
+      timeoutId = window.setTimeout(finish, 120);
+      try {
+        map.triggerRepaint();
+      } catch {
+        finish();
+      }
+    });
+  }, []);
+
   const runImageCrossfade = useCallback(
-    (map: maplibregl.Map, fromBuffer: ActiveImageBuffer, toBuffer: ActiveImageBuffer, targetOpacity: number) => {
+    (
+      map: maplibregl.Map,
+      fromBuffer: ActiveImageBuffer,
+      toBuffer: ActiveImageBuffer,
+      targetOpacity: number,
+      token: number
+    ) => {
       if (crossfadeRafRef.current !== null) {
         window.cancelAnimationFrame(crossfadeRafRef.current);
         crossfadeRafRef.current = null;
       }
 
+      if (
+        !isMapStyleReady(map) ||
+        !hasSource(map, IMG_SOURCE_A) ||
+        !hasSource(map, IMG_SOURCE_B) ||
+        mapRef.current !== map ||
+        token !== renderTokenRef.current
+      ) {
+        return;
+      }
+
       if (fromBuffer === toBuffer) {
         activeImageBufferRef.current = toBuffer;
         setImageLayersForBuffer(map, toBuffer, targetOpacity);
-        map.triggerRepaint();
+        if (isMapStyleReady(map)) {
+          map.triggerRepaint();
+        }
         return;
       }
 
@@ -318,13 +415,29 @@ export function MapCanvas({
       setLayerVisibility(map, toLayer, true);
 
       const tick = (now: number) => {
+        if (
+          token !== renderTokenRef.current ||
+          mapRef.current !== map ||
+          !isMapStyleReady(map) ||
+          !hasSource(map, IMG_SOURCE_A) ||
+          !hasSource(map, IMG_SOURCE_B)
+        ) {
+          if (crossfadeRafRef.current !== null) {
+            window.cancelAnimationFrame(crossfadeRafRef.current);
+            crossfadeRafRef.current = null;
+          }
+          return;
+        }
+
         const progress = Math.min(1, (now - startedAt) / IMAGE_CROSSFADE_DURATION_MS);
         const fromOpacity = targetOpacity * (1 - progress);
         const toOpacity = targetOpacity * progress;
 
         setLayerOpacity(map, fromLayer, fromOpacity);
         setLayerOpacity(map, toLayer, toOpacity);
-        map.triggerRepaint();
+        if (isMapStyleReady(map)) {
+          map.triggerRepaint();
+        }
 
         if (progress >= 1) {
           activeImageBufferRef.current = toBuffer;
@@ -333,7 +446,9 @@ export function MapCanvas({
           setLayerOpacity(map, fromLayer, HIDDEN_OPACITY);
           setLayerOpacity(map, toLayer, targetOpacity);
           crossfadeRafRef.current = null;
-          map.triggerRepaint();
+          if (isMapStyleReady(map)) {
+            map.triggerRepaint();
+          }
           return;
         }
 
@@ -424,13 +539,17 @@ export function MapCanvas({
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !isLoaded) {
+    if (!map || !isLoaded || !isMapStyleReady(map)) {
       return;
     }
 
-    const sourceA = map.getSource(IMG_SOURCE_A) as MutableImageSource | undefined;
+    const sourceA = (hasSource(map, IMG_SOURCE_A) ? map.getSource(IMG_SOURCE_A) : undefined) as
+      | MutableImageSource
+      | undefined;
     sourceA?.setCoordinates?.(imageCoordinates);
-    const sourceB = map.getSource(IMG_SOURCE_B) as MutableImageSource | undefined;
+    const sourceB = (hasSource(map, IMG_SOURCE_B) ? map.getSource(IMG_SOURCE_B) : undefined) as
+      | MutableImageSource
+      | undefined;
     sourceB?.setCoordinates?.(imageCoordinates);
 
     if (map.getLayer(IMG_LAYER_A)) {
@@ -448,46 +567,58 @@ export function MapCanvas({
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !isLoaded) {
+    if (!map || !isLoaded || !isMapStyleReady(map)) {
       return;
     }
 
     if (!activeImageUrlRef.current) {
       hideImageLayers(map);
-      map.triggerRepaint();
+      if (isMapStyleReady(map)) {
+        map.triggerRepaint();
+      }
       return;
     }
 
     setImageLayersForBuffer(map, activeImageBufferRef.current, opacity);
-    map.triggerRepaint();
+    if (isMapStyleReady(map)) {
+      map.triggerRepaint();
+    }
   }, [hideImageLayers, isLoaded, opacity, setImageLayersForBuffer]);
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !isLoaded) {
+    if (!map || !isLoaded || !isMapStyleReady(map)) {
       return;
     }
 
     const token = ++renderTokenRef.current;
+    if (crossfadeRafRef.current !== null) {
+      window.cancelAnimationFrame(crossfadeRafRef.current);
+      crossfadeRafRef.current = null;
+    }
     const targetImageUrl = frameImageUrl?.trim() ?? "";
 
     if (!targetImageUrl) {
       activeImageUrlRef.current = "";
       hideImageLayers(map);
-      map.triggerRepaint();
+      if (isMapStyleReady(map)) {
+        map.triggerRepaint();
+      }
       return;
     }
 
     if (activeImageUrlRef.current === targetImageUrl) {
       setImageLayersForBuffer(map, activeImageBufferRef.current, opacity);
-      map.triggerRepaint();
+      if (isMapStyleReady(map)) {
+        map.triggerRepaint();
+      }
       return;
     }
 
     void preloadImageUrl(targetImageUrl)
-      .then((ready) => {
-        if (!ready || token !== renderTokenRef.current) {
-          if (token === renderTokenRef.current) {
+      .then(async (ready) => {
+        if (!ready || token !== renderTokenRef.current || mapRef.current !== map || !isMapStyleReady(map)) {
+          if (token === renderTokenRef.current && mapRef.current === map && isMapStyleReady(map)) {
             activeImageUrlRef.current = "";
             hideImageLayers(map);
             map.triggerRepaint();
@@ -503,6 +634,9 @@ export function MapCanvas({
           : activeImageBufferRef.current;
 
         const sourceId = nextBuffer === "a" ? IMG_SOURCE_A : IMG_SOURCE_B;
+        if (!hasSource(map, sourceId)) {
+          return;
+        }
         const source = map.getSource(sourceId);
         if (!setImageSourceUrl(source, targetImageUrl, imageCoordinates)) {
           onFrameImageError?.(targetImageUrl);
@@ -513,9 +647,13 @@ export function MapCanvas({
         }
 
         map.triggerRepaint();
+        const renderSettled = await waitForNextRenderOrIdle(map, token);
+        if (!renderSettled || token !== renderTokenRef.current || mapRef.current !== map || !isMapStyleReady(map)) {
+          return;
+        }
 
         if (hadActiveImage && crossfade) {
-          runImageCrossfade(map, activeImageBufferRef.current, nextBuffer, opacity);
+          runImageCrossfade(map, activeImageBufferRef.current, nextBuffer, opacity, token);
         } else {
           activeImageBufferRef.current = nextBuffer;
           setImageLayersForBuffer(map, nextBuffer, opacity);
@@ -541,6 +679,7 @@ export function MapCanvas({
     onFrameImageError,
     opacity,
     preloadImageUrl,
+    waitForNextRenderOrIdle,
     runImageCrossfade,
     setImageLayersForBuffer,
   ]);
