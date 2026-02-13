@@ -433,8 +433,11 @@ export default function App() {
   const [availableFramesCount, setAvailableFramesCount] = useState(0);
   const [resolvedRunId, setResolvedRunId] = useState<string | null>(null);
   const [legacyRequestViolations, setLegacyRequestViolations] = useState<string[]>([]);
-  const [readyVersion, setReadyVersion] = useState(0);
+  const [, setReadyVersionTiles] = useState(0);
+  const [readyVersionImages, setReadyVersionImages] = useState(0);
+  const [scrubIsActive, setScrubIsActive] = useState(false);
   const readyTileUrlsRef = useRef<Set<string>>(new Set());
+  const readyFrameImageUrlsRef = useRef<Set<string>>(new Set());
   const scrubRenderTimerRef = useRef<number | null>(null);
   const lastScrubRenderAtRef = useRef(0);
 
@@ -539,28 +542,36 @@ export default function App() {
     console.warn("[phase2] Legacy API/tile request detected", { source, url });
   }, []);
 
-  const markFrameUrlReady = useCallback((url: string) => {
+  const markTileUrlReady = useCallback((url: string) => {
     if (!url) return;
     if (readyTileUrlsRef.current.has(url)) return;
     readyTileUrlsRef.current.add(url);
-    setReadyVersion((prev) => prev + 1);
+    setReadyVersionTiles((prev) => prev + 1);
   }, []);
 
   const handleTileReady = useCallback((url: string) => {
-    markFrameUrlReady(url);
-  }, [markFrameUrlReady]);
+    markTileUrlReady(url);
+  }, [markTileUrlReady]);
 
   const handleFrameSettled = useCallback((url: string) => {
-    markFrameUrlReady(url);
-  }, [markFrameUrlReady]);
+    markTileUrlReady(url);
+  }, [markTileUrlReady]);
 
-  const nearestReadyHour = useCallback(
-    (targetHour: number): number => {
+  const markFrameImageReady = useCallback((imageUrl: string) => {
+    const normalized = imageUrl.trim();
+    if (!normalized) return;
+    if (readyFrameImageUrlsRef.current.has(normalized)) return;
+    readyFrameImageUrlsRef.current.add(normalized);
+    setReadyVersionImages((prev) => prev + 1);
+  }, []);
+
+  const nearestReadyImageHour = useCallback(
+    (targetHour: number, currentHour: number): number => {
       let winner: number | null = null;
       let winnerDistance = Number.POSITIVE_INFINITY;
       for (const hour of frameHours) {
-        const url = frameByHour.get(hour)?.tileUrl;
-        if (!url || !readyTileUrlsRef.current.has(url)) {
+        const imageUrl = frameByHour.get(hour)?.frameImageUrl?.trim();
+        if (!imageUrl || !readyFrameImageUrlsRef.current.has(imageUrl)) {
           continue;
         }
         const distance = Math.abs(hour - targetHour);
@@ -569,7 +580,7 @@ export default function App() {
           winnerDistance = distance;
         }
       }
-      return winner ?? targetHour;
+      return winner ?? currentHour;
     },
     [frameHours, frameByHour]
   );
@@ -672,30 +683,58 @@ export default function App() {
     setTargetForecastHour(0);
     setExpectedFrames(0);
     setAvailableFramesCount(0);
+    setScrubIsActive(false);
     readyTileUrlsRef.current = new Set();
-    setReadyVersion((prev) => prev + 1);
+    readyFrameImageUrlsRef.current = new Set();
+    setReadyVersionTiles((prev) => prev + 1);
+    setReadyVersionImages((prev) => prev + 1);
   }, [model, run, variable]);
 
   useEffect(() => {
-    const allowed = new Set(frameRows.map((row) => row.tileUrl));
-    const nextReady = new Set<string>();
+    const allowedTiles = new Set(frameRows.map((row) => row.tileUrl));
+    const nextReadyTiles = new Set<string>();
     for (const url of readyTileUrlsRef.current) {
-      if (allowed.has(url)) {
-        nextReady.add(url);
+      if (allowedTiles.has(url)) {
+        nextReadyTiles.add(url);
       }
     }
-    let changed = nextReady.size !== readyTileUrlsRef.current.size;
-    if (!changed) {
-      for (const url of nextReady) {
+    let changedTiles = nextReadyTiles.size !== readyTileUrlsRef.current.size;
+    if (!changedTiles) {
+      for (const url of nextReadyTiles) {
         if (!readyTileUrlsRef.current.has(url)) {
-          changed = true;
+          changedTiles = true;
           break;
         }
       }
     }
-    readyTileUrlsRef.current = nextReady;
-    if (changed) {
-      setReadyVersion((prev) => prev + 1);
+    readyTileUrlsRef.current = nextReadyTiles;
+    if (changedTiles) {
+      setReadyVersionTiles((prev) => prev + 1);
+    }
+
+    const allowedImages = new Set(
+      frameRows
+        .map((row) => row.frameImageUrl?.trim())
+        .filter((url): url is string => Boolean(url))
+    );
+    const nextReadyImages = new Set<string>();
+    for (const imageUrl of readyFrameImageUrlsRef.current) {
+      if (allowedImages.has(imageUrl)) {
+        nextReadyImages.add(imageUrl);
+      }
+    }
+    let changedImages = nextReadyImages.size !== readyFrameImageUrlsRef.current.size;
+    if (!changedImages) {
+      for (const imageUrl of nextReadyImages) {
+        if (!readyFrameImageUrlsRef.current.has(imageUrl)) {
+          changedImages = true;
+          break;
+        }
+      }
+    }
+    readyFrameImageUrlsRef.current = nextReadyImages;
+    if (changedImages) {
+      setReadyVersionImages((prev) => prev + 1);
     }
   }, [frameRows]);
 
@@ -802,12 +841,18 @@ export default function App() {
   }, [frameHours, isPlaying]);
 
   useEffect(() => {
+    if (isPlaying && scrubIsActive) {
+      setScrubIsActive(false);
+    }
+  }, [isPlaying, scrubIsActive]);
+
+  useEffect(() => {
     if (isPlaying || frameHours.length === 0) {
       return;
     }
 
     const target = nearestFrame(frameHours, targetForecastHour);
-    const desiredHour = nearestReadyHour(target);
+    const desiredHour = scrubIsActive ? nearestReadyImageHour(target, forecastHour) : target;
     const now = performance.now();
     const elapsed = now - lastScrubRenderAtRef.current;
 
@@ -833,7 +878,7 @@ export default function App() {
         scrubRenderTimerRef.current = null;
       }
     };
-  }, [isPlaying, frameHours, targetForecastHour, readyVersion, nearestReadyHour]);
+  }, [isPlaying, frameHours, targetForecastHour, forecastHour, scrubIsActive, readyVersionImages, nearestReadyImageHour]);
 
   return (
     <div className="flex h-full flex-col">
@@ -866,11 +911,13 @@ export default function App() {
           variable={variable}
           model={model}
           preferFrameImages
+          scrubIsActive={scrubIsActive}
           prefetchTileUrls={prefetchTileUrls}
           prefetchFrameImages={prefetchFrameImages}
           crossfade={false}
           onTileReady={handleTileReady}
           onFrameSettled={handleFrameSettled}
+          onFrameImageReady={markFrameImageReady}
           onZoomHint={setShowZoomHint}
           onRequestUrl={(url) => reportLegacyRequestViolation(url, "map")}
         />
@@ -913,6 +960,8 @@ export default function App() {
           expectedFramesCount={expectedFrames}
           isPublishing={isPublishing}
           onForecastHourChange={setTargetForecastHour}
+          onScrubStart={() => setScrubIsActive(true)}
+          onScrubEnd={() => setScrubIsActive(false)}
           isPlaying={isPlaying}
           setIsPlaying={setIsPlaying}
           autoplayTickMs={autoplayTickMs}

@@ -17,6 +17,8 @@ type BottomForecastControlsProps = {
   expectedFramesCount: number;
   isPublishing: boolean;
   onForecastHourChange: (fh: number) => void;
+  onScrubStart?: () => void;
+  onScrubEnd?: () => void;
   isPlaying: boolean;
   setIsPlaying: (value: boolean) => void;
   autoplayTickMs: number;
@@ -63,6 +65,8 @@ export function BottomForecastControls({
   expectedFramesCount,
   isPublishing,
   onForecastHourChange,
+  onScrubStart,
+  onScrubEnd,
   isPlaying,
   setIsPlaying,
   autoplayTickMs,
@@ -75,6 +79,7 @@ export function BottomForecastControls({
   const [previewHour, setPreviewHour] = useState<number | null>(null);
   const lastDragEmitAtRef = useRef(0);
   const lastSentHourRef = useRef<number | null>(null);
+  const isScrubbingRef = useRef(false);
 
   const validTime = useMemo(
     () => formatValidTime(runDateTimeISO, previewHour ?? forecastHour),
@@ -93,6 +98,25 @@ export function BottomForecastControls({
   useEffect(() => {
     setPreviewHour(null);
   }, [forecastHour]);
+
+  useEffect(() => {
+    if (!isPlaying) {
+      return;
+    }
+    if (isScrubbingRef.current) {
+      isScrubbingRef.current = false;
+      onScrubEnd?.();
+    }
+  }, [isPlaying, onScrubEnd]);
+
+  useEffect(() => {
+    return () => {
+      if (isScrubbingRef.current) {
+        isScrubbingRef.current = false;
+        onScrubEnd?.();
+      }
+    };
+  }, [onScrubEnd]);
 
   useEffect(() => {
     lastSentHourRef.current = forecastHour;
@@ -180,12 +204,20 @@ export function BottomForecastControls({
               onValueChange={([value]) => {
                 const next = availableFrames[Math.round(value ?? 0)];
                 if (Number.isFinite(next)) {
+                  if (!isScrubbingRef.current) {
+                    isScrubbingRef.current = true;
+                    onScrubStart?.();
+                  }
                   setPreviewHour(next);
                   emitForecastHour(next, false);
                 }
               }}
               onValueCommit={([value]) => {
                 const next = availableFrames[Math.round(value ?? 0)];
+                if (isScrubbingRef.current) {
+                  isScrubbingRef.current = false;
+                  onScrubEnd?.();
+                }
                 if (Number.isFinite(next)) {
                   setPreviewHour(null);
                   emitForecastHour(next, true);
