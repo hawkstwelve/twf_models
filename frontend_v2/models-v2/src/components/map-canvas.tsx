@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import maplibregl, { type StyleSpecification } from "maplibre-gl";
 
 import { DEFAULTS } from "@/lib/config";
-import { ensurePmtilesProtocol } from "@/lib/pmtiles";
 
 const BASEMAP_ATTRIBUTION =
   '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors ' +
@@ -32,11 +31,8 @@ const REGION_BOUNDS: Record<string, [number, number, number, number]> = {
   published: [-125.5, 41.5, -111.0, 49.5],
 };
 
-const IMAGE_SOURCE_SETTLE_TIMEOUT_MS = 1500;
-const IMAGE_CACHE_MAX_ENTRIES = 40;
 const IMAGE_CROSSFADE_DURATION_MS = 60;
 const IMAGE_PREFETCH_THROTTLE_MS = 24;
-const MAX_IMAGE_TEXTURE_SIZE = 4096;
 const HIDDEN_OPACITY = 0;
 const TRANSPARENT_IMAGE_URL =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVQImWP8z/D/PwMDAwMjIAMAFAIB7l9d0QAAAABJRU5ErkJggg==";
@@ -47,17 +43,11 @@ const IMG_LAYER_A = "twf-img-a";
 const IMG_LAYER_B = "twf-img-b";
 
 type ActiveImageBuffer = "a" | "b";
-type PlaybackMode = "autoplay" | "scrub";
 type ImageCoordinates = [[number, number], [number, number], [number, number], [number, number]];
 
 type MutableImageSource = maplibregl.ImageSource & {
   updateImage?: (options: { url: string; coordinates: ImageCoordinates }) => maplibregl.ImageSource;
   setCoordinates?: (coordinates: ImageCoordinates) => void;
-};
-
-type PreparedImage = {
-  mapUrl: string;
-  revokeUrl?: string;
 };
 
 function getResamplingMode(variable?: string): "nearest" | "linear" {
@@ -91,14 +81,11 @@ function setImageSourceUrl(
   coordinates: ImageCoordinates
 ): boolean {
   const imageSource = source as MutableImageSource | undefined;
-  if (!imageSource) {
+  if (!imageSource || typeof imageSource.updateImage !== "function") {
     return false;
   }
-  if (typeof imageSource.updateImage === "function") {
-    imageSource.updateImage({ url, coordinates });
-    return true;
-  }
-  return false;
+  imageSource.updateImage({ url, coordinates });
+  return true;
 }
 
 function setLayerVisibility(map: maplibregl.Map, id: string, visible: boolean): void {
@@ -106,59 +93,6 @@ function setLayerVisibility(map: maplibregl.Map, id: string, visible: boolean): 
     return;
   }
   map.setLayoutProperty(id, "visibility", visible ? "visible" : "none");
-}
-
-function isPowerOfTwo(value: number): boolean {
-  if (!Number.isFinite(value) || value < 1) {
-    return false;
-  }
-  return (value & (value - 1)) === 0;
-}
-
-function nextPowerOfTwo(value: number): number {
-  if (!Number.isFinite(value) || value <= 1) {
-    return 1;
-  }
-  return 2 ** Math.ceil(Math.log2(value));
-}
-
-function isBlobUrl(url?: string): url is string {
-  return typeof url === "string" && url.startsWith("blob:");
-}
-
-async function createPotImageBlobUrl(image: HTMLImageElement): Promise<string | null> {
-  const width = Math.max(1, image.naturalWidth || image.width || 1);
-  const height = Math.max(1, image.naturalHeight || image.height || 1);
-  if (isPowerOfTwo(width) && isPowerOfTwo(height)) {
-    return null;
-  }
-
-  const potWidth = nextPowerOfTwo(width);
-  const potHeight = nextPowerOfTwo(height);
-  if (potWidth > MAX_IMAGE_TEXTURE_SIZE || potHeight > MAX_IMAGE_TEXTURE_SIZE) {
-    return null;
-  }
-
-  const canvas = document.createElement("canvas");
-  canvas.width = potWidth;
-  canvas.height = potHeight;
-  const context = canvas.getContext("2d", { alpha: true });
-  if (!context) {
-    return null;
-  }
-
-  context.imageSmoothingEnabled = false;
-  context.clearRect(0, 0, potWidth, potHeight);
-  // Keep original pixel dimensions; pad remaining POT area with transparent pixels.
-  context.drawImage(image, 0, 0, width, height);
-
-  const blob = await new Promise<Blob | null>((resolve) => {
-    canvas.toBlob((nextBlob) => resolve(nextBlob), "image/webp", 0.95);
-  });
-  if (!blob) {
-    return null;
-  }
-  return URL.createObjectURL(blob);
 }
 
 function styleFor(opacity: number, variable?: string, model?: string, region?: string): StyleSpecification {
@@ -198,7 +132,7 @@ function styleFor(opacity: number, variable?: string, model?: string, region?: s
           visibility: "none",
         },
         paint: {
-          "raster-opacity": HIDDEN_OPACITY,
+          "raster-opacity": opacity,
           "raster-resampling": resamplingMode,
           "raster-fade-duration": 0,
         },
@@ -230,13 +164,10 @@ type MapCanvasProps = {
   frameImageUrl?: string;
   region: string;
   opacity: number;
-  mode: PlaybackMode;
   variable?: string;
   model?: string;
-  scrubIsActive?: boolean;
   prefetchFrameImageUrls?: string[];
   crossfade?: boolean;
-  onFrameSettled?: (imageUrl: string) => void;
   onFrameImageReady?: (imageUrl: string) => void;
   onFrameImageError?: (imageUrl: string) => void;
   onZoomHint?: (show: boolean) => void;
@@ -247,13 +178,10 @@ export function MapCanvas({
   frameImageUrl,
   region,
   opacity,
-  mode: _mode,
   variable,
   model,
-  scrubIsActive: _scrubIsActive = false,
   prefetchFrameImageUrls = [],
-  crossfade = false,
-  onFrameSettled,
+  crossfade = true,
   onFrameImageReady,
   onFrameImageError,
   onZoomHint,
@@ -264,22 +192,15 @@ export function MapCanvas({
   const [isLoaded, setIsLoaded] = useState(false);
 
   const onRequestUrlRef = useRef(onRequestUrl);
-
   const activeImageBufferRef = useRef<ActiveImageBuffer>("a");
   const activeImageUrlRef = useRef<string>("");
-  const assignedSourceMapUrlsRef = useRef<Record<ActiveImageBuffer, string>>({
-    a: TRANSPARENT_IMAGE_URL,
-    b: TRANSPARENT_IMAGE_URL,
-  });
-
   const crossfadeRafRef = useRef<number | null>(null);
   const renderTokenRef = useRef(0);
   const prefetchTokenRef = useRef(0);
 
-  const loadedImageUrlsRef = useRef<Map<string, PreparedImage>>(new Map());
+  const loadedImageUrlsRef = useRef<Set<string>>(new Set());
   const failedImageUrlsRef = useRef<Set<string>>(new Set());
-  const inflightImageLoadsRef = useRef<Map<string, Promise<PreparedImage | null>>>(new Map());
-  const pendingBlobRevokesRef = useRef<Set<string>>(new Set());
+  const inflightImageLoadsRef = useRef<Map<string, Promise<boolean>>>(new Map());
 
   useEffect(() => {
     onRequestUrlRef.current = onRequestUrl;
@@ -325,91 +246,15 @@ export function MapCanvas({
     [setLayerOpacity]
   );
 
-  const revokeBlobUrlIfUnused = useCallback((url?: string) => {
-    if (!isBlobUrl(url)) {
-      return;
-    }
-    const activeSources = assignedSourceMapUrlsRef.current;
-    if (activeSources.a === url || activeSources.b === url) {
-      pendingBlobRevokesRef.current.add(url);
-      return;
-    }
-    pendingBlobRevokesRef.current.delete(url);
-    URL.revokeObjectURL(url);
-  }, []);
-
-  const flushPendingBlobRevokes = useCallback(() => {
-    const pending = pendingBlobRevokesRef.current;
-    if (pending.size === 0) {
-      return;
-    }
-    const assigned = assignedSourceMapUrlsRef.current;
-    for (const url of Array.from(pending)) {
-      if (assigned.a === url || assigned.b === url) {
-        continue;
-      }
-      pending.delete(url);
-      URL.revokeObjectURL(url);
-    }
-  }, []);
-
-  const assignSourceMapUrl = useCallback(
-    (buffer: ActiveImageBuffer, nextUrl: string) => {
-      const previousUrl = assignedSourceMapUrlsRef.current[buffer];
-      assignedSourceMapUrlsRef.current[buffer] = nextUrl;
-      if (previousUrl && previousUrl !== nextUrl) {
-        revokeBlobUrlIfUnused(previousUrl);
-      }
-      flushPendingBlobRevokes();
-    },
-    [flushPendingBlobRevokes, revokeBlobUrlIfUnused]
-  );
-
-  const touchLoadedImage = useCallback(
-    (url: string, entry?: PreparedImage): PreparedImage | null => {
-      const cache = loadedImageUrlsRef.current;
-      const candidate = entry ?? cache.get(url);
-      if (!candidate) {
-        return null;
-      }
-
-      cache.delete(url);
-      cache.set(url, candidate);
-
-      while (cache.size > IMAGE_CACHE_MAX_ENTRIES) {
-        const oldest = cache.keys().next().value as string | undefined;
-        if (!oldest) {
-          break;
-        }
-        const evicted = cache.get(oldest);
-        cache.delete(oldest);
-        if (evicted?.revokeUrl) {
-          revokeBlobUrlIfUnused(evicted.revokeUrl);
-        }
-      }
-
-      flushPendingBlobRevokes();
-      return candidate;
-    },
-    [flushPendingBlobRevokes, revokeBlobUrlIfUnused]
-  );
-
   const preloadImageUrl = useCallback(
-    async (url: string): Promise<PreparedImage | null> => {
+    async (url: string): Promise<boolean> => {
       const normalizedUrl = url.trim();
       if (!normalizedUrl) {
-        return null;
+        return false;
       }
-
-      const cached = loadedImageUrlsRef.current.get(normalizedUrl);
-      if (cached) {
-        touchLoadedImage(normalizedUrl, cached);
+      if (loadedImageUrlsRef.current.has(normalizedUrl)) {
         onFrameImageReady?.(normalizedUrl);
-        return cached;
-      }
-
-      if (failedImageUrlsRef.current.has(normalizedUrl)) {
-        return null;
+        return true;
       }
 
       const inflight = inflightImageLoadsRef.current.get(normalizedUrl);
@@ -417,7 +262,7 @@ export function MapCanvas({
         return inflight;
       }
 
-      const promise = new Promise<PreparedImage | null>((resolve) => {
+      const promise = new Promise<boolean>((resolve) => {
         const image = new Image();
         image.crossOrigin = "anonymous";
         image.decoding = "async";
@@ -429,42 +274,18 @@ export function MapCanvas({
         };
 
         image.onload = () => {
-          void (async () => {
-            const width = Math.max(1, image.naturalWidth || image.width || 1);
-            const height = Math.max(1, image.naturalHeight || image.height || 1);
-            const needsPot = !isPowerOfTwo(width) || !isPowerOfTwo(height);
-            const potBlobUrl = needsPot ? await createPotImageBlobUrl(image) : null;
-            cleanup();
-            if (needsPot && !potBlobUrl) {
-              failedImageUrlsRef.current.add(normalizedUrl);
-              onFrameImageError?.(normalizedUrl);
-              resolve(null);
-              return;
-            }
-
-            failedImageUrlsRef.current.delete(normalizedUrl);
-            const prepared: PreparedImage = {
-              mapUrl: potBlobUrl || normalizedUrl,
-              revokeUrl: potBlobUrl || undefined,
-            };
-
-            const previous = loadedImageUrlsRef.current.get(normalizedUrl);
-            if (previous?.revokeUrl && previous.revokeUrl !== prepared.revokeUrl) {
-              revokeBlobUrlIfUnused(previous.revokeUrl);
-            }
-
-            touchLoadedImage(normalizedUrl, prepared);
-            flushPendingBlobRevokes();
-            onFrameImageReady?.(normalizedUrl);
-            resolve(prepared);
-          })();
+          cleanup();
+          failedImageUrlsRef.current.delete(normalizedUrl);
+          loadedImageUrlsRef.current.add(normalizedUrl);
+          onFrameImageReady?.(normalizedUrl);
+          resolve(true);
         };
 
         image.onerror = () => {
           cleanup();
           failedImageUrlsRef.current.add(normalizedUrl);
           onFrameImageError?.(normalizedUrl);
-          resolve(null);
+          resolve(false);
         };
 
         image.src = normalizedUrl;
@@ -473,56 +294,7 @@ export function MapCanvas({
       inflightImageLoadsRef.current.set(normalizedUrl, promise);
       return promise;
     },
-    [flushPendingBlobRevokes, onFrameImageError, onFrameImageReady, revokeBlobUrlIfUnused, touchLoadedImage]
-  );
-
-  const waitForImageSourceSettled = useCallback(
-    (map: maplibregl.Map, sourceId: string, token: number): Promise<boolean> => {
-      return new Promise((resolve) => {
-        let done = false;
-        let timeoutId: number | null = null;
-
-        const cleanup = () => {
-          map.off("sourcedata", onSourceData);
-          if (timeoutId !== null) {
-            window.clearTimeout(timeoutId);
-            timeoutId = null;
-          }
-        };
-
-        const finish = (ok: boolean) => {
-          if (done) return;
-          done = true;
-          cleanup();
-          resolve(ok && token === renderTokenRef.current);
-        };
-
-        const onSourceData = (event: maplibregl.MapSourceDataEvent) => {
-          if (event.sourceId !== sourceId) {
-            return;
-          }
-          if (map.isSourceLoaded(sourceId)) {
-            window.requestAnimationFrame(() => finish(true));
-          }
-        };
-
-        if (token !== renderTokenRef.current) {
-          finish(false);
-          return;
-        }
-
-        if (map.isSourceLoaded(sourceId)) {
-          window.requestAnimationFrame(() => finish(true));
-          return;
-        }
-
-        map.on("sourcedata", onSourceData);
-        timeoutId = window.setTimeout(() => {
-          finish(map.isSourceLoaded(sourceId));
-        }, IMAGE_SOURCE_SETTLE_TIMEOUT_MS);
-      });
-    },
-    []
+    [onFrameImageError, onFrameImageReady]
   );
 
   const runImageCrossfade = useCallback(
@@ -535,6 +307,7 @@ export function MapCanvas({
       if (fromBuffer === toBuffer) {
         activeImageBufferRef.current = toBuffer;
         setImageLayersForBuffer(map, toBuffer, targetOpacity);
+        map.triggerRepaint();
         return;
       }
 
@@ -546,11 +319,12 @@ export function MapCanvas({
 
       const tick = (now: number) => {
         const progress = Math.min(1, (now - startedAt) / IMAGE_CROSSFADE_DURATION_MS);
-        const fromOpacity = targetOpacity * (1 - progress) + HIDDEN_OPACITY * progress;
-        const toOpacity = HIDDEN_OPACITY * (1 - progress) + targetOpacity * progress;
+        const fromOpacity = targetOpacity * (1 - progress);
+        const toOpacity = targetOpacity * progress;
 
         setLayerOpacity(map, fromLayer, fromOpacity);
         setLayerOpacity(map, toLayer, toOpacity);
+        map.triggerRepaint();
 
         if (progress >= 1) {
           activeImageBufferRef.current = toBuffer;
@@ -559,7 +333,7 @@ export function MapCanvas({
           setLayerOpacity(map, fromLayer, HIDDEN_OPACITY);
           setLayerOpacity(map, toLayer, targetOpacity);
           crossfadeRafRef.current = null;
-          flushPendingBlobRevokes();
+          map.triggerRepaint();
           return;
         }
 
@@ -568,15 +342,13 @@ export function MapCanvas({
 
       crossfadeRafRef.current = window.requestAnimationFrame(tick);
     },
-    [flushPendingBlobRevokes, setImageLayersForBuffer, setLayerOpacity]
+    [setImageLayersForBuffer, setLayerOpacity]
   );
 
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) {
       return;
     }
-
-    ensurePmtilesProtocol();
 
     const map = new maplibregl.Map({
       container: mapContainerRef.current,
@@ -593,13 +365,12 @@ export function MapCanvas({
     });
 
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-left");
-
     map.on("load", () => {
       setIsLoaded(true);
     });
 
     mapRef.current = map;
-  }, [opacity, variable, model, region, view.center, view.zoom]);
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -618,30 +389,9 @@ export function MapCanvas({
       }
 
       setIsLoaded(false);
-
-      const urlsToRevoke = new Set<string>();
-      for (const entry of loadedImageUrlsRef.current.values()) {
-        if (entry.revokeUrl) {
-          urlsToRevoke.add(entry.revokeUrl);
-        }
-      }
-      for (const url of pendingBlobRevokesRef.current) {
-        urlsToRevoke.add(url);
-      }
-      for (const url of Object.values(assignedSourceMapUrlsRef.current)) {
-        if (isBlobUrl(url)) {
-          urlsToRevoke.add(url);
-        }
-      }
-      for (const url of urlsToRevoke) {
-        URL.revokeObjectURL(url);
-      }
-
       loadedImageUrlsRef.current.clear();
       failedImageUrlsRef.current.clear();
       inflightImageLoadsRef.current.clear();
-      pendingBlobRevokesRef.current.clear();
-      assignedSourceMapUrlsRef.current = { a: TRANSPARENT_IMAGE_URL, b: TRANSPARENT_IMAGE_URL };
     };
   }, []);
 
@@ -685,14 +435,32 @@ export function MapCanvas({
 
     if (map.getLayer(IMG_LAYER_A)) {
       map.setPaintProperty(IMG_LAYER_A, "raster-resampling", resamplingMode);
+      map.setPaintProperty(IMG_LAYER_A, "raster-fade-duration", 0);
       map.setLayerZoomRange(IMG_LAYER_A, overlayMinZoom, 24);
     }
 
     if (map.getLayer(IMG_LAYER_B)) {
       map.setPaintProperty(IMG_LAYER_B, "raster-resampling", resamplingMode);
+      map.setPaintProperty(IMG_LAYER_B, "raster-fade-duration", 0);
       map.setLayerZoomRange(IMG_LAYER_B, overlayMinZoom, 24);
     }
-  }, [isLoaded, imageCoordinates, overlayMinZoom, resamplingMode]);
+  }, [imageCoordinates, isLoaded, overlayMinZoom, resamplingMode]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isLoaded) {
+      return;
+    }
+
+    if (!activeImageUrlRef.current) {
+      hideImageLayers(map);
+      map.triggerRepaint();
+      return;
+    }
+
+    setImageLayersForBuffer(map, activeImageBufferRef.current, opacity);
+    map.triggerRepaint();
+  }, [hideImageLayers, isLoaded, opacity, setImageLayersForBuffer]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -701,100 +469,80 @@ export function MapCanvas({
     }
 
     const token = ++renderTokenRef.current;
+    const targetImageUrl = frameImageUrl?.trim() ?? "";
 
-    const hideOverlay = () => {
-      if (token !== renderTokenRef.current) {
-        return;
-      }
+    if (!targetImageUrl) {
       activeImageUrlRef.current = "";
       hideImageLayers(map);
-      flushPendingBlobRevokes();
-    };
-
-    const targetImageUrl = frameImageUrl?.trim() ?? "";
-    if (!targetImageUrl) {
-      hideOverlay();
-      onFrameSettled?.("");
+      map.triggerRepaint();
       return;
     }
 
     if (activeImageUrlRef.current === targetImageUrl) {
       setImageLayersForBuffer(map, activeImageBufferRef.current, opacity);
-      onFrameSettled?.(targetImageUrl);
+      map.triggerRepaint();
       return;
     }
 
     void preloadImageUrl(targetImageUrl)
-      .then(async (prepared) => {
-        if (token !== renderTokenRef.current) {
-          return;
-        }
-        if (!prepared) {
-          hideOverlay();
+      .then((ready) => {
+        if (!ready || token !== renderTokenRef.current) {
+          if (token === renderTokenRef.current) {
+            activeImageUrlRef.current = "";
+            hideImageLayers(map);
+            map.triggerRepaint();
+          }
           return;
         }
 
-        const hasActiveImage = Boolean(activeImageUrlRef.current);
-        const nextBuffer: ActiveImageBuffer = hasActiveImage
+        const hadActiveImage = Boolean(activeImageUrlRef.current);
+        const nextBuffer: ActiveImageBuffer = hadActiveImage
           ? activeImageBufferRef.current === "a"
             ? "b"
             : "a"
           : activeImageBufferRef.current;
 
         const sourceId = nextBuffer === "a" ? IMG_SOURCE_A : IMG_SOURCE_B;
-        const imageSource = map.getSource(sourceId);
-        if (!setImageSourceUrl(imageSource, prepared.mapUrl, imageCoordinates)) {
-          failedImageUrlsRef.current.add(targetImageUrl);
+        const source = map.getSource(sourceId);
+        if (!setImageSourceUrl(source, targetImageUrl, imageCoordinates)) {
           onFrameImageError?.(targetImageUrl);
-          hideOverlay();
+          activeImageUrlRef.current = "";
+          hideImageLayers(map);
+          map.triggerRepaint();
           return;
         }
 
-        assignSourceMapUrl(nextBuffer, prepared.mapUrl);
+        map.triggerRepaint();
 
-        const sourceSettled = await waitForImageSourceSettled(map, sourceId, token);
-        if (token !== renderTokenRef.current) {
-          return;
-        }
-        if (!sourceSettled) {
-          failedImageUrlsRef.current.add(targetImageUrl);
-          onFrameImageError?.(targetImageUrl);
-          hideOverlay();
-          return;
-        }
-
-        if (hasActiveImage && crossfade) {
+        if (hadActiveImage && crossfade) {
           runImageCrossfade(map, activeImageBufferRef.current, nextBuffer, opacity);
         } else {
           activeImageBufferRef.current = nextBuffer;
           setImageLayersForBuffer(map, nextBuffer, opacity);
+          map.triggerRepaint();
         }
 
         activeImageUrlRef.current = targetImageUrl;
-        flushPendingBlobRevokes();
-        onFrameSettled?.(targetImageUrl);
       })
       .catch(() => {
         if (token !== renderTokenRef.current) {
           return;
         }
-        hideOverlay();
+        activeImageUrlRef.current = "";
+        hideImageLayers(map);
+        map.triggerRepaint();
       });
   }, [
-    assignSourceMapUrl,
     crossfade,
-    flushPendingBlobRevokes,
     frameImageUrl,
     hideImageLayers,
     imageCoordinates,
     isLoaded,
     onFrameImageError,
-    onFrameSettled,
     opacity,
     preloadImageUrl,
     runImageCrossfade,
     setImageLayersForBuffer,
-    waitForImageSourceSettled,
   ]);
 
   useEffect(() => {
@@ -817,7 +565,7 @@ export function MapCanvas({
 
     let cancelled = false;
 
-    const run = async () => {
+    const runPrefetch = async () => {
       for (const url of uniqueQueue) {
         if (cancelled || token !== prefetchTokenRef.current) {
           return;
@@ -832,7 +580,7 @@ export function MapCanvas({
       }
     };
 
-    void run();
+    void runPrefetch();
 
     return () => {
       cancelled = true;
@@ -847,22 +595,8 @@ export function MapCanvas({
     if (!map || !isLoaded) {
       return;
     }
-
-    if (!activeImageUrlRef.current) {
-      hideImageLayers(map);
-      return;
-    }
-
-    setImageLayersForBuffer(map, activeImageBufferRef.current, opacity);
-  }, [hideImageLayers, isLoaded, opacity, setImageLayersForBuffer]);
-
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !isLoaded) {
-      return;
-    }
     map.easeTo({ center: view.center, zoom: view.zoom, duration: 600 });
-  }, [view, isLoaded]);
+  }, [isLoaded, view]);
 
   return <div ref={mapContainerRef} className="absolute inset-0" aria-label="Weather map" />;
 }

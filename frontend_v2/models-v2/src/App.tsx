@@ -892,12 +892,10 @@ export default function App() {
           frameImageUrl={frameImageUrl}
           region="published"
           opacity={opacity}
-          mode={isPlaying ? "autoplay" : "scrub"}
           variable={variable}
           model={model}
-          scrubIsActive={scrubIsActive}
           prefetchFrameImageUrls={prefetchFrameImageUrls}
-          crossfade={false}
+          crossfade
           onFrameImageReady={markFrameImageReady}
           onFrameImageError={markFrameImageUnavailable}
           onZoomHint={setShowZoomHint}
