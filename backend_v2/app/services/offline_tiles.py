@@ -19,6 +19,7 @@ from fastapi import HTTPException
 from app.config import settings
 from app.models import MODEL_REGISTRY, get_model
 from app.services.colormaps_v2 import VAR_SPECS
+from app.services.frame_images import render_frame_image_webp
 from app.services.run_resolution import RUN_RE
 
 logger = logging.getLogger(__name__)
@@ -144,6 +145,10 @@ def _frame_url(model: str, run: str, var: str, frame_id: str) -> str:
     return f"/tiles/{model}/{run}/{var}/{frame_id}.pmtiles"
 
 
+def _frame_image_url(model: str, run: str, var: str, frame_id: str) -> str:
+    return f"/frames/{model}/{run}/{var}/{frame_id}.webp"
+
+
 def _validate_contract_version(value: Any) -> None:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError("contract_version must be an integer")
@@ -193,6 +198,11 @@ def validate_frame_meta_contract(meta: dict[str, Any]) -> None:
         raise ValueError(f"zoom range must be {ZOOM_MIN}..{ZOOM_MAX}")
     if not str(meta["url"]).startswith("/tiles/"):
         raise ValueError("url must be a /tiles/ path")
+    frame_image_url = meta.get("frame_image_url")
+    if frame_image_url is not None:
+        image_url_str = str(frame_image_url)
+        if not image_url_str.startswith("/frames/") or not image_url_str.endswith(".webp"):
+            raise ValueError("frame_image_url must be a /frames/ path ending in .webp")
 
 
 def validate_manifest_contract(manifest: dict[str, Any]) -> None:
@@ -232,6 +242,11 @@ def validate_manifest_contract(manifest: dict[str, Any]) -> None:
             raise ValueError("frame fhr must be a non-negative integer")
         if not str(frame["url"]).startswith("/tiles/"):
             raise ValueError("frame url must be a /tiles/ path")
+        frame_image_url = frame.get("frame_image_url")
+        if frame_image_url is not None:
+            image_url_str = str(frame_image_url)
+            if not image_url_str.startswith("/frames/") or not image_url_str.endswith(".webp"):
+                raise ValueError("frame frame_image_url must be a /frames/ path ending in .webp")
 
 
 def _staging_var_root(model: str, run: str, var: str) -> Path:
@@ -368,6 +383,34 @@ def stage_single_frame(
     )
     validate_staged_pmtiles(staging_pmtiles_path)
 
+    frame_image_url: str | None = None
+    if settings.OFFLINE_FRAME_IMAGES_ENABLED:
+        staging_webp_path = staging_frames_root / f"{frame_id}.webp"
+        try:
+            render_frame_image_webp(
+                model=model,
+                run=run,
+                varKey=normalized_var,
+                fh=fh,
+                pmtiles_path=staging_pmtiles_path,
+                tiles_json_path=staging_pmtiles_path.with_suffix(".tiles.json"),
+                out_webp_path=staging_webp_path,
+                region_bounds=_resolve_bounds(model, region),
+                size_px=settings.OFFLINE_FRAME_IMAGE_SIZE_PX,
+                quality=settings.OFFLINE_FRAME_IMAGE_WEBP_QUALITY,
+                source_cog_path=source_cog_path,
+            )
+            frame_image_url = _frame_image_url(model, run, normalized_var, frame_id)
+        except Exception as exc:
+            logger.warning(
+                "Frame image generation failed: model=%s run=%s var=%s fh=%s reason=%s",
+                model,
+                run,
+                normalized_var,
+                fh,
+                exc,
+            )
+
     sidecar_payload = _read_json(source_var_root / f"fh{fh:03d}.json") or {}
     sidecar_meta = sidecar_payload.get("meta") if isinstance(sidecar_payload.get("meta"), dict) else None
 
@@ -390,6 +433,8 @@ def stage_single_frame(
         "colormap_version": CONTRACT_VERSION,
         "url": _frame_url(model, run, normalized_var, frame_id),
     }
+    if frame_image_url:
+        frame_meta["frame_image_url"] = frame_image_url
     validate_frame_meta_contract(frame_meta)
     _atomic_write_json(staging_meta_root / f"{frame_id}.json", frame_meta)
     return frame_meta
@@ -427,16 +472,27 @@ def _build_manifest_payload(
     run: str,
     var: str,
     frames_meta: list[dict[str, Any]],
+    artifacts_root: Path | None = None,
 ) -> dict[str, Any]:
-    frames = [
-        {
-            "frame_id": str(meta["frame_id"]),
+    frames: list[dict[str, Any]] = []
+    for meta in frames_meta:
+        frame_id = str(meta["frame_id"])
+        entry: dict[str, Any] = {
+            "frame_id": frame_id,
             "fhr": int(meta["fhr"]),
             "valid_time": str(meta["valid_time"]),
             "url": str(meta["url"]),
         }
-        for meta in frames_meta
-    ]
+        image_url = str(meta.get("frame_image_url") or "").strip()
+        if artifacts_root is not None:
+            image_path = artifacts_root / "frames" / f"{frame_id}.webp"
+            if image_path.exists():
+                if not image_url:
+                    image_url = _frame_image_url(model, run, var, frame_id)
+                entry["frame_image_url"] = image_url
+        elif image_url:
+            entry["frame_image_url"] = image_url
+        frames.append(entry)
     payload = {
         "contract_version": CONTRACT_VERSION,
         "model": model,
@@ -453,7 +509,13 @@ def _build_manifest_payload(
 
 def rebuild_staging_manifest(model: str, run: str, var: str) -> dict[str, Any]:
     frames_meta = _load_validated_staging_frames(model, run, var)
-    payload = _build_manifest_payload(model=model, run=run, var=var, frames_meta=frames_meta)
+    payload = _build_manifest_payload(
+        model=model,
+        run=run,
+        var=var,
+        frames_meta=frames_meta,
+        artifacts_root=_staging_var_root(model, run, var),
+    )
     _atomic_write_json(_staging_var_root(model, run, var) / "manifest.json", payload)
     return payload
 
@@ -580,10 +642,19 @@ def publish_from_staging(model: str, run: str, var: str) -> dict[str, Any]:
             dst_meta = published_var_root / "meta" / f"{frame_id}.json"
             _copy_if_missing(src_pmtiles, dst_pmtiles)
             _copy_if_missing(src_pmtiles.with_suffix(".tiles.json"), dst_pmtiles.with_suffix(".tiles.json"))
+            src_webp = staging_var_root / "frames" / f"{frame_id}.webp"
+            if src_webp.exists():
+                _copy_if_missing(src_webp, published_var_root / "frames" / f"{frame_id}.webp")
             _copy_if_missing(src_meta, dst_meta)
 
         selected_meta = _load_validated_staging_frames(model, run, var)[:target_available]
-        publish_manifest = _build_manifest_payload(model=model, run=run, var=var, frames_meta=selected_meta)
+        publish_manifest = _build_manifest_payload(
+            model=model,
+            run=run,
+            var=var,
+            frames_meta=selected_meta,
+            artifacts_root=published_var_root,
+        )
         snapshots_root = published_var_root / "manifests"
         snapshots_root.mkdir(parents=True, exist_ok=True)
         snapshot_name = f"manifest.{target_available}.json"

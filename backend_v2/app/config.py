@@ -53,6 +53,14 @@ class Settings:
     OFFLINE_TILES_MAX_WORKERS: int = _env_int("OFFLINE_TILES_MAX_WORKERS", default=4, minimum=1, maximum=6)
     OFFLINE_TILES_INITIAL_GATE: int = _env_int("OFFLINE_TILES_INITIAL_GATE", default=6)
     OFFLINE_TILES_PUBLISH_DELTA: int = _env_int("OFFLINE_TILES_PUBLISH_DELTA", default=6, minimum=1)
+    OFFLINE_FRAME_IMAGES_ENABLED: bool = _env_bool("OFFLINE_FRAME_IMAGES_ENABLED", default=True)
+    OFFLINE_FRAME_IMAGE_SIZE_PX: int = _env_int("OFFLINE_FRAME_IMAGE_SIZE_PX", default=2048, minimum=256, maximum=4096)
+    OFFLINE_FRAME_IMAGE_WEBP_QUALITY: int = _env_int(
+        "OFFLINE_FRAME_IMAGE_WEBP_QUALITY",
+        default=82,
+        minimum=1,
+        maximum=100,
+    )
     WRITE_LEGACY_MODEL_LATEST_ALIAS: bool = _env_bool("WRITE_LEGACY_MODEL_LATEST_ALIAS", default=False)
 
 

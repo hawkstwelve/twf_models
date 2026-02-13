@@ -14,6 +14,9 @@ def test_phase0_offline_tiles_settings(monkeypatch) -> None:
     monkeypatch.setenv("OFFLINE_TILES_MAX_WORKERS", "12")
     monkeypatch.setenv("OFFLINE_TILES_INITIAL_GATE", "8")
     monkeypatch.setenv("OFFLINE_TILES_PUBLISH_DELTA", "0")
+    monkeypatch.setenv("OFFLINE_FRAME_IMAGES_ENABLED", "false")
+    monkeypatch.setenv("OFFLINE_FRAME_IMAGE_SIZE_PX", "99999")
+    monkeypatch.setenv("OFFLINE_FRAME_IMAGE_WEBP_QUALITY", "0")
     monkeypatch.setenv("WRITE_LEGACY_MODEL_LATEST_ALIAS", "true")
 
     reloaded = importlib.reload(config_module)
@@ -25,6 +28,9 @@ def test_phase0_offline_tiles_settings(monkeypatch) -> None:
     assert reloaded.settings.OFFLINE_TILES_MAX_WORKERS == 6
     assert reloaded.settings.OFFLINE_TILES_INITIAL_GATE == 8
     assert reloaded.settings.OFFLINE_TILES_PUBLISH_DELTA == 1
+    assert reloaded.settings.OFFLINE_FRAME_IMAGES_ENABLED is False
+    assert reloaded.settings.OFFLINE_FRAME_IMAGE_SIZE_PX == 4096
+    assert reloaded.settings.OFFLINE_FRAME_IMAGE_WEBP_QUALITY == 1
     assert reloaded.settings.WRITE_LEGACY_MODEL_LATEST_ALIAS is True
 
 

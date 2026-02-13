@@ -45,6 +45,8 @@ def _reload_offline_tiles(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setenv("PUBLISH_ROOT", str(tmp_path / "published"))
     monkeypatch.setenv("MANIFEST_ROOT", str(tmp_path / "manifests"))
     monkeypatch.setenv("OFFLINE_TILES_ENABLED", "true")
+    monkeypatch.setenv("OFFLINE_FRAME_IMAGE_SIZE_PX", "256")
+    monkeypatch.setenv("OFFLINE_FRAME_IMAGE_WEBP_QUALITY", "75")
     importlib.reload(config_module)
     return importlib.reload(offline_tiles_module)
 

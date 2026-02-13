@@ -52,6 +52,8 @@ def _reload_offline_tiles_with_publish_delta(
     monkeypatch.setenv("OFFLINE_TILES_ENABLED", "true")
     monkeypatch.setenv("OFFLINE_TILES_INITIAL_GATE", "6")
     monkeypatch.setenv("OFFLINE_TILES_PUBLISH_DELTA", str(publish_delta))
+    monkeypatch.setenv("OFFLINE_FRAME_IMAGE_SIZE_PX", "256")
+    monkeypatch.setenv("OFFLINE_FRAME_IMAGE_WEBP_QUALITY", "75")
     importlib.reload(config_module)
     return importlib.reload(offline_tiles_module)
 

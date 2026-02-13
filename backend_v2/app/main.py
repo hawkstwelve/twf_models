@@ -28,6 +28,10 @@ def _published_frame_path(model: str, run: str, var: str, frame_id: str) -> Path
     return settings.PUBLISH_ROOT / model / run / var / "frames" / f"{frame_id}.pmtiles"
 
 
+def _published_frame_image_path(model: str, run: str, var: str, frame_id: str) -> Path:
+    return settings.PUBLISH_ROOT / model / run / var / "frames" / f"{frame_id}.webp"
+
+
 def _manifest_latest_path(model: str) -> Path:
     return settings.MANIFEST_ROOT / model / "latest.json"
 
@@ -51,6 +55,36 @@ def get_pmtiles(model: str, run: str, var: str, frame_id: str) -> Response:
 @app.head("/tiles/{model}/{run}/{var}/{frame_id}.pmtiles")
 def get_pmtiles_head(model: str, run: str, var: str, frame_id: str) -> Response:
     response = get_pmtiles(model=model, run=run, var=var, frame_id=frame_id)
+    return Response(
+        status_code=response.status_code,
+        headers=dict(response.headers),
+        media_type=response.media_type,
+    )
+
+
+@app.get("/frames/{model}/{run}/{var}/{frame_id}.webp")
+def get_frame_image(model: str, run: str, var: str, frame_id: str) -> Response:
+    _ensure_segment("model", model)
+    _ensure_segment("run", run)
+    _ensure_segment("var", var)
+    _ensure_segment("frame_id", frame_id)
+    path = _published_frame_image_path(model, run, var, frame_id)
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="Frame image not found")
+    return FileResponse(
+        path=path,
+        media_type="image/webp",
+        headers={
+            "Cache-Control": "public, max-age=31536000, immutable",
+            "Access-Control-Allow-Origin": "*",
+            "Cross-Origin-Resource-Policy": "cross-origin",
+        },
+    )
+
+
+@app.head("/frames/{model}/{run}/{var}/{frame_id}.webp")
+def get_frame_image_head(model: str, run: str, var: str, frame_id: str) -> Response:
+    response = get_frame_image(model=model, run=run, var=var, frame_id=frame_id)
     return Response(
         status_code=response.status_code,
         headers=dict(response.headers),
