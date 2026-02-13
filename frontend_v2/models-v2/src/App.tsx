@@ -18,7 +18,6 @@ import { DEFAULTS, VARIABLE_LABELS } from "@/lib/config";
 import { buildRunOptions } from "@/lib/run-options";
 import { buildOfflinePmtilesUrl } from "@/lib/tiles";
 
-const AUTOPLAY_TICK_MS = 500;
 const MANIFEST_REFRESH_ACTIVE_MS = 5_000;
 const MANIFEST_REFRESH_IDLE_MS = 30_000;
 
@@ -174,6 +173,17 @@ type Option = {
   value: string;
   label: string;
 };
+
+type AutoplaySpeedPreset = {
+  label: string;
+  tickMs: number;
+};
+
+const AUTOPLAY_SPEED_PRESETS: AutoplaySpeedPreset[] = [
+  { label: "0.5x", tickMs: 1000 },
+  { label: "1x", tickMs: 500 },
+  { label: "2x", tickMs: 250 },
+];
 
 type NetworkRequestSource = "fetch" | "map";
 
@@ -401,6 +411,9 @@ export default function App() {
   const [forecastHour, setForecastHour] = useState(0);
   const [targetForecastHour, setTargetForecastHour] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [autoplayTickMs, setAutoplayTickMs] = useState(
+    AUTOPLAY_SPEED_PRESETS.find((preset) => preset.label === "1x")?.tickMs ?? 500
+  );
   const [opacity, setOpacity] = useState(DEFAULTS.overlayOpacity);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -684,10 +697,10 @@ export default function App() {
         return;
       }
       setTargetForecastHour(nextHour);
-    }, AUTOPLAY_TICK_MS);
+    }, autoplayTickMs);
 
     return () => window.clearInterval(interval);
-  }, [isPlaying, frameHours, forecastHour, frameByHour]);
+  }, [isPlaying, frameHours, forecastHour, frameByHour, autoplayTickMs]);
 
   useEffect(() => {
     if (frameHours.length === 0 && isPlaying) {
@@ -789,6 +802,9 @@ export default function App() {
           onForecastHourChange={setTargetForecastHour}
           isPlaying={isPlaying}
           setIsPlaying={setIsPlaying}
+          autoplayTickMs={autoplayTickMs}
+          autoplaySpeedPresets={AUTOPLAY_SPEED_PRESETS}
+          onAutoplayTickMsChange={setAutoplayTickMs}
           runDateTimeISO={runDateTimeISO}
           disabled={loading}
         />

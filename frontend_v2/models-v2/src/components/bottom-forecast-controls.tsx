@@ -19,6 +19,9 @@ type BottomForecastControlsProps = {
   onForecastHourChange: (fh: number) => void;
   isPlaying: boolean;
   setIsPlaying: (value: boolean) => void;
+  autoplayTickMs: number;
+  autoplaySpeedPresets: Array<{ label: string; tickMs: number }>;
+  onAutoplayTickMsChange: (tickMs: number) => void;
   runDateTimeISO: string | null;
   disabled: boolean;
 };
@@ -62,10 +65,13 @@ export function BottomForecastControls({
   onForecastHourChange,
   isPlaying,
   setIsPlaying,
+  autoplayTickMs,
+  autoplaySpeedPresets,
+  onAutoplayTickMsChange,
   runDateTimeISO,
   disabled,
 }: BottomForecastControlsProps) {
-  const DRAG_UPDATE_MS = 90;
+  const DRAG_UPDATE_MS = 100;
   const [previewHour, setPreviewHour] = useState<number | null>(null);
   const lastDragEmitAtRef = useRef(0);
   const lastSentHourRef = useRef<number | null>(null);
@@ -78,6 +84,11 @@ export function BottomForecastControls({
   const hasFrames = availableFrames.length > 0;
   const effectiveHour = previewHour ?? forecastHour;
   const sliderIndex = Math.max(0, availableFrames.indexOf(effectiveHour));
+  const speedIndex = Math.max(
+    0,
+    autoplaySpeedPresets.findIndex((preset) => preset.tickMs === autoplayTickMs)
+  );
+  const speedLabel = autoplaySpeedPresets[speedIndex]?.label ?? "1x";
 
   useEffect(() => {
     setPreviewHour(null);
@@ -98,6 +109,14 @@ export function BottomForecastControls({
     lastDragEmitAtRef.current = now;
     lastSentHourRef.current = next;
     onForecastHourChange(next);
+  };
+
+  const cycleAutoplaySpeed = () => {
+    if (autoplaySpeedPresets.length === 0) {
+      return;
+    }
+    const nextPreset = autoplaySpeedPresets[(speedIndex + 1) % autoplaySpeedPresets.length];
+    onAutoplayTickMsChange(nextPreset.tickMs);
   };
 
   return (
@@ -126,6 +145,24 @@ export function BottomForecastControls({
                 {isPlaying ? "Pause" : "Play"} animation
               </TooltipContent>
             </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={cycleAutoplaySpeed}
+                  disabled={disabled}
+                  aria-label={`Animation speed ${speedLabel}`}
+                  className="h-10 min-w-[3.75rem] px-2 text-xs font-semibold tabular-nums"
+                >
+                  {speedLabel}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top">
+                Cycle animation speed
+              </TooltipContent>
+            </Tooltip>
           </div>
 
           <div className="flex flex-1 flex-col gap-1.5">
@@ -144,6 +181,7 @@ export function BottomForecastControls({
                 const next = availableFrames[Math.round(value ?? 0)];
                 if (Number.isFinite(next)) {
                   setPreviewHour(next);
+                  emitForecastHour(next, false);
                 }
               }}
               onValueCommit={([value]) => {

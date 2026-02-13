@@ -32,7 +32,7 @@ const REGION_BOUNDS: Record<string, [number, number, number, number]> = {
   published: [-125.5, 41.5, -111.0, 49.5],
 };
 
-const SCRUB_SWAP_TIMEOUT_MS = 650;
+const SCRUB_SWAP_TIMEOUT_MS = 350;
 const AUTOPLAY_SWAP_TIMEOUT_MS = 1500;
 const SETTLE_TIMEOUT_MS = 1200;
 const CONTINUOUS_CROSSFADE_MS = 120;
@@ -419,6 +419,7 @@ export function MapCanvas({
       let done = false;
       let timeoutId: number | null = null;
       let seenLoadedState = map.isSourceLoaded(source);
+      let scrubReadyQueued = false;
 
       const cleanup = () => {
         map.off("sourcedata", onSourceData);
@@ -443,16 +444,37 @@ export function MapCanvas({
         onTimeout?.();
       };
 
+      const finishReadyAfterRender = () => {
+        if (done) {
+          return;
+        }
+        // Scrub mode uses this barrier so the new tiles are actually drawn before swap.
+        window.requestAnimationFrame(() => {
+          window.requestAnimationFrame(() => {
+            if (!done) {
+              finishReady();
+            }
+          });
+        });
+      };
+
       const onSourceData = (event: maplibregl.MapSourceDataEvent) => {
         if (event.sourceId !== source) {
           return;
         }
-        if (map.isSourceLoaded(source)) {
+        if (modeValue === "autoplay" && map.isSourceLoaded(source)) {
           seenLoadedState = true;
+        }
+        if (modeValue === "scrub" && map.isSourceLoaded(source) && !scrubReadyQueued) {
+          scrubReadyQueued = true;
+          finishReadyAfterRender();
         }
       };
 
       const onIdle = (_event: any) => {
+        if (modeValue !== "autoplay") {
+          return;
+        }
         if (!seenLoadedState) {
           return;
         }
@@ -463,7 +485,12 @@ export function MapCanvas({
       };
 
       map.on("sourcedata", onSourceData);
-      map.on("idle", onIdle);
+      if (modeValue === "autoplay") {
+        map.on("idle", onIdle);
+      } else if (seenLoadedState && !scrubReadyQueued) {
+        scrubReadyQueued = true;
+        finishReadyAfterRender();
+      }
 
       timeoutId = window.setTimeout(() => finishTimeout(), timeoutMs);
 
@@ -626,6 +653,9 @@ export function MapCanvas({
         console.warn("[map] swap fallback timeout", { sourceId: sourceId(inactiveBuffer), tileUrl, token });
         onTileReady?.(tileUrl);
         onFrameSettled?.(tileUrl);
+        finishSwap(true);
+      } else {
+        console.warn("[map] scrub swap fallback timeout", { sourceId: sourceId(inactiveBuffer), tileUrl, token });
         finishSwap(true);
       }
     });
