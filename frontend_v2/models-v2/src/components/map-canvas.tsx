@@ -154,7 +154,7 @@ function styleFor(
         paint: {
           "raster-opacity": overlayOpacity,
           "raster-resampling": resamplingMode,
-          "raster-fade-duration": 120,
+          "raster-fade-duration": 0,
         },
       },
       {
@@ -165,7 +165,7 @@ function styleFor(
         paint: {
           "raster-opacity": overlayOpacity,
           "raster-resampling": resamplingMode,
-          "raster-fade-duration": 120,
+          "raster-fade-duration": 0,
         },
       },
       {
@@ -176,7 +176,7 @@ function styleFor(
         paint: {
           "raster-opacity": overlayOpacity,
           "raster-resampling": resamplingMode,
-          "raster-fade-duration": 120,
+          "raster-fade-duration": 0,
         },
       },
       {
@@ -187,7 +187,7 @@ function styleFor(
         paint: {
           "raster-opacity": overlayOpacity,
           "raster-resampling": resamplingMode,
-          "raster-fade-duration": 120,
+          "raster-fade-duration": 0,
         },
       },
       {
@@ -198,7 +198,7 @@ function styleFor(
         paint: {
           "raster-opacity": overlayOpacity,
           "raster-resampling": resamplingMode,
-          "raster-fade-duration": 120,
+          "raster-fade-duration": 0,
         },
       },
       {
@@ -209,7 +209,7 @@ function styleFor(
         paint: {
           "raster-opacity": overlayOpacity,
           "raster-resampling": resamplingMode,
-          "raster-fade-duration": 120,
+          "raster-fade-duration": 0,
         },
       },
       {
@@ -418,9 +418,11 @@ export function MapCanvas({
       const timeoutMs = modeValue === "autoplay" ? AUTOPLAY_SWAP_TIMEOUT_MS : SCRUB_SWAP_TIMEOUT_MS;
       let done = false;
       let timeoutId: number | null = null;
+      let seenLoadedState = map.isSourceLoaded(source);
 
       const cleanup = () => {
         map.off("sourcedata", onSourceData);
+        map.off("idle", onIdle);
         if (timeoutId !== null) {
           window.clearTimeout(timeoutId);
           timeoutId = null;
@@ -441,38 +443,29 @@ export function MapCanvas({
         onTimeout?.();
       };
 
-      const readyForMode = () => {
-        return map.isSourceLoaded(source);
-      };
-
-      const finishReadyAfterRender = () => {
-        if (done) return;
-        // Double RAF ensures tiles are rendered before swap
-        window.requestAnimationFrame(() => {
-          window.requestAnimationFrame(() => {
-            if (!done) {
-              finishReady();
-            }
-          });
-        });
-      };
-
       const onSourceData = (event: maplibregl.MapSourceDataEvent) => {
         if (event.sourceId !== source) {
           return;
         }
-        if (readyForMode()) {
-          finishReadyAfterRender();
+        if (map.isSourceLoaded(source)) {
+          seenLoadedState = true;
         }
       };
 
+      const onIdle = (_event: any) => {
+        if (!seenLoadedState) {
+          return;
+        }
+        if (!map.isSourceLoaded(source)) {
+          return;
+        }
+        finishReady();
+      };
+
       map.on("sourcedata", onSourceData);
+      map.on("idle", onIdle);
 
       timeoutId = window.setTimeout(() => finishTimeout(), timeoutMs);
-
-      if (readyForMode()) {
-        finishReadyAfterRender();
-      }
 
       return () => {
         done = true;
