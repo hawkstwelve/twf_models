@@ -215,6 +215,8 @@ export function MapCanvas({
 }: MapCanvasProps) {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
+  const mapDestroyedRef = useRef(false);
+  const originalSetStyleRef = useRef<maplibregl.Map["setStyle"] | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
 
   const onRequestUrlRef = useRef(onRequestUrl);
@@ -242,6 +244,10 @@ export function MapCanvas({
   const overlayMinZoom = useMemo(() => (model === "gfs" ? 6 : 3), [model]);
   const resamplingMode = useMemo(() => getResamplingMode(variable), [variable]);
   const imageCoordinates = useMemo(() => imageCoordinatesForRegion(region), [region]);
+
+  const canMutateMap = useCallback((map: maplibregl.Map | null | undefined): map is maplibregl.Map => {
+    return Boolean(map && !mapDestroyedRef.current && mapRef.current === map && isMapStyleReady(map));
+  }, []);
 
   const setLayerOpacity = useCallback((map: maplibregl.Map, id: string, value: number) => {
     if (!isMapStyleReady(map)) {
@@ -338,7 +344,7 @@ export function MapCanvas({
 
   const waitForNextRenderOrIdle = useCallback((map: maplibregl.Map, token: number): Promise<boolean> => {
     return new Promise((resolve) => {
-      if (!isMapStyleReady(map) || mapRef.current !== map) {
+      if (!canMutateMap(map)) {
         resolve(false);
         return;
       }
@@ -359,7 +365,7 @@ export function MapCanvas({
         if (done) return;
         done = true;
         cleanup();
-        resolve(token === renderTokenRef.current && mapRef.current === map && isMapStyleReady(map));
+        resolve(token === renderTokenRef.current && canMutateMap(map));
       };
 
       const onRender = () => finish();
@@ -374,7 +380,7 @@ export function MapCanvas({
         finish();
       }
     });
-  }, []);
+  }, [canMutateMap]);
 
   const runImageCrossfade = useCallback(
     (
@@ -390,10 +396,9 @@ export function MapCanvas({
       }
 
       if (
-        !isMapStyleReady(map) ||
+        !canMutateMap(map) ||
         !hasSource(map, IMG_SOURCE_A) ||
         !hasSource(map, IMG_SOURCE_B) ||
-        mapRef.current !== map ||
         token !== renderTokenRef.current
       ) {
         return;
@@ -402,7 +407,7 @@ export function MapCanvas({
       if (fromBuffer === toBuffer) {
         activeImageBufferRef.current = toBuffer;
         setImageLayersForBuffer(map, toBuffer, targetOpacity);
-        if (isMapStyleReady(map)) {
+        if (canMutateMap(map)) {
           map.triggerRepaint();
         }
         return;
@@ -417,8 +422,7 @@ export function MapCanvas({
       const tick = (now: number) => {
         if (
           token !== renderTokenRef.current ||
-          mapRef.current !== map ||
-          !isMapStyleReady(map) ||
+          !canMutateMap(map) ||
           !hasSource(map, IMG_SOURCE_A) ||
           !hasSource(map, IMG_SOURCE_B)
         ) {
@@ -435,7 +439,7 @@ export function MapCanvas({
 
         setLayerOpacity(map, fromLayer, fromOpacity);
         setLayerOpacity(map, toLayer, toOpacity);
-        if (isMapStyleReady(map)) {
+        if (canMutateMap(map)) {
           map.triggerRepaint();
         }
 
@@ -446,7 +450,7 @@ export function MapCanvas({
           setLayerOpacity(map, fromLayer, HIDDEN_OPACITY);
           setLayerOpacity(map, toLayer, targetOpacity);
           crossfadeRafRef.current = null;
-          if (isMapStyleReady(map)) {
+          if (canMutateMap(map)) {
             map.triggerRepaint();
           }
           return;
@@ -457,7 +461,7 @@ export function MapCanvas({
 
       crossfadeRafRef.current = window.requestAnimationFrame(tick);
     },
-    [setImageLayersForBuffer, setLayerOpacity]
+    [canMutateMap, setImageLayersForBuffer, setLayerOpacity]
   );
 
   useEffect(() => {
@@ -479,6 +483,18 @@ export function MapCanvas({
       },
     });
 
+    mapDestroyedRef.current = false;
+    const originalSetStyle = map.setStyle.bind(map);
+    originalSetStyleRef.current = originalSetStyle;
+    map.setStyle = ((...args: Parameters<maplibregl.Map["setStyle"]>) => {
+      console.warn("[MapCanvas debug] map.setStyle invoked", {
+        style: args[0],
+        options: args[1],
+      });
+      console.trace("[MapCanvas debug] map.setStyle caller trace");
+      return originalSetStyle(...args);
+    }) as maplibregl.Map["setStyle"];
+
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-left");
     map.on("load", () => {
       setIsLoaded(true);
@@ -496,13 +512,18 @@ export function MapCanvas({
 
       prefetchTokenRef.current += 1;
       renderTokenRef.current += 1;
+      mapDestroyedRef.current = true;
 
       const map = mapRef.current;
       if (map) {
+        if (originalSetStyleRef.current) {
+          map.setStyle = originalSetStyleRef.current;
+        }
         map.remove();
         mapRef.current = null;
       }
 
+      originalSetStyleRef.current = null;
       setIsLoaded(false);
       loadedImageUrlsRef.current.clear();
       failedImageUrlsRef.current.clear();
@@ -617,8 +638,8 @@ export function MapCanvas({
 
     void preloadImageUrl(targetImageUrl)
       .then(async (ready) => {
-        if (!ready || token !== renderTokenRef.current || mapRef.current !== map || !isMapStyleReady(map)) {
-          if (token === renderTokenRef.current && mapRef.current === map && isMapStyleReady(map)) {
+        if (!ready || token !== renderTokenRef.current || !canMutateMap(map)) {
+          if (token === renderTokenRef.current && canMutateMap(map)) {
             activeImageUrlRef.current = "";
             hideImageLayers(map);
             map.triggerRepaint();
@@ -648,7 +669,7 @@ export function MapCanvas({
 
         map.triggerRepaint();
         const renderSettled = await waitForNextRenderOrIdle(map, token);
-        if (!renderSettled || token !== renderTokenRef.current || mapRef.current !== map || !isMapStyleReady(map)) {
+        if (!renderSettled || token !== renderTokenRef.current || !canMutateMap(map)) {
           return;
         }
 
@@ -663,7 +684,7 @@ export function MapCanvas({
         activeImageUrlRef.current = targetImageUrl;
       })
       .catch(() => {
-        if (token !== renderTokenRef.current) {
+        if (token !== renderTokenRef.current || !canMutateMap(map)) {
           return;
         }
         activeImageUrlRef.current = "";
@@ -672,6 +693,7 @@ export function MapCanvas({
       });
   }, [
     crossfade,
+    canMutateMap,
     frameImageUrl,
     hideImageLayers,
     imageCoordinates,
