@@ -17,7 +17,6 @@ import {
 import { DEFAULTS, VARIABLE_LABELS } from "@/lib/config";
 import { buildOfflineFrameImageUrl } from "@/lib/frames";
 import { buildRunOptions } from "@/lib/run-options";
-import { buildOfflinePmtilesUrl } from "@/lib/tiles";
 
 const MANIFEST_REFRESH_ACTIVE_MS = 5_000;
 const MANIFEST_REFRESH_IDLE_MS = 30_000;
@@ -194,7 +193,6 @@ type DisplayFrame = {
   frameId: string;
   fh: number;
   run: string;
-  tileUrl: string;
   frameImageUrl?: string;
   validTime?: string;
   legendMeta?: LegendMeta | null;
@@ -366,6 +364,7 @@ function isLegacyRequestUrl(inputUrl: string): boolean {
   }
 }
 
+
 function getOfflineFrames(
   manifest: OfflineRunManifest,
   model: string,
@@ -376,35 +375,36 @@ function getOfflineFrames(
     return { frames: [], expected: 0, available: 0, runId: manifest.run };
   }
 
-  const frames = variableManifest.frames
+  const manifestFrames = Array.isArray(variableManifest.frames) ? variableManifest.frames : [];
+  const frames = manifestFrames
     .slice()
     .sort((a, b) => Number(a.fhr) - Number(b.fhr))
-    .map((frame) => ({
-      frameId: frame.frame_id,
-      fh: Number(frame.fhr),
-      run: manifest.run,
-      tileUrl: buildOfflinePmtilesUrl({
-        model,
-        run: manifest.run,
-        varKey: variable,
+    .map((frame) => {
+      const rawFrameImageUrl = frame.frame_image_url?.trim();
+      return {
         frameId: frame.frame_id,
-        frameUrl: frame.url,
-      }),
-      frameImageUrl: buildOfflineFrameImageUrl({
-        model,
+        fh: Number(frame.fhr),
         run: manifest.run,
-        varKey: variable,
-        fh: frame.fhr,
-        frameImageUrl: frame.frame_image_url ?? frame.image_url,
-      }),
-      validTime: frame.valid_time,
-      legendMeta: FRONTEND_LEGEND_PRESETS[variable] ?? null,
-    }));
+        frameImageUrl: rawFrameImageUrl
+          ? buildOfflineFrameImageUrl({
+              model,
+              run: manifest.run,
+              varKey: variable,
+              fh: frame.fhr,
+              frameImageUrl: rawFrameImageUrl,
+            })
+          : undefined,
+        validTime: frame.valid_time,
+        legendMeta: FRONTEND_LEGEND_PRESETS[variable] ?? null,
+      };
+    });
 
+  const expected = Number(variableManifest.expected_frames);
+  const available = Number(variableManifest.available_frames);
   return {
     frames,
-    expected: variableManifest.expected_frames,
-    available: variableManifest.available_frames,
+    expected: Number.isFinite(expected) ? expected : manifestFrames.length,
+    available: Number.isFinite(available) ? available : frames.length,
     runId: manifest.run,
   };
 }
@@ -433,11 +433,9 @@ export default function App() {
   const [availableFramesCount, setAvailableFramesCount] = useState(0);
   const [resolvedRunId, setResolvedRunId] = useState<string | null>(null);
   const [legacyRequestViolations, setLegacyRequestViolations] = useState<string[]>([]);
-  const [, setReadyVersionTiles] = useState(0);
   const [readyVersionImages, setReadyVersionImages] = useState(0);
   const [badFrameImageVersion, setBadFrameImageVersion] = useState(0);
   const [scrubIsActive, setScrubIsActive] = useState(false);
-  const readyTileUrlsRef = useRef<Set<string>>(new Set());
   const readyFrameImageUrlsRef = useRef<Set<string>>(new Set());
   const badFrameImageUrlsRef = useRef<Set<string>>(new Set());
   const scrubRenderTimerRef = useRef<number | null>(null);
@@ -464,10 +462,6 @@ export default function App() {
     return buildRunOptions(runs, latestRunId);
   }, [runs, latestRunId]);
 
-  const tileUrl = useMemo(() => {
-    return currentFrame?.tileUrl ?? "";
-  }, [currentFrame]);
-
   const frameImageUrl = useMemo(() => {
     const normalized = currentFrame?.frameImageUrl?.trim() ?? "";
     if (!normalized) {
@@ -484,25 +478,6 @@ export default function App() {
       currentFrame?.legendMeta ?? frameRows[0]?.legendMeta ?? FRONTEND_LEGEND_PRESETS[variable] ?? null;
     return buildLegend(normalizedMeta, opacity);
   }, [currentFrame, frameRows, opacity, variable]);
-
-  const prefetchTileUrls = useMemo(() => {
-    if (frameHours.length < 2) return [];
-    const focusHour = nearestFrame(frameHours, isPlaying ? forecastHour : targetForecastHour);
-    const focusIndex = frameHours.indexOf(focusHour);
-    if (focusIndex < 0) return [];
-
-    const orderedHours: number[] = [];
-    for (let offset = 1; offset <= 2; offset += 1) {
-      const ahead = focusIndex + offset;
-      const behind = focusIndex - offset;
-      if (ahead < frameHours.length) orderedHours.push(frameHours[ahead]);
-      if (behind >= 0) orderedHours.push(frameHours[behind]);
-    }
-
-    return orderedHours
-      .map((fh) => frameByHour.get(fh)?.tileUrl)
-      .filter((url): url is string => Boolean(url));
-  }, [frameHours, frameByHour, forecastHour, targetForecastHour, isPlaying]);
 
   const prefetchFrameImageUrls = useMemo<string[]>(() => {
     if (frameHours.length < 2) return [];
@@ -550,21 +525,6 @@ export default function App() {
     });
     console.warn("[phase2] Legacy API/tile request detected", { source, url });
   }, []);
-
-  const markTileUrlReady = useCallback((url: string) => {
-    if (!url) return;
-    if (readyTileUrlsRef.current.has(url)) return;
-    readyTileUrlsRef.current.add(url);
-    setReadyVersionTiles((prev) => prev + 1);
-  }, []);
-
-  const handleTileReady = useCallback((url: string) => {
-    markTileUrlReady(url);
-  }, [markTileUrlReady]);
-
-  const handleFrameSettled = useCallback((url: string) => {
-    markTileUrlReady(url);
-  }, [markTileUrlReady]);
 
   const markFrameImageReady = useCallback((imageUrl: string) => {
     const normalized = imageUrl.trim();
@@ -711,36 +671,13 @@ export default function App() {
     setExpectedFrames(0);
     setAvailableFramesCount(0);
     setScrubIsActive(false);
-    readyTileUrlsRef.current = new Set();
     readyFrameImageUrlsRef.current = new Set();
     badFrameImageUrlsRef.current = new Set();
-    setReadyVersionTiles((prev) => prev + 1);
     setReadyVersionImages((prev) => prev + 1);
     setBadFrameImageVersion((prev) => prev + 1);
   }, [model, run, variable]);
 
   useEffect(() => {
-    const allowedTiles = new Set(frameRows.map((row) => row.tileUrl));
-    const nextReadyTiles = new Set<string>();
-    for (const url of readyTileUrlsRef.current) {
-      if (allowedTiles.has(url)) {
-        nextReadyTiles.add(url);
-      }
-    }
-    let changedTiles = nextReadyTiles.size !== readyTileUrlsRef.current.size;
-    if (!changedTiles) {
-      for (const url of nextReadyTiles) {
-        if (!readyTileUrlsRef.current.has(url)) {
-          changedTiles = true;
-          break;
-        }
-      }
-    }
-    readyTileUrlsRef.current = nextReadyTiles;
-    if (changedTiles) {
-      setReadyVersionTiles((prev) => prev + 1);
-    }
-
     const allowedImages = new Set(
       frameRows
         .map((row) => row.frameImageUrl?.trim())
@@ -952,20 +889,15 @@ export default function App() {
 
       <div className="relative flex-1 overflow-hidden">
         <MapCanvas
-          tileUrl={tileUrl}
           frameImageUrl={frameImageUrl}
           region="published"
           opacity={opacity}
           mode={isPlaying ? "autoplay" : "scrub"}
           variable={variable}
           model={model}
-          preferFrameImages
           scrubIsActive={scrubIsActive}
-          prefetchTileUrls={prefetchTileUrls}
           prefetchFrameImageUrls={prefetchFrameImageUrls}
           crossfade={false}
-          onTileReady={handleTileReady}
-          onFrameSettled={handleFrameSettled}
           onFrameImageReady={markFrameImageReady}
           onFrameImageError={markFrameImageUnavailable}
           onZoomHint={setShowZoomHint}
