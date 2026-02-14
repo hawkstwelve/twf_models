@@ -144,23 +144,32 @@ function drawFrameToCanvas(
     return;
   }
 
+  // Guard against closed ImageBitmaps (evicted from cache while still referenced)
+  const safeDraw = (img: CanvasImageSource) => {
+    try {
+      ctx.drawImage(img, 0, 0, w, h);
+    } catch {
+      // ImageBitmap was closed — skip this frame silently.
+    }
+  };
+
   if (hasFront && hasBack && clampedProgress < 1) {
     ctx.globalAlpha = 1 - clampedProgress;
-    ctx.drawImage(frontFrame as CanvasImageSource, 0, 0, w, h);
+    safeDraw(frontFrame as CanvasImageSource);
     ctx.globalAlpha = clampedProgress;
-    ctx.drawImage(backFrame as CanvasImageSource, 0, 0, w, h);
+    safeDraw(backFrame as CanvasImageSource);
     ctx.globalAlpha = 1;
     return;
   }
 
   if (hasBack) {
     ctx.globalAlpha = 1;
-    ctx.drawImage(backFrame as CanvasImageSource, 0, 0, w, h);
+    safeDraw(backFrame as CanvasImageSource);
     return;
   }
 
   ctx.globalAlpha = 1;
-  ctx.drawImage(frontFrame as CanvasImageSource, 0, 0, w, h);
+  safeDraw(frontFrame as CanvasImageSource);
 }
 
 function sampleCenterAlpha(canvas: HTMLCanvasElement | null): number {
@@ -452,12 +461,19 @@ export function MapCanvas({
     const cached = bitmapCacheRef.current.get(url);
     if (cached) {
       cacheBytesRef.current = Math.max(0, cacheBytesRef.current - estimateBitmapBytes(cached));
-      try {
-        if (cached instanceof ImageBitmap) {
-          cached.close();
+      // Only close the ImageBitmap if it's NOT currently being displayed.
+      // frontFrameRef / backFrameRef hold direct references to the same object;
+      // closing it while in use causes DOMException in drawImage.
+      const isActiveFrame =
+        cached === frontFrameRef.current || cached === backFrameRef.current;
+      if (!isActiveFrame) {
+        try {
+          if (cached instanceof ImageBitmap) {
+            cached.close();
+          }
+        } catch {
+          // noop
         }
-      } catch {
-        // noop
       }
       bitmapCacheRef.current.delete(url);
     }
@@ -627,11 +643,18 @@ export function MapCanvas({
       bitmapCacheOrderRef.current.push(url);
       cacheBytesRef.current += decodedBytes;
 
+      // Evict oldest entries to stay within byte budget, but never evict
+      // the frame currently being displayed or pending promotion.
+      const protectedUrls = new Set<string>();
+      if (frontFrameUrlRef.current) protectedUrls.add(frontFrameUrlRef.current);
+      if (pendingFrameUrlRef.current) protectedUrls.add(pendingFrameUrlRef.current);
+
       while (cacheBytesRef.current > BITMAP_CACHE_BUDGET_BYTES && bitmapCacheOrderRef.current.length > 1) {
-        const evictedUrl = bitmapCacheOrderRef.current.shift();
-        if (!evictedUrl) {
-          break;
-        }
+        // Find the first evictable (non-protected) entry
+        const evictIdx = bitmapCacheOrderRef.current.findIndex((u) => !protectedUrls.has(u));
+        if (evictIdx < 0) break;
+        const evictedUrl = bitmapCacheOrderRef.current.splice(evictIdx, 1)[0];
+        if (!evictedUrl) break;
         removeBitmapFromCache(evictedUrl);
       }
 
