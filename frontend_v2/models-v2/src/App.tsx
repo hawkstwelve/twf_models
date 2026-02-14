@@ -22,6 +22,7 @@ const MANIFEST_REFRESH_ACTIVE_MS = 5_000;
 const MANIFEST_REFRESH_IDLE_MS = 30_000;
 const SCRUB_RENDER_THROTTLE_MS = 80;
 const PREFETCH_LOOKAHEAD = 20;
+const PLAYBACK_COMMIT_MS = 100;
 
 const TMP2M_COLORS = [
   "#e8d0d8", "#d8b0c8", "#c080b0", "#9050a0", "#703090",
@@ -437,11 +438,58 @@ export default function App() {
   const [readyVersionImages, setReadyVersionImages] = useState(0);
   const [badFrameImageVersion, setBadFrameImageVersion] = useState(0);
   const [scrubIsActive, setScrubIsActive] = useState(false);
+  const forecastHourRef = useRef(0);
+  const targetHourRef = useRef(0);
+  const isPlayingRef = useRef(false);
+  const nextIndexRef = useRef(-1);
+  const lastCommittedHourRef = useRef(0);
+  const lastPlaybackCommitAtRef = useRef(0);
   const readyFrameImageUrlsRef = useRef<Set<string>>(new Set());
   const badFrameImageUrlsRef = useRef<Set<string>>(new Set());
   const frameImageFailureCountsRef = useRef<Map<string, number>>(new Map());
   const scrubRenderTimerRef = useRef<number | null>(null);
   const lastScrubRenderAtRef = useRef(0);
+
+  const commitHourIfChanged = useCallback(
+    (
+      nextHour: number,
+      options?: {
+        syncTarget?: boolean;
+        force?: boolean;
+      }
+    ) => {
+      const syncTarget = options?.syncTarget ?? false;
+      const force = options?.force ?? false;
+      const now = performance.now();
+      const shouldThrottle = !force && now - lastPlaybackCommitAtRef.current < PLAYBACK_COMMIT_MS;
+      const changed = lastCommittedHourRef.current !== nextHour;
+
+      if (changed && shouldThrottle) {
+        return;
+      }
+
+      if (changed) {
+        lastCommittedHourRef.current = nextHour;
+        lastPlaybackCommitAtRef.current = now;
+        setForecastHour((prev) => (prev === nextHour ? prev : nextHour));
+      }
+
+      if (syncTarget) {
+        setTargetForecastHour((prev) => (prev === nextHour ? prev : nextHour));
+      }
+    },
+    []
+  );
+
+  const handleTargetHourChange = useCallback((nextHour: number) => {
+    targetHourRef.current = nextHour;
+    setTargetForecastHour((prev) => (prev === nextHour ? prev : nextHour));
+  }, []);
+
+  const handleSetIsPlaying = useCallback((value: boolean) => {
+    isPlayingRef.current = value;
+    setIsPlaying((prev) => (prev === value ? prev : value));
+  }, []);
 
   const frameHours = useMemo(() => {
     const hours = frameRows.map((row) => Number(row.fh)).filter(Number.isFinite);
@@ -500,7 +548,8 @@ export default function App() {
 
   const prefetchFrameImageUrls = useMemo<string[]>(() => {
     if (frameHours.length === 0) return [];
-    const focusHour = nearestFrame(frameHours, isPlaying ? forecastHour : targetForecastHour);
+    const focusBaseHour = isPlaying ? forecastHourRef.current : targetHourRef.current;
+    const focusHour = nearestFrame(frameHours, focusBaseHour);
     const focusIndex = frameHours.indexOf(focusHour);
     if (focusIndex < 0) return [];
 
@@ -522,6 +571,18 @@ export default function App() {
       return items;
     }, []);
   }, [frameHours, frameByHour, forecastHour, targetForecastHour, isPlaying, badFrameImageVersion]);
+
+  useEffect(() => {
+    forecastHourRef.current = forecastHour;
+  }, [forecastHour]);
+
+  useEffect(() => {
+    targetHourRef.current = targetForecastHour;
+  }, [targetForecastHour]);
+
+  useEffect(() => {
+    isPlayingRef.current = isPlaying;
+  }, [isPlaying]);
 
   const effectiveRunId = currentFrame?.run ?? (run !== "latest" ? run : latestRunId);
   const runDateTimeISO = runIdToIso(effectiveRunId);
@@ -693,6 +754,11 @@ export default function App() {
     setFrameRows([]);
     setForecastHour(0);
     setTargetForecastHour(0);
+    forecastHourRef.current = 0;
+    targetHourRef.current = 0;
+    lastCommittedHourRef.current = 0;
+    lastPlaybackCommitAtRef.current = 0;
+    nextIndexRef.current = -1;
     setExpectedFrames(0);
     setAvailableFramesCount(0);
     setScrubIsActive(false);
@@ -772,8 +838,13 @@ export default function App() {
         setAvailableFramesCount(payload.available);
         setExpectedFrames(payload.expected);
         const frames = payload.frames.map((row) => Number(row.fh)).filter(Number.isFinite);
-        setForecastHour((prev) => nearestFrame(frames, prev));
-        setTargetForecastHour((prev) => nearestFrame(frames, prev));
+        const nextForecastHour = nearestFrame(frames, forecastHourRef.current);
+        const nextTargetHour = nearestFrame(frames, targetHourRef.current);
+        forecastHourRef.current = nextForecastHour;
+        targetHourRef.current = nextTargetHour;
+        lastCommittedHourRef.current = nextForecastHour;
+        setForecastHour((prev) => (prev === nextForecastHour ? prev : nextForecastHour));
+        setTargetForecastHour((prev) => (prev === nextTargetHour ? prev : nextTargetHour));
       } catch (err) {
         if (cancelled) return;
         setError(err instanceof Error ? err.message : "Failed to load frames");
@@ -804,8 +875,13 @@ export default function App() {
         setAvailableFramesCount(payload.available);
         setExpectedFrames(payload.expected);
         const frames = payload.frames.map((row) => Number(row.fh)).filter(Number.isFinite);
-        setForecastHour((prev) => nearestFrame(frames, prev));
-        setTargetForecastHour((prev) => nearestFrame(frames, prev));
+        const nextForecastHour = nearestFrame(frames, forecastHourRef.current);
+        const nextTargetHour = nearestFrame(frames, targetHourRef.current);
+        forecastHourRef.current = nextForecastHour;
+        targetHourRef.current = nextTargetHour;
+        lastCommittedHourRef.current = nextForecastHour;
+        setForecastHour((prev) => (prev === nextForecastHour ? prev : nextForecastHour));
+        setTargetForecastHour((prev) => (prev === nextTargetHour ? prev : nextTargetHour));
       } catch {
         // Background refresh should not interrupt active UI.
       }
@@ -819,26 +895,34 @@ export default function App() {
       return;
     }
 
-    const startHour = nearestFrame(frameHours, forecastHour);
+    const startHour = nearestFrame(frameHours, forecastHourRef.current);
     const startIndex = Math.max(0, frameHours.indexOf(startHour));
     const frameDurationMs = Math.max(1, autoplayTickMs);
     const startedAt = performance.now();
     let rafId: number | null = null;
-    let lastIndex = -1;
+    nextIndexRef.current = -1;
 
     const tick = (now: number) => {
+      if (!isPlayingRef.current) {
+        return;
+      }
       const elapsed = now - startedAt;
       const advancedFrames = Math.floor(elapsed / frameDurationMs);
       const nextIndex = Math.min(frameHours.length - 1, startIndex + advancedFrames);
-      if (nextIndex !== lastIndex) {
-        lastIndex = nextIndex;
+      if (nextIndex !== nextIndexRef.current) {
+        nextIndexRef.current = nextIndex;
         const nextHour = frameHours[nextIndex];
-        setForecastHour((prev) => (prev === nextHour ? prev : nextHour));
-        setTargetForecastHour((prev) => (prev === nextHour ? prev : nextHour));
+        forecastHourRef.current = nextHour;
+        targetHourRef.current = nextHour;
+        commitHourIfChanged(nextHour, { syncTarget: true });
       }
 
       if (nextIndex >= frameHours.length - 1) {
-        setIsPlaying(false);
+        const finalHour = frameHours[frameHours.length - 1];
+        forecastHourRef.current = finalHour;
+        targetHourRef.current = finalHour;
+        commitHourIfChanged(finalHour, { syncTarget: true, force: true });
+        handleSetIsPlaying(false);
         return;
       }
 
@@ -851,13 +935,13 @@ export default function App() {
         window.cancelAnimationFrame(rafId);
       }
     };
-  }, [isPlaying, frameHours, autoplayTickMs]);
+  }, [isPlaying, frameHours, autoplayTickMs, commitHourIfChanged, handleSetIsPlaying]);
 
   useEffect(() => {
     if (frameHours.length === 0 && isPlaying) {
-      setIsPlaying(false);
+      handleSetIsPlaying(false);
     }
-  }, [frameHours, isPlaying]);
+  }, [frameHours, isPlaying, handleSetIsPlaying]);
 
   useEffect(() => {
     if (isPlaying && scrubIsActive) {
@@ -870,14 +954,15 @@ export default function App() {
       return;
     }
 
-    const target = nearestFrame(frameHours, targetForecastHour);
-    const desiredHour = scrubIsActive ? nearestReadyImageHour(target, forecastHour) : target;
+    const target = nearestFrame(frameHours, targetHourRef.current);
+    const desiredHour = scrubIsActive ? nearestReadyImageHour(target, forecastHourRef.current) : target;
     const now = performance.now();
     const elapsed = now - lastScrubRenderAtRef.current;
 
     const apply = () => {
       lastScrubRenderAtRef.current = performance.now();
-      setForecastHour((prev) => (prev === desiredHour ? prev : desiredHour));
+      forecastHourRef.current = desiredHour;
+      commitHourIfChanged(desiredHour, { force: true });
     };
 
     if (elapsed >= SCRUB_RENDER_THROTTLE_MS) {
@@ -897,7 +982,7 @@ export default function App() {
         scrubRenderTimerRef.current = null;
       }
     };
-  }, [isPlaying, frameHours, targetForecastHour, forecastHour, scrubIsActive, readyVersionImages, nearestReadyImageHour]);
+  }, [isPlaying, frameHours, scrubIsActive, readyVersionImages, nearestReadyImageHour, commitHourIfChanged]);
 
   return (
     <div className="flex h-full flex-col">
@@ -972,11 +1057,11 @@ export default function App() {
           availableFramesCount={availableFramesCount}
           expectedFramesCount={expectedFrames}
           isPublishing={isPublishing}
-          onForecastHourChange={setTargetForecastHour}
+          onForecastHourChange={handleTargetHourChange}
           onScrubStart={() => setScrubIsActive(true)}
           onScrubEnd={() => setScrubIsActive(false)}
           isPlaying={isPlaying}
-          setIsPlaying={setIsPlaying}
+          setIsPlaying={handleSetIsPlaying}
           autoplayTickMs={autoplayTickMs}
           autoplaySpeedPresets={AUTOPLAY_SPEED_PRESETS}
           onAutoplayTickMsChange={setAutoplayTickMs}
