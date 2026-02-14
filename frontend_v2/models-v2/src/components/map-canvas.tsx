@@ -34,7 +34,8 @@ const REGION_BOUNDS: Record<string, [number, number, number, number]> = {
 const IMAGE_CROSSFADE_DURATION_MS = 60;
 const IMAGE_PREFETCH_THROTTLE_MS = 24;
 const HIDDEN_OPACITY = 0;
-const OVERLAY_CANVAS_SIZE = 2048;
+const OVERLAY_CANVAS_WIDTH = 2048;
+const OVERLAY_CANVAS_HEIGHT = 2046;
 
 const IMG_SOURCE_A = "twf-canvas-a";
 const IMG_SOURCE_B = "twf-canvas-b";
@@ -642,10 +643,10 @@ export function MapCanvas({
 
     const canvasA = document.createElement("canvas");
     const canvasB = document.createElement("canvas");
-    canvasA.width = OVERLAY_CANVAS_SIZE;
-    canvasA.height = OVERLAY_CANVAS_SIZE;
-    canvasB.width = OVERLAY_CANVAS_SIZE;
-    canvasB.height = OVERLAY_CANVAS_SIZE;
+    canvasA.width = OVERLAY_CANVAS_WIDTH;
+    canvasA.height = OVERLAY_CANVAS_HEIGHT;
+    canvasB.width = OVERLAY_CANVAS_WIDTH;
+    canvasB.height = OVERLAY_CANVAS_HEIGHT;
 
     canvasARef.current = canvasA;
     canvasBRef.current = canvasB;
@@ -876,8 +877,9 @@ export function MapCanvas({
         }
 
         try {
-          targetCtx.clearRect(0, 0, OVERLAY_CANVAS_SIZE, OVERLAY_CANVAS_SIZE);
-          targetCtx.drawImage(bitmap, 0, 0, OVERLAY_CANVAS_SIZE, OVERLAY_CANVAS_SIZE);
+          const targetCanvas = targetCtx.canvas;
+          targetCtx.clearRect(0, 0, targetCanvas.width, targetCanvas.height);
+          targetCtx.drawImage(bitmap, 0, 0, targetCanvas.width, targetCanvas.height);
         } catch {
           bitmap.close();
           onFrameImageError?.(targetImageUrl);
