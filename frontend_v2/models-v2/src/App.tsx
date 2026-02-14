@@ -449,6 +449,7 @@ export default function App() {
   const frameImageFailureCountsRef = useRef<Map<string, number>>(new Map());
   const scrubRenderTimerRef = useRef<number | null>(null);
   const lastScrubRenderAtRef = useRef(0);
+  const isFrameReadyRef = useRef<((url: string) => boolean) | null>(null);
 
   const commitHourIfChanged = useCallback(
     (
@@ -554,11 +555,20 @@ export default function App() {
     if (focusIndex < 0) return [];
 
     const prioritizedHours: number[] = [focusHour];
-    for (let offset = 1; offset <= PREFETCH_LOOKAHEAD; offset += 1) {
-      const ahead = focusIndex + offset;
-      const behind = focusIndex - offset;
-      if (ahead < frameHours.length) prioritizedHours.push(frameHours[ahead]);
-      if (behind >= 0) prioritizedHours.push(frameHours[behind]);
+    if (isPlaying) {
+      // During playback, prefetch only forward — backward frames are never revisited
+      for (let offset = 1; offset <= PREFETCH_LOOKAHEAD; offset += 1) {
+        const ahead = focusIndex + offset;
+        if (ahead < frameHours.length) prioritizedHours.push(frameHours[ahead]);
+      }
+    } else {
+      // When paused/scrubbing, alternate forward/backward
+      for (let offset = 1; offset <= PREFETCH_LOOKAHEAD; offset += 1) {
+        const ahead = focusIndex + offset;
+        const behind = focusIndex - offset;
+        if (ahead < frameHours.length) prioritizedHours.push(frameHours[ahead]);
+        if (behind >= 0) prioritizedHours.push(frameHours[behind]);
+      }
     }
 
     return prioritizedHours.reduce<string[]>((items, fh) => {
@@ -901,23 +911,40 @@ export default function App() {
     const startedAt = performance.now();
     let rafId: number | null = null;
     nextIndexRef.current = -1;
+    /** Tracks how many frames elapsed-time says we should be at, independent of stalls */
+    let stallFrameOffset = 0;
+    let lastAdvancedIndex = startIndex;
 
     const tick = (now: number) => {
       if (!isPlayingRef.current) {
         return;
       }
       const elapsed = now - startedAt;
-      const advancedFrames = Math.floor(elapsed / frameDurationMs);
+      const advancedFrames = Math.floor(elapsed / frameDurationMs) + stallFrameOffset;
       const nextIndex = Math.min(frameHours.length - 1, startIndex + advancedFrames);
+
       if (nextIndex !== nextIndexRef.current) {
-        nextIndexRef.current = nextIndex;
+        // Gate: check if the next frame's bitmap is cached before advancing.
+        // If not ready, hold on the current frame (don't flash white).
         const nextHour = frameHours[nextIndex];
-        forecastHourRef.current = nextHour;
-        targetHourRef.current = nextHour;
-        commitHourIfChanged(nextHour, { syncTarget: true });
+        const nextFrame = frameByHour.get(nextHour);
+        const nextUrl = nextFrame?.frameImageUrl?.trim() ?? "";
+        const isReady = !nextUrl || !isFrameReadyRef.current || isFrameReadyRef.current(nextUrl);
+
+        if (isReady) {
+          nextIndexRef.current = nextIndex;
+          lastAdvancedIndex = nextIndex;
+          forecastHourRef.current = nextHour;
+          targetHourRef.current = nextHour;
+          commitHourIfChanged(nextHour, { syncTarget: true });
+        } else {
+          // Frame not decoded yet — stall playback clock so we don't skip frames
+          // when the bitmap eventually arrives.
+          stallFrameOffset -= (nextIndex - lastAdvancedIndex);
+        }
       }
 
-      if (nextIndex >= frameHours.length - 1) {
+      if (nextIndexRef.current >= frameHours.length - 1) {
         const finalHour = frameHours[frameHours.length - 1];
         forecastHourRef.current = finalHour;
         targetHourRef.current = finalHour;
@@ -935,7 +962,7 @@ export default function App() {
         window.cancelAnimationFrame(rafId);
       }
     };
-  }, [isPlaying, frameHours, autoplayTickMs, commitHourIfChanged, handleSetIsPlaying]);
+  }, [isPlaying, frameHours, autoplayTickMs, frameByHour, commitHourIfChanged, handleSetIsPlaying]);
 
   useEffect(() => {
     if (frameHours.length === 0 && isPlaying) {
@@ -1014,6 +1041,7 @@ export default function App() {
           model={model}
           prefetchFrameImageUrls={prefetchFrameImageUrls}
           crossfade
+          isFrameReadyRef={isFrameReadyRef}
           onFrameImageReady={markFrameImageReady}
           onFrameImageError={markFrameImageUnavailable}
           onZoomHint={setShowZoomHint}

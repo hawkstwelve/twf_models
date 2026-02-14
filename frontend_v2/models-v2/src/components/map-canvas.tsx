@@ -31,14 +31,29 @@ const REGION_BOUNDS: Record<string, [number, number, number, number]> = {
   published: [-125.5, 41.5, -111.0, 49.5],
 };
 
-const IMAGE_PREFETCH_THROTTLE_MS = 24;
 const HIDDEN_OPACITY = 0;
 const DEFAULT_OVERLAY_OPACITY = 0.85;
 const OVERLAY_CANVAS_WIDTH = 2048;
 const OVERLAY_CANVAS_HEIGHT = 2046;
-const BITMAP_CACHE_LIMIT = 12;
-const PREFETCH_NEARBY_FRAMES = 8;
 const CROSSFADE_DURATION_MS = 120;
+const PREFETCH_CONCURRENCY = 4;
+const PREFETCH_NEARBY_FRAMES = 24;
+
+/**
+ * Byte-budgeted bitmap cache.
+ * Each decoded RGBA bitmap costs w * h * 4 bytes.
+ * Desktop budget ~800 MB, mobile ~300 MB.
+ */
+const IS_MOBILE =
+  typeof navigator !== "undefined" &&
+  (navigator.maxTouchPoints > 0 || /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent));
+const BITMAP_CACHE_BUDGET_BYTES = IS_MOBILE ? 300 * 1024 * 1024 : 800 * 1024 * 1024;
+
+function estimateBitmapBytes(frame: DecodedFrame): number {
+  const w = (frame as { width?: number }).width ?? OVERLAY_CANVAS_WIDTH;
+  const h = (frame as { height?: number }).height ?? OVERLAY_CANVAS_HEIGHT;
+  return w * h * 4;
+}
 
 const IMG_SOURCE_ID = "twf-canvas-overlay";
 const IMG_LAYER_ID = "twf-img-overlay";
@@ -303,6 +318,7 @@ type MapCanvasProps = {
   model?: string;
   prefetchFrameImageUrls?: string[];
   crossfade?: boolean;
+  isFrameReadyRef?: React.MutableRefObject<((url: string) => boolean) | null>;
   onFrameImageReady?: (imageUrl: string) => void;
   onFrameImageError?: (imageUrl: string) => void;
   onZoomHint?: (show: boolean) => void;
@@ -317,6 +333,7 @@ export function MapCanvas({
   model,
   prefetchFrameImageUrls = [],
   crossfade = true,
+  isFrameReadyRef,
   onFrameImageReady,
   onFrameImageError,
   onZoomHint,
@@ -338,8 +355,21 @@ export function MapCanvas({
   const prefetchTokenRef = useRef(0);
   const bitmapCacheRef = useRef<Map<string, DecodedFrame>>(new Map());
   const bitmapCacheOrderRef = useRef<string[]>([]);
+  const cacheBytesRef = useRef(0);
   const cacheHitsRef = useRef(0);
   const cacheMissesRef = useRef(0);
+
+  // Expose cache-hit check so the playback loop can gate on frame readiness
+  useEffect(() => {
+    if (isFrameReadyRef) {
+      isFrameReadyRef.current = (url: string) => bitmapCacheRef.current.has(url);
+    }
+    return () => {
+      if (isFrameReadyRef) {
+        isFrameReadyRef.current = null;
+      }
+    };
+  }, [isFrameReadyRef]);
   const pendingFrameUrlRef = useRef<string>("");
   const lastDrawnFrameUrlRef = useRef<string>("");
   const lastDrawTimestampRef = useRef<number>(0);
@@ -421,6 +451,7 @@ export function MapCanvas({
   const removeBitmapFromCache = useCallback((url: string) => {
     const cached = bitmapCacheRef.current.get(url);
     if (cached) {
+      cacheBytesRef.current = Math.max(0, cacheBytesRef.current - estimateBitmapBytes(cached));
       try {
         if (cached instanceof ImageBitmap) {
           cached.close();
@@ -590,11 +621,13 @@ export function MapCanvas({
         decoded = await decodeMainThread(url, cacheMode);
       }
 
+      const decodedBytes = estimateBitmapBytes(decoded);
       bitmapCacheRef.current.set(url, decoded);
       bitmapCacheOrderRef.current = bitmapCacheOrderRef.current.filter((entry) => entry !== url);
       bitmapCacheOrderRef.current.push(url);
+      cacheBytesRef.current += decodedBytes;
 
-      while (bitmapCacheOrderRef.current.length > BITMAP_CACHE_LIMIT) {
+      while (cacheBytesRef.current > BITMAP_CACHE_BUDGET_BYTES && bitmapCacheOrderRef.current.length > 1) {
         const evictedUrl = bitmapCacheOrderRef.current.shift();
         if (!evictedUrl) {
           break;
@@ -1233,23 +1266,27 @@ export function MapCanvas({
 
     const runPrefetch = async () => {
       const queueSlice = uniqueQueue.slice(0, PREFETCH_NEARBY_FRAMES);
-      for (const url of queueSlice) {
-        if (cancelled || token !== prefetchTokenRef.current) {
-          return;
+      let cursor = 0;
+
+      const worker = async () => {
+        while (cursor < queueSlice.length) {
+          if (cancelled || token !== prefetchTokenRef.current) {
+            return;
+          }
+          const idx = cursor++;
+          if (idx >= queueSlice.length) return;
+          const url = queueSlice[idx];
+          try {
+            await fetchBitmap(url);
+            onFrameImageReady?.(url);
+          } catch {
+            // Prefetch failures are non-fatal.
+          }
         }
-        try {
-          await fetchBitmap(url);
-          onFrameImageReady?.(url);
-        } catch {
-          // Prefetch failures are non-fatal and should not mark a frame unavailable.
-        }
-        if (cancelled || token !== prefetchTokenRef.current) {
-          return;
-        }
-        await new Promise<void>((resolve) => {
-          window.setTimeout(() => resolve(), IMAGE_PREFETCH_THROTTLE_MS);
-        });
-      }
+      };
+
+      const workers = Array.from({ length: Math.min(PREFETCH_CONCURRENCY, queueSlice.length) }, () => worker());
+      await Promise.allSettled(workers);
     };
 
     void runPrefetch();
@@ -1293,6 +1330,9 @@ export function MapCanvas({
         selectedRun: "unknown-from-map-canvas",
         selectedVar: variable ?? "",
         cacheSize: bitmapCacheRef.current.size,
+        cacheBytesUsed: cacheBytesRef.current,
+        cacheBudgetBytes: BITMAP_CACHE_BUDGET_BYTES,
+        cacheBudgetPct: cacheBytesRef.current / BITMAP_CACHE_BUDGET_BYTES,
         cacheHits: cacheHitsRef.current,
         cacheMisses: cacheMissesRef.current,
         cacheHitRate: totalLookups > 0 ? cacheHitsRef.current / totalLookups : 0,
