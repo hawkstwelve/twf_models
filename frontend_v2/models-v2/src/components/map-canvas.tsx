@@ -116,6 +116,43 @@ function sampleCenterAlpha(canvas: HTMLCanvasElement | null): number {
   }
 }
 
+function isCanvasNonBlank(canvas: HTMLCanvasElement | null): boolean {
+  if (!canvas) {
+    return false;
+  }
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    return false;
+  }
+
+  const points: Array<[number, number]> = [
+    [Math.floor(canvas.width * 0.1), Math.floor(canvas.height * 0.1)],
+    [Math.floor(canvas.width * 0.5), Math.floor(canvas.height * 0.1)],
+    [Math.floor(canvas.width * 0.9), Math.floor(canvas.height * 0.1)],
+    [Math.floor(canvas.width * 0.1), Math.floor(canvas.height * 0.5)],
+    [Math.floor(canvas.width * 0.5), Math.floor(canvas.height * 0.5)],
+    [Math.floor(canvas.width * 0.9), Math.floor(canvas.height * 0.5)],
+    [Math.floor(canvas.width * 0.1), Math.floor(canvas.height * 0.9)],
+    [Math.floor(canvas.width * 0.5), Math.floor(canvas.height * 0.9)],
+    [Math.floor(canvas.width * 0.9), Math.floor(canvas.height * 0.9)],
+  ];
+
+  try {
+    for (const [xRaw, yRaw] of points) {
+      const x = Math.min(Math.max(0, xRaw), Math.max(0, canvas.width - 1));
+      const y = Math.min(Math.max(0, yRaw), Math.max(0, canvas.height - 1));
+      const data = ctx.getImageData(x, y, 1, 1).data;
+      if (data[3] > 0 || data[0] !== 0 || data[1] !== 0 || data[2] !== 0) {
+        return true;
+      }
+    }
+  } catch {
+    return false;
+  }
+
+  return false;
+}
+
 function setCanvasSourceCoordinates(
   map: maplibregl.Map,
   sourceId: string,
@@ -255,6 +292,7 @@ export function MapCanvas({
   const resamplingModeRef = useRef<"nearest" | "linear">("nearest");
   const runVarTokenRef = useRef(0);
   const activeBufferRef = useRef<ActiveImageBuffer>("a");
+  const frontIdRef = useRef<ActiveImageBuffer>("a");
   const currentFrameIndexRef = useRef<number>(-1);
   const currentFrameUrlRef = useRef<string>("");
   const firstDrawLoggedTokenRef = useRef<number>(-1);
@@ -328,6 +366,7 @@ export function MapCanvas({
           map.setPaintProperty(IMG_LAYER_A, "raster-opacity", DEFAULT_OVERLAY_OPACITY);
           activeLayerRef.current = IMG_LAYER_A;
           activeBufferRef.current = "a";
+          frontIdRef.current = "a";
         }
 
         if (import.meta.env.DEV) {
@@ -656,6 +695,7 @@ export function MapCanvas({
       overlayReadyRef.current = false;
       activeLayerRef.current = IMG_LAYER_A;
       activeBufferRef.current = "a";
+      frontIdRef.current = "a";
       bufferHasContentRef.current = { a: false, b: false };
       pendingPromotionRef.current = null;
       fadeRef.current = null;
@@ -704,12 +744,21 @@ export function MapCanvas({
     firstFramePromotedRef.current = false;
     currentFrameIndexRef.current = -1;
     currentFrameUrlRef.current = "";
+    pendingFrameUrlRef.current = "";
     pendingPromotionRef.current = null;
     fadeRef.current = null;
-    bufferHasContentRef.current = {
-      a: bufferHasContentRef.current.a,
-      b: bufferHasContentRef.current.b,
-    };
+    bufferHasContentRef.current = { a: false, b: false };
+    for (const [, bitmap] of bitmapCacheRef.current.entries()) {
+      try {
+        if (bitmap instanceof ImageBitmap) {
+          bitmap.close();
+        }
+      } catch {
+        // noop
+      }
+    }
+    bitmapCacheRef.current.clear();
+    bitmapCacheOrderRef.current = [];
     if (import.meta.env.DEV) {
       console.info("[OverlayContextChange]", { model, variable, token: runVarTokenRef.current });
     }
@@ -912,7 +961,7 @@ export function MapCanvas({
       if (pendingUrl && pendingUrl !== lastDrawnFrameUrlRef.current) {
         const decoded = bitmapCacheRef.current.get(pendingUrl);
         if (decoded) {
-          const frontBuffer: ActiveImageBuffer = activeBufferRef.current;
+          const frontBuffer: ActiveImageBuffer = frontIdRef.current;
           const backBuffer: ActiveImageBuffer = frontBuffer === "a" ? "b" : "a";
           const frontLayer = frontBuffer === "a" ? IMG_LAYER_A : IMG_LAYER_B;
           const backLayer = backBuffer === "a" ? IMG_LAYER_A : IMG_LAYER_B;
@@ -933,13 +982,11 @@ export function MapCanvas({
             nextCanvas.dataset.resamplingMode = resamplingModeRef.current;
             drawFrameToCanvas(nextCanvas, decoded);
             const alpha = sampleCenterAlpha(nextCanvas);
-            const backHasContent = alpha > 0;
+            const backHasContent = isCanvasNonBlank(nextCanvas);
             bufferHasContentRef.current[backBuffer] = backHasContent;
 
             if (!backHasContent) {
-              if ((window as any).__twfOverlayVerbose === true) {
-                console.warn("[PROMOTE BLOCKED]", { reason: "backHasContent false", url: pendingUrl, backBuffer, alpha });
-              }
+              console.warn("[PROMOTE BLOCKED]", { reason: "blank back canvas", url: pendingUrl, backBuffer, alpha });
               animationRafRef.current = window.requestAnimationFrame(tick);
               return;
             }
@@ -1011,30 +1058,45 @@ export function MapCanvas({
         if (now > requestedAt) {
           const backHasContent = bufferHasContentRef.current[backBuffer];
           if (!backHasContent) {
-            if ((window as any).__twfOverlayVerbose === true) {
-              console.warn("[PROMOTE BLOCKED]", { reason: "promotion without back content", backBuffer, url });
-            }
+            console.warn("[PROMOTE BLOCKED]", { reason: "promotion without back content", backBuffer, url });
           } else {
-            const frontBuffer: ActiveImageBuffer = activeBufferRef.current;
+            const frontBuffer: ActiveImageBuffer = frontIdRef.current;
             const frontLayer = frontBuffer === "a" ? IMG_LAYER_A : IMG_LAYER_B;
             const backLayer = backBuffer === "a" ? IMG_LAYER_A : IMG_LAYER_B;
+            const frontCanvas = frontBuffer === "a" ? canvasARef.current : canvasBRef.current;
+            const backCanvas = backBuffer === "a" ? canvasARef.current : canvasBRef.current;
             const target = Math.max(opacityRef.current, DEFAULT_OVERLAY_OPACITY);
+            const canCrossfade =
+              crossfade &&
+              Boolean(frontCanvas && backCanvas && isCanvasNonBlank(frontCanvas) && isCanvasNonBlank(backCanvas));
 
             try {
               setLayerVisibility(map, IMG_LAYER_A, true);
               setLayerVisibility(map, IMG_LAYER_B, true);
-              map.setPaintProperty(frontLayer, "raster-opacity", Math.max(target, 0.05));
-              map.setPaintProperty(backLayer, "raster-opacity", Math.max(target, 0.05));
+              if (canCrossfade) {
+                map.setPaintProperty(frontLayer, "raster-opacity", Math.max(target, 0.05));
+                map.setPaintProperty(backLayer, "raster-opacity", Math.max(target, 0.05));
+              } else {
+                frontIdRef.current = backBuffer;
+                activeBufferRef.current = backBuffer;
+                activeLayerRef.current = backLayer;
+                map.setPaintProperty(backLayer, "raster-opacity", target);
+                map.setPaintProperty(frontLayer, "raster-opacity", 0);
+                const hiddenBuffer: ActiveImageBuffer = backBuffer === "a" ? "b" : "a";
+                bufferHasContentRef.current[hiddenBuffer] = false;
+              }
             } catch {
               // noop
             }
 
-            fadeRef.current = {
-              fromLayer: frontLayer,
-              toLayer: backLayer,
-              startedAt: now,
-              durationMs: crossfade ? 120 : 1,
-            };
+            fadeRef.current = canCrossfade
+              ? {
+                  fromLayer: frontLayer,
+                  toLayer: backLayer,
+                  startedAt: now,
+                  durationMs: 120,
+                }
+              : null;
             pendingPromotionRef.current = null;
             lastPromoteTimestampRef.current = performance.now();
           }
@@ -1060,6 +1122,7 @@ export function MapCanvas({
         if (progress >= 1) {
           activeLayerRef.current = toLayer;
           activeBufferRef.current = toLayer === IMG_LAYER_A ? "a" : "b";
+          frontIdRef.current = activeBufferRef.current;
           const hiddenBuffer: ActiveImageBuffer = activeBufferRef.current === "a" ? "b" : "a";
           bufferHasContentRef.current[hiddenBuffer] = false;
           enforceOverlayState(opacityRef.current);
@@ -1180,6 +1243,11 @@ export function MapCanvas({
         lastPromoteTs: lastPromoteTimestampRef.current,
         front: activeBufferRef.current,
         back: activeBufferRef.current === "a" ? "b" : "a",
+        frontId: frontIdRef.current,
+        frontIsNonBlank: isCanvasNonBlank(frontIdRef.current === "a" ? canvasA : canvasB),
+        backIsNonBlank: isCanvasNonBlank(frontIdRef.current === "a" ? canvasB : canvasA),
+        frontAlpha: sampleCenterAlpha(frontIdRef.current === "a" ? canvasA : canvasB),
+        backAlpha: sampleCenterAlpha(frontIdRef.current === "a" ? canvasB : canvasA),
         frontHasContent: bufferHasContentRef.current[activeBufferRef.current],
         backHasContent: bufferHasContentRef.current[activeBufferRef.current === "a" ? "b" : "a"],
         aA: sampleCenterAlpha(canvasA),
@@ -1193,6 +1261,18 @@ export function MapCanvas({
           : null,
         opacityA: map ? map.getPaintProperty(IMG_LAYER_A, "raster-opacity") : null,
         opacityB: map ? map.getPaintProperty(IMG_LAYER_B, "raster-opacity") : null,
+        frontOpacity:
+          map && frontIdRef.current === "a"
+            ? map.getPaintProperty(IMG_LAYER_A, "raster-opacity")
+            : map
+              ? map.getPaintProperty(IMG_LAYER_B, "raster-opacity")
+              : null,
+        backOpacity:
+          map && frontIdRef.current === "a"
+            ? map.getPaintProperty(IMG_LAYER_B, "raster-opacity")
+            : map
+              ? map.getPaintProperty(IMG_LAYER_A, "raster-opacity")
+              : null,
         opA: map ? map.getPaintProperty(IMG_LAYER_A, "raster-opacity") : null,
         opB: map ? map.getPaintProperty(IMG_LAYER_B, "raster-opacity") : null,
         tainted,
