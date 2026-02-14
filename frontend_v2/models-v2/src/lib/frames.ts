@@ -25,18 +25,35 @@ function normalizedForecastHour(value?: number | string): string {
   return String(value).trim();
 }
 
+function appendVersionToken(url: string, version?: string | null): string {
+  const normalizedVersion = String(version ?? "").trim();
+  if (!normalizedVersion) {
+    return url;
+  }
+  try {
+    const resolved = new URL(url);
+    if (!resolved.searchParams.get("v")) {
+      resolved.searchParams.set("v", normalizedVersion);
+    }
+    return resolved.toString();
+  } catch {
+    return url;
+  }
+}
+
 export function buildOfflineFrameImageUrl(params: {
   model: string;
   run: string;
   varKey: string;
   fh?: number | string;
   frameImageUrl?: string | null;
+  frameImageVersion?: string | null;
   extension?: "webp" | "png";
 }): string {
   const frameToken = normalizedForecastHour(params.fh) || "0";
   const extension = params.extension ?? "webp";
   const fallback = `/frames/${params.model}/${params.run}/${params.varKey}/${frameToken}.${extension}`;
   const candidate = params.frameImageUrl?.trim() ? params.frameImageUrl.trim() : fallback;
-  const absoluteUrl = absolutizeUrl(candidate);
+  const absoluteUrl = appendVersionToken(absolutizeUrl(candidate), params.frameImageVersion);
   return rewriteFrontendOriginToApiOrigin(absoluteUrl);
 }

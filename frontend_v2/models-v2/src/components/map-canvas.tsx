@@ -423,7 +423,16 @@ export function MapCanvas({
 
     let decoded: DecodedFrame;
     if (typeof createImageBitmap === "function") {
-      const response = await fetch(url, { mode: "cors", credentials: "omit", cache: "no-store" });
+      let cacheMode: RequestCache = "default";
+      try {
+        const parsed = new URL(url, window.location.origin);
+        if (parsed.searchParams.has("v")) {
+          cacheMode = "force-cache";
+        }
+      } catch {
+        cacheMode = "default";
+      }
+      const response = await fetch(url, { mode: "cors", credentials: "omit", cache: cacheMode });
       if (!response.ok) {
         throw new Error(`Failed to fetch overlay bitmap (${response.status} ${response.statusText}) for ${url}`);
       }

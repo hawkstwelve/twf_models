@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -98,10 +99,12 @@ def test_offline_builder_stages_frame_outputs_and_contract(
     assert isinstance(frame_meta["contract_version"], int)
     assert frame_meta["zoom_max"] == 7
     assert frame_meta["url"] == f"/tiles/hrrr/{run}/tmp2m/000.pmtiles"
-    assert frame_meta["frame_image_url"] == f"/frames/hrrr/{run}/tmp2m/000.webp"
+    assert re.fullmatch(r"[a-f0-9]{16}", str(frame_meta["frame_image_version"]))
+    assert frame_meta["frame_image_url"] == f"/frames/hrrr/{run}/tmp2m/000.webp?v={frame_meta['frame_image_version']}"
     assert manifest["available_frames"] == 1
     assert manifest["frames"][0]["frame_id"] == "000"
-    assert manifest["frames"][0]["frame_image_url"] == f"/frames/hrrr/{run}/tmp2m/000.webp"
+    assert manifest["frames"][0]["frame_image_version"] == frame_meta["frame_image_version"]
+    assert manifest["frames"][0]["frame_image_url"] == frame_meta["frame_image_url"]
 
 
 def test_validate_staged_pmtiles_rejects_tiff_disguised_as_pmtiles(

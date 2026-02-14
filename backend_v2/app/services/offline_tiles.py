@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import os
 import re
@@ -13,6 +14,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
 from fastapi import HTTPException
 
@@ -29,6 +31,7 @@ ZOOM_MIN = 0
 ZOOM_MAX = 7
 COG_FRAME_RE = re.compile(r"^fh(?P<fh>\d{3})\.cog\.tif$")
 FRAME_ID_RE = re.compile(r"^\d{3}$")
+FRAME_IMAGE_VERSION_RE = re.compile(r"^[a-f0-9]{12,64}$")
 
 
 def _now_utc_iso() -> str:
@@ -145,8 +148,45 @@ def _frame_url(model: str, run: str, var: str, frame_id: str) -> str:
     return f"/tiles/{model}/{run}/{var}/{frame_id}.pmtiles"
 
 
-def _frame_image_url(model: str, run: str, var: str, frame_id: str) -> str:
-    return f"/frames/{model}/{run}/{var}/{frame_id}.webp"
+def _append_query_param(url: str, key: str, value: str) -> str:
+    parts = urlsplit(url)
+    query = parse_qs(parts.query, keep_blank_values=True)
+    query[key] = [value]
+    encoded = urlencode(query, doseq=True)
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, encoded, parts.fragment))
+
+
+def _frame_image_url(
+    model: str,
+    run: str,
+    var: str,
+    frame_id: str,
+    *,
+    version: str | None = None,
+) -> str:
+    base = f"/frames/{model}/{run}/{var}/{frame_id}.webp"
+    if version:
+        return _append_query_param(base, "v", version)
+    return base
+
+
+def _normalize_frame_image_version(value: Any) -> str | None:
+    if value is None:
+        return None
+    token = str(value).strip().lower()
+    if not token:
+        return None
+    if FRAME_IMAGE_VERSION_RE.match(token) is None:
+        return None
+    return token
+
+
+def _frame_image_version_from_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fp:
+        for chunk in iter(lambda: fp.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()[:16]
 
 
 def _coerce_frame_image_url(value: Any) -> str | None:
@@ -155,7 +195,10 @@ def _coerce_frame_image_url(value: Any) -> str | None:
     image_url = str(value).strip()
     if not image_url:
         return None
-    if not image_url.startswith("/frames/") or not image_url.endswith(".webp"):
+    if not image_url.startswith("/frames/"):
+        return None
+    parts = urlsplit(image_url)
+    if not parts.path.endswith(".webp"):
         return None
     return image_url
 
@@ -212,6 +255,9 @@ def validate_frame_meta_contract(meta: dict[str, Any]) -> None:
     frame_image_url = meta.get("frame_image_url")
     if frame_image_url is not None and _coerce_frame_image_url(frame_image_url) is None:
         raise ValueError("frame_image_url must be a /frames/ path ending in .webp")
+    frame_image_version = meta.get("frame_image_version")
+    if frame_image_version is not None and _normalize_frame_image_version(frame_image_version) is None:
+        raise ValueError("frame_image_version must match ^[a-f0-9]{12,64}$")
 
 
 def validate_manifest_contract(manifest: dict[str, Any]) -> None:
@@ -254,6 +300,9 @@ def validate_manifest_contract(manifest: dict[str, Any]) -> None:
         frame_image_url = frame.get("frame_image_url")
         if frame_image_url is not None and _coerce_frame_image_url(frame_image_url) is None:
             raise ValueError("frame frame_image_url must be a /frames/ path ending in .webp")
+        frame_image_version = frame.get("frame_image_version")
+        if frame_image_version is not None and _normalize_frame_image_version(frame_image_version) is None:
+            raise ValueError("frame frame_image_version must match ^[a-f0-9]{12,64}$")
 
 
 def _staging_var_root(model: str, run: str, var: str) -> Path:
@@ -391,6 +440,7 @@ def stage_single_frame(
     validate_staged_pmtiles(staging_pmtiles_path)
 
     frame_image_url: str | None = None
+    frame_image_version: str | None = None
     if settings.OFFLINE_FRAME_IMAGES_ENABLED:
         staging_webp_path = staging_frames_root / f"{frame_id}.webp"
         try:
@@ -407,7 +457,14 @@ def stage_single_frame(
                 quality=settings.OFFLINE_FRAME_IMAGE_WEBP_QUALITY,
                 source_cog_path=source_cog_path,
             )
-            frame_image_url = _frame_image_url(model, run, normalized_var, frame_id)
+            frame_image_version = _frame_image_version_from_file(staging_webp_path)
+            frame_image_url = _frame_image_url(
+                model,
+                run,
+                normalized_var,
+                frame_id,
+                version=frame_image_version,
+            )
         except Exception as exc:
             logger.warning(
                 "Frame image generation failed: model=%s run=%s var=%s fh=%s reason=%s",
@@ -442,6 +499,8 @@ def stage_single_frame(
     }
     if frame_image_url:
         frame_meta["frame_image_url"] = frame_image_url
+    if frame_image_version:
+        frame_meta["frame_image_version"] = frame_image_version
     validate_frame_meta_contract(frame_meta)
     _atomic_write_json(staging_meta_root / f"{frame_id}.json", frame_meta)
     return frame_meta
@@ -493,10 +552,22 @@ def _build_manifest_payload(
             "url": str(meta["url"]),
         }
         meta_image_url = _coerce_frame_image_url(meta.get("frame_image_url"))
+        frame_image_version = _normalize_frame_image_version(meta.get("frame_image_version"))
         if images_enabled:
-            entry["frame_image_url"] = meta_image_url or _frame_image_url(model, run, var, frame_id)
+            resolved_image_url = meta_image_url or _frame_image_url(
+                model,
+                run,
+                var,
+                frame_id,
+                version=frame_image_version,
+            )
+            if frame_image_version and "v=" not in resolved_image_url:
+                resolved_image_url = _append_query_param(resolved_image_url, "v", frame_image_version)
+            entry["frame_image_url"] = resolved_image_url
         elif meta_image_url:
             entry["frame_image_url"] = meta_image_url
+        if frame_image_version:
+            entry["frame_image_version"] = frame_image_version
         frames.append(entry)
     payload = {
         "contract_version": CONTRACT_VERSION,

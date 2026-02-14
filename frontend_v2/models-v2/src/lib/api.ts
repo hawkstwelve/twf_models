@@ -28,6 +28,7 @@ export type OfflineManifestFrame = {
   valid_time: string;
   url: string;
   frame_image_url?: string;
+  frame_image_version?: string;
   image_url?: string;
 };
 

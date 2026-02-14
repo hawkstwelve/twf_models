@@ -392,6 +392,7 @@ function getOfflineFrames(
               varKey: variable,
               fh: frame.fhr,
               frameImageUrl: rawFrameImageUrl,
+              frameImageVersion: frame.frame_image_version,
             })
           : undefined,
         validTime: frame.valid_time,

@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -17,6 +17,7 @@ app = FastAPI(
 )
 
 SEGMENT_RE = re.compile(r"^[a-z0-9_-]+$")
+FRAME_VERSION_RE = re.compile(r"^[a-f0-9]{12,64}$")
 
 
 def _ensure_segment(label: str, value: str) -> None:
@@ -34,6 +35,12 @@ def _published_frame_image_path(model: str, run: str, var: str, frame_id: str) -
 
 def _manifest_latest_path(model: str) -> Path:
     return settings.MANIFEST_ROOT / model / "latest.json"
+
+
+def _frame_cache_control(version: str | None) -> str:
+    if version and FRAME_VERSION_RE.match(version):
+        return "public, max-age=31536000, immutable"
+    return "public, max-age=31536000, immutable"
 
 
 @app.get("/tiles/{model}/{run}/{var}/{frame_id}.pmtiles")
@@ -63,7 +70,13 @@ def get_pmtiles_head(model: str, run: str, var: str, frame_id: str) -> Response:
 
 
 @app.get("/frames/{model}/{run}/{var}/{frame_id}.webp")
-def get_frame_image(model: str, run: str, var: str, frame_id: str) -> Response:
+def get_frame_image(
+    model: str,
+    run: str,
+    var: str,
+    frame_id: str,
+    v: str | None = Query(default=None),
+) -> Response:
     _ensure_segment("model", model)
     _ensure_segment("run", run)
     _ensure_segment("var", var)
@@ -75,7 +88,7 @@ def get_frame_image(model: str, run: str, var: str, frame_id: str) -> Response:
         path=path,
         media_type="image/webp",
         headers={
-            "Cache-Control": "public, max-age=31536000, immutable",
+            "Cache-Control": _frame_cache_control(v),
             "Access-Control-Allow-Origin": "*",
             "Cross-Origin-Resource-Policy": "cross-origin",
         },
@@ -83,8 +96,14 @@ def get_frame_image(model: str, run: str, var: str, frame_id: str) -> Response:
 
 
 @app.head("/frames/{model}/{run}/{var}/{frame_id}.webp")
-def get_frame_image_head(model: str, run: str, var: str, frame_id: str) -> Response:
-    response = get_frame_image(model=model, run=run, var=var, frame_id=frame_id)
+def get_frame_image_head(
+    model: str,
+    run: str,
+    var: str,
+    frame_id: str,
+    v: str | None = Query(default=None),
+) -> Response:
+    response = get_frame_image(model=model, run=run, var=var, frame_id=frame_id, v=v)
     return Response(
         status_code=response.status_code,
         headers=dict(response.headers),
