@@ -34,8 +34,6 @@ const REGION_BOUNDS: Record<string, [number, number, number, number]> = {
 const IMAGE_CROSSFADE_DURATION_MS = 60;
 const IMAGE_PREFETCH_THROTTLE_MS = 24;
 const HIDDEN_OPACITY = 0;
-const TRANSPARENT_IMAGE_URL =
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVQImWP8z/D/PwMDAwMjIAMAFAIB7l9d0QAAAABJRU5ErkJggg==";
 
 const IMG_SOURCE_A = "twf-img-a";
 const IMG_SOURCE_B = "twf-img-b";
@@ -69,7 +67,7 @@ function imageCoordinatesForRegion(region?: string): ImageCoordinates {
 
 function imageSourceFor(url: string, coordinates: ImageCoordinates) {
   return {
-    type: "image",
+    type: "image" as const,
     url,
     coordinates,
   };
@@ -84,8 +82,12 @@ function setImageSourceUrl(
   if (!imageSource || typeof imageSource.updateImage !== "function") {
     return false;
   }
-  imageSource.updateImage({ url, coordinates });
-  return true;
+  try {
+    imageSource.updateImage({ url, coordinates });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function isMapStyleReady(map: maplibregl.Map | null | undefined): map is maplibregl.Map {
@@ -107,6 +109,14 @@ function hasSource(map: maplibregl.Map, sourceId: string): boolean {
   }
 }
 
+function hasLayer(map: maplibregl.Map, layerId: string): boolean {
+  try {
+    return Boolean(map.getLayer(layerId));
+  } catch {
+    return false;
+  }
+}
+
 function setLayerVisibility(map: maplibregl.Map, id: string, visible: boolean): void {
   if (!isMapStyleReady(map)) {
     return;
@@ -121,11 +131,7 @@ function setLayerVisibility(map: maplibregl.Map, id: string, visible: boolean): 
   }
 }
 
-function styleFor(opacity: number, variable?: string, model?: string, region?: string): StyleSpecification {
-  const resamplingMode = getResamplingMode(variable);
-  const overlayMinZoom = model === "gfs" ? 6 : 3;
-  const imageCoordinates = imageCoordinatesForRegion(region);
-
+function styleFor(): StyleSpecification {
   return {
     version: 8,
     sources: {
@@ -135,8 +141,6 @@ function styleFor(opacity: number, variable?: string, model?: string, region?: s
         tileSize: 256,
         attribution: BASEMAP_ATTRIBUTION,
       },
-      [IMG_SOURCE_A]: imageSourceFor(TRANSPARENT_IMAGE_URL, imageCoordinates),
-      [IMG_SOURCE_B]: imageSourceFor(TRANSPARENT_IMAGE_URL, imageCoordinates),
       "twf-labels": {
         type: "raster",
         tiles: CARTO_LIGHT_LABEL_TILES,
@@ -148,34 +152,6 @@ function styleFor(opacity: number, variable?: string, model?: string, region?: s
         id: "twf-basemap",
         type: "raster" as const,
         source: "twf-basemap",
-      },
-      {
-        id: IMG_LAYER_A,
-        type: "raster" as const,
-        source: IMG_SOURCE_A,
-        minzoom: overlayMinZoom,
-        layout: {
-          visibility: "none",
-        },
-        paint: {
-          "raster-opacity": opacity,
-          "raster-resampling": resamplingMode,
-          "raster-fade-duration": 0,
-        },
-      },
-      {
-        id: IMG_LAYER_B,
-        type: "raster" as const,
-        source: IMG_SOURCE_B,
-        minzoom: overlayMinZoom,
-        layout: {
-          visibility: "none",
-        },
-        paint: {
-          "raster-opacity": HIDDEN_OPACITY,
-          "raster-resampling": resamplingMode,
-          "raster-fade-duration": 0,
-        },
       },
       {
         id: "twf-labels",
@@ -216,7 +192,7 @@ export function MapCanvas({
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const mapDestroyedRef = useRef(false);
-  const originalSetStyleRef = useRef<maplibregl.Map["setStyle"] | null>(null);
+  const overlayReadyRef = useRef(false);
   const [isLoaded, setIsLoaded] = useState(false);
 
   const onRequestUrlRef = useRef(onRequestUrl);
@@ -265,7 +241,14 @@ export function MapCanvas({
 
   const setImageLayersForBuffer = useCallback(
     (map: maplibregl.Map, activeBuffer: ActiveImageBuffer, targetOpacity: number) => {
-      if (!isMapStyleReady(map) || !hasSource(map, IMG_SOURCE_A) || !hasSource(map, IMG_SOURCE_B)) {
+      if (
+        !overlayReadyRef.current ||
+        !isMapStyleReady(map) ||
+        !hasSource(map, IMG_SOURCE_A) ||
+        !hasSource(map, IMG_SOURCE_B) ||
+        !hasLayer(map, IMG_LAYER_A) ||
+        !hasLayer(map, IMG_LAYER_B)
+      ) {
         return;
       }
       const showA = activeBuffer === "a";
@@ -280,7 +263,14 @@ export function MapCanvas({
 
   const hideImageLayers = useCallback(
     (map: maplibregl.Map) => {
-      if (!isMapStyleReady(map) || !hasSource(map, IMG_SOURCE_A) || !hasSource(map, IMG_SOURCE_B)) {
+      if (
+        !overlayReadyRef.current ||
+        !isMapStyleReady(map) ||
+        !hasSource(map, IMG_SOURCE_A) ||
+        !hasSource(map, IMG_SOURCE_B) ||
+        !hasLayer(map, IMG_LAYER_A) ||
+        !hasLayer(map, IMG_LAYER_B)
+      ) {
         return;
       }
       setLayerVisibility(map, IMG_LAYER_A, false);
@@ -342,6 +332,145 @@ export function MapCanvas({
     [onFrameImageError, onFrameImageReady]
   );
 
+  const ensureOverlayInitialized = useCallback(
+    (
+      map: maplibregl.Map,
+      firstUrl: string,
+      coords: ImageCoordinates,
+      targetOpacity: number,
+      resampling: "nearest" | "linear",
+      minZoom: number
+    ): boolean => {
+      if (!canMutateMap(map)) {
+        return false;
+      }
+
+      const hasSourceA = hasSource(map, IMG_SOURCE_A);
+      const hasSourceB = hasSource(map, IMG_SOURCE_B);
+      const hasLayerA = hasLayer(map, IMG_LAYER_A);
+      const hasLayerB = hasLayer(map, IMG_LAYER_B);
+      const overlayPresent = hasSourceA && hasSourceB && hasLayerA && hasLayerB;
+
+      if (overlayReadyRef.current && overlayPresent) {
+        const readySourceA = map.getSource(IMG_SOURCE_A) as MutableImageSource | undefined;
+        const readySourceB = map.getSource(IMG_SOURCE_B) as MutableImageSource | undefined;
+        readySourceA?.setCoordinates?.(coords);
+        readySourceB?.setCoordinates?.(coords);
+        try {
+          map.setPaintProperty(IMG_LAYER_A, "raster-resampling", resampling);
+          map.setPaintProperty(IMG_LAYER_A, "raster-fade-duration", 0);
+          map.setLayerZoomRange(IMG_LAYER_A, minZoom, 24);
+          map.setPaintProperty(IMG_LAYER_B, "raster-resampling", resampling);
+          map.setPaintProperty(IMG_LAYER_B, "raster-fade-duration", 0);
+          map.setLayerZoomRange(IMG_LAYER_B, minZoom, 24);
+        } catch {
+          overlayReadyRef.current = false;
+          (window as any).__twfOverlayReady = false;
+          return false;
+        }
+        (window as any).__twfOverlayReady = true;
+        return true;
+      }
+
+      if (!(hasSourceA && hasSourceB)) {
+        try {
+          if (!hasSourceA) {
+            map.addSource(IMG_SOURCE_A, imageSourceFor(firstUrl, coords));
+          }
+          if (!hasSourceB) {
+            map.addSource(IMG_SOURCE_B, imageSourceFor(firstUrl, coords));
+          }
+        } catch {
+          overlayReadyRef.current = false;
+          (window as any).__twfOverlayReady = false;
+          return false;
+        }
+      }
+
+      if (!(hasLayerA && hasLayerB)) {
+        try {
+          if (!hasLayerA) {
+            map.addLayer(
+              {
+                id: IMG_LAYER_A,
+                type: "raster",
+                source: IMG_SOURCE_A,
+                minzoom: minZoom,
+                layout: { visibility: "visible" },
+                paint: {
+                  "raster-opacity": targetOpacity,
+                  "raster-resampling": resampling,
+                  "raster-fade-duration": 0,
+                },
+              },
+              hasLayer(map, "twf-labels") ? "twf-labels" : undefined
+            );
+          }
+          if (!hasLayerB) {
+            map.addLayer(
+              {
+                id: IMG_LAYER_B,
+                type: "raster",
+                source: IMG_SOURCE_B,
+                minzoom: minZoom,
+                layout: { visibility: "none" },
+                paint: {
+                  "raster-opacity": HIDDEN_OPACITY,
+                  "raster-resampling": resampling,
+                  "raster-fade-duration": 0,
+                },
+              },
+              hasLayer(map, "twf-labels") ? "twf-labels" : undefined
+            );
+          }
+        } catch {
+          overlayReadyRef.current = false;
+          (window as any).__twfOverlayReady = false;
+          return false;
+        }
+      }
+
+      if (!hasSource(map, IMG_SOURCE_A) || !hasSource(map, IMG_SOURCE_B) || !hasLayer(map, IMG_LAYER_A) || !hasLayer(map, IMG_LAYER_B)) {
+        overlayReadyRef.current = false;
+        (window as any).__twfOverlayReady = false;
+        return false;
+      }
+
+      const sourceA = map.getSource(IMG_SOURCE_A) as MutableImageSource | undefined;
+      const sourceB = map.getSource(IMG_SOURCE_B) as MutableImageSource | undefined;
+      sourceA?.setCoordinates?.(coords);
+      sourceB?.setCoordinates?.(coords);
+      setLayerOpacity(map, IMG_LAYER_A, targetOpacity);
+      setLayerOpacity(map, IMG_LAYER_B, HIDDEN_OPACITY);
+      setLayerVisibility(map, IMG_LAYER_A, true);
+      setLayerVisibility(map, IMG_LAYER_B, false);
+
+      try {
+        map.setPaintProperty(IMG_LAYER_A, "raster-resampling", resampling);
+        map.setPaintProperty(IMG_LAYER_A, "raster-fade-duration", 0);
+        map.setLayerZoomRange(IMG_LAYER_A, minZoom, 24);
+        map.setPaintProperty(IMG_LAYER_B, "raster-resampling", resampling);
+        map.setPaintProperty(IMG_LAYER_B, "raster-fade-duration", 0);
+        map.setLayerZoomRange(IMG_LAYER_B, minZoom, 24);
+      } catch {
+        overlayReadyRef.current = false;
+        (window as any).__twfOverlayReady = false;
+        return false;
+      }
+
+      overlayReadyRef.current = true;
+      (window as any).__twfOverlayReady = true;
+      const sourceWithUrl = map.getSource(IMG_SOURCE_A) as (MutableImageSource & { url?: string }) | undefined;
+      (window as any).__twfOverlaySourceAUrl = sourceWithUrl?.url ?? firstUrl;
+      console.info("[MapCanvas] overlay initialized", {
+        source: IMG_SOURCE_A,
+        url: sourceWithUrl?.url ?? firstUrl,
+      });
+      return true;
+    },
+    [canMutateMap, setLayerOpacity]
+  );
+
   const waitForNextRenderOrIdle = useCallback((map: maplibregl.Map, token: number): Promise<boolean> => {
     return new Promise((resolve) => {
       if (!canMutateMap(map)) {
@@ -396,9 +525,12 @@ export function MapCanvas({
       }
 
       if (
+        !overlayReadyRef.current ||
         !canMutateMap(map) ||
         !hasSource(map, IMG_SOURCE_A) ||
         !hasSource(map, IMG_SOURCE_B) ||
+        !hasLayer(map, IMG_LAYER_A) ||
+        !hasLayer(map, IMG_LAYER_B) ||
         token !== renderTokenRef.current
       ) {
         return;
@@ -421,10 +553,13 @@ export function MapCanvas({
 
       const tick = (now: number) => {
         if (
+          !overlayReadyRef.current ||
           token !== renderTokenRef.current ||
           !canMutateMap(map) ||
           !hasSource(map, IMG_SOURCE_A) ||
-          !hasSource(map, IMG_SOURCE_B)
+          !hasSource(map, IMG_SOURCE_B) ||
+          !hasLayer(map, IMG_LAYER_A) ||
+          !hasLayer(map, IMG_LAYER_B)
         ) {
           if (crossfadeRafRef.current !== null) {
             window.cancelAnimationFrame(crossfadeRafRef.current);
@@ -471,7 +606,7 @@ export function MapCanvas({
 
     const map = new maplibregl.Map({
       container: mapContainerRef.current,
-      style: styleFor(opacity, variable, model, region),
+      style: styleFor(),
       center: view.center,
       zoom: view.zoom,
       minZoom: 3,
@@ -484,16 +619,9 @@ export function MapCanvas({
     });
 
     mapDestroyedRef.current = false;
-    const originalSetStyle = map.setStyle.bind(map);
-    originalSetStyleRef.current = originalSetStyle;
-    map.setStyle = ((...args: Parameters<maplibregl.Map["setStyle"]>) => {
-      console.warn("[MapCanvas debug] map.setStyle invoked", {
-        style: args[0],
-        options: args[1],
-      });
-      console.trace("[MapCanvas debug] map.setStyle caller trace");
-      return originalSetStyle(...args);
-    }) as maplibregl.Map["setStyle"];
+    overlayReadyRef.current = false;
+    (window as any).__twfOverlayReady = false;
+    (window as any).__twfOverlaySourceAUrl = "";
 
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-left");
     map.on("load", () => {
@@ -517,14 +645,13 @@ export function MapCanvas({
 
       const map = mapRef.current;
       if (map) {
-        if (originalSetStyleRef.current) {
-          map.setStyle = originalSetStyleRef.current;
-        }
         map.remove();
         mapRef.current = null;
       }
 
-      originalSetStyleRef.current = null;
+      overlayReadyRef.current = false;
+      (window as any).__twfOverlayReady = false;
+      (window as any).__twfOverlaySourceAUrl = "";
       setIsLoaded(false);
       loadedImageUrlsRef.current.clear();
       failedImageUrlsRef.current.clear();
@@ -561,7 +688,7 @@ export function MapCanvas({
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !isLoaded || !isMapStyleReady(map)) {
+    if (!map || !isLoaded || !isMapStyleReady(map) || !overlayReadyRef.current) {
       return;
     }
 
@@ -574,13 +701,13 @@ export function MapCanvas({
       | undefined;
     sourceB?.setCoordinates?.(imageCoordinates);
 
-    if (map.getLayer(IMG_LAYER_A)) {
+    if (hasLayer(map, IMG_LAYER_A)) {
       map.setPaintProperty(IMG_LAYER_A, "raster-resampling", resamplingMode);
       map.setPaintProperty(IMG_LAYER_A, "raster-fade-duration", 0);
       map.setLayerZoomRange(IMG_LAYER_A, overlayMinZoom, 24);
     }
 
-    if (map.getLayer(IMG_LAYER_B)) {
+    if (hasLayer(map, IMG_LAYER_B)) {
       map.setPaintProperty(IMG_LAYER_B, "raster-resampling", resamplingMode);
       map.setPaintProperty(IMG_LAYER_B, "raster-fade-duration", 0);
       map.setLayerZoomRange(IMG_LAYER_B, overlayMinZoom, 24);
@@ -648,6 +775,23 @@ export function MapCanvas({
           return;
         }
 
+        const initialized = ensureOverlayInitialized(
+          map,
+          targetImageUrl,
+          imageCoordinates,
+          opacity,
+          resamplingMode,
+          overlayMinZoom
+        );
+        if (!initialized || !overlayReadyRef.current || !canMutateMap(map)) {
+          if (token === renderTokenRef.current && canMutateMap(map)) {
+            activeImageUrlRef.current = "";
+            hideImageLayers(map);
+            map.triggerRepaint();
+          }
+          return;
+        }
+
         const hadActiveImage = Boolean(activeImageUrlRef.current);
         const nextBuffer: ActiveImageBuffer = hadActiveImage
           ? activeImageBufferRef.current === "a"
@@ -674,7 +818,13 @@ export function MapCanvas({
           return;
         }
 
-        if (hadActiveImage && crossfade) {
+        if (
+          hadActiveImage &&
+          crossfade &&
+          overlayReadyRef.current &&
+          hasLayer(map, IMG_LAYER_A) &&
+          hasLayer(map, IMG_LAYER_B)
+        ) {
           runImageCrossfade(map, activeImageBufferRef.current, nextBuffer, opacity, token);
         } else {
           activeImageBufferRef.current = nextBuffer;
@@ -701,10 +851,13 @@ export function MapCanvas({
     isLoaded,
     onFrameImageError,
     opacity,
+    overlayMinZoom,
     preloadImageUrl,
+    resamplingMode,
     waitForNextRenderOrIdle,
     runImageCrossfade,
     setImageLayersForBuffer,
+    ensureOverlayInitialized,
   ]);
 
   useEffect(() => {
