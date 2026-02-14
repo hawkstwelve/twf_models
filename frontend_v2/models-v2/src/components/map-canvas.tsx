@@ -171,13 +171,7 @@ function setLayerVisibility(map: maplibregl.Map, id: string, visible: boolean): 
   }
 }
 
-function styleFor(
-  canvasA: HTMLCanvasElement,
-  canvasB: HTMLCanvasElement,
-  imageCoordinates: ImageCoordinates,
-  resampling: "nearest" | "linear",
-  minZoom: number
-): StyleSpecification {
+function styleFor(): StyleSpecification {
   return {
     version: 8,
     sources: {
@@ -192,38 +186,12 @@ function styleFor(
         tiles: CARTO_LIGHT_LABEL_TILES,
         tileSize: 256,
       },
-      [IMG_SOURCE_A]: canvasSourceFor(canvasA, imageCoordinates) as any,
-      [IMG_SOURCE_B]: canvasSourceFor(canvasB, imageCoordinates) as any,
     } as StyleSpecification["sources"],
     layers: [
       {
         id: "twf-basemap",
         type: "raster" as const,
         source: "twf-basemap",
-      },
-      {
-        id: IMG_LAYER_A,
-        type: "raster" as const,
-        source: IMG_SOURCE_A,
-        minzoom: minZoom,
-        layout: { visibility: "none" as const },
-        paint: {
-          "raster-opacity": HIDDEN_OPACITY,
-          "raster-resampling": resampling,
-          "raster-fade-duration": 0,
-        },
-      },
-      {
-        id: IMG_LAYER_B,
-        type: "raster" as const,
-        source: IMG_SOURCE_B,
-        minzoom: minZoom,
-        layout: { visibility: "none" as const },
-        paint: {
-          "raster-opacity": HIDDEN_OPACITY,
-          "raster-resampling": resampling,
-          "raster-fade-duration": 0,
-        },
       },
       {
         id: "twf-labels",
@@ -655,7 +623,7 @@ export function MapCanvas({
 
     const mapOptions: any = {
       container: mapContainerRef.current,
-      style: styleFor(canvasA, canvasB, imageCoordinates, resamplingMode, overlayMinZoom),
+      style: styleFor(),
       center: view.center,
       zoom: view.zoom,
       minZoom: 3,
@@ -682,7 +650,7 @@ export function MapCanvas({
 
     mapRef.current = map;
     (window as any).__twfMap = map;
-  }, [imageCoordinates, overlayMinZoom, resamplingMode, view.center, view.zoom]);
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -910,6 +878,11 @@ export function MapCanvas({
           buffer: nextBuffer,
           zoom: map.getZoom(),
           gl: glVersion,
+          opacity,
+          layerAVisible: map.getLayoutProperty(IMG_LAYER_A, "visibility"),
+          layerBVisible: map.getLayoutProperty(IMG_LAYER_B, "visibility"),
+          hasSourceA: hasSource(map, IMG_SOURCE_A),
+          hasSourceB: hasSource(map, IMG_SOURCE_B),
         });
         onFrameImageReady?.(targetImageUrl);
 
@@ -991,7 +964,7 @@ export function MapCanvas({
           bitmap.close();
           onFrameImageReady?.(url);
         } catch {
-          onFrameImageError?.(url);
+          // Prefetch failures are non-fatal and should not mark a frame unavailable.
         }
         if (cancelled || token !== prefetchTokenRef.current) {
           return;
@@ -1010,7 +983,7 @@ export function MapCanvas({
         prefetchTokenRef.current += 1;
       }
     };
-  }, [onFrameImageError, onFrameImageReady, prefetchFrameImageUrls]);
+  }, [onFrameImageReady, prefetchFrameImageUrls]);
 
   useEffect(() => {
     const map = mapRef.current;
