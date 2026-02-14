@@ -297,6 +297,7 @@ export function MapCanvas({
   const firstFramePromotedRef = useRef(false);
   const rafStartedRef = useRef(false);
   const bufferHasContentRef = useRef<{ a: boolean; b: boolean }>({ a: false, b: false });
+  const bufferNonBlankRef = useRef<{ a: boolean; b: boolean }>({ a: false, b: false });
   const pendingPromotionRef = useRef<{
     url: string;
     backBuffer: ActiveImageBuffer;
@@ -696,6 +697,7 @@ export function MapCanvas({
       activeBufferRef.current = "a";
       frontIdRef.current = "a";
       bufferHasContentRef.current = { a: false, b: false };
+      bufferNonBlankRef.current = { a: false, b: false };
       pendingPromotionRef.current = null;
       fadeRef.current = null;
       lastPromoteTimestampRef.current = 0;
@@ -752,6 +754,7 @@ export function MapCanvas({
     pendingPromotionRef.current = null;
     fadeRef.current = null;
     bufferHasContentRef.current = { a: false, b: false };
+    bufferNonBlankRef.current = { a: false, b: false };
     frameFailureCountsRef.current.clear();
     if (frameRetryTimerRef.current !== null) {
       window.clearTimeout(frameRetryTimerRef.current);
@@ -1009,13 +1012,16 @@ export function MapCanvas({
             nextCanvas.dataset.resamplingMode = resamplingModeRef.current;
             drawFrameToCanvas(nextCanvas, decoded);
             const alpha = sampleCenterAlpha(nextCanvas);
-            const backHasContent = isCanvasNonBlank(nextCanvas);
-            bufferHasContentRef.current[backBuffer] = backHasContent;
-
-            if (!backHasContent) {
-              console.warn("[PROMOTE BLOCKED]", { reason: "blank back canvas", url: pendingUrl, backBuffer, alpha });
-              animationRafRef.current = window.requestAnimationFrame(tick);
-              return;
+            const backIsNonBlank = isCanvasNonBlank(nextCanvas);
+            bufferHasContentRef.current[backBuffer] = true;
+            bufferNonBlankRef.current[backBuffer] = backIsNonBlank;
+            if (!backIsNonBlank && (window as any).__twfOverlayVerbose === true) {
+              console.warn("[PROMOTE BLOCKED]", {
+                reason: "blank back sample; allowing promotion after successful draw",
+                url: pendingUrl,
+                backBuffer,
+                alpha,
+              });
             }
 
             if (import.meta.env.DEV && (window as any).__twfOverlayVerbose === true) {
@@ -1111,6 +1117,7 @@ export function MapCanvas({
                 map.setPaintProperty(frontLayer, "raster-opacity", 0);
                 const hiddenBuffer: ActiveImageBuffer = backBuffer === "a" ? "b" : "a";
                 bufferHasContentRef.current[hiddenBuffer] = false;
+                bufferNonBlankRef.current[hiddenBuffer] = false;
               }
             } catch {
               // noop
@@ -1152,6 +1159,7 @@ export function MapCanvas({
           frontIdRef.current = activeBufferRef.current;
           const hiddenBuffer: ActiveImageBuffer = activeBufferRef.current === "a" ? "b" : "a";
           bufferHasContentRef.current[hiddenBuffer] = false;
+          bufferNonBlankRef.current[hiddenBuffer] = false;
           enforceOverlayState(opacityRef.current);
           fadeRef.current = null;
         }
@@ -1271,8 +1279,8 @@ export function MapCanvas({
         front: activeBufferRef.current,
         back: activeBufferRef.current === "a" ? "b" : "a",
         frontId: frontIdRef.current,
-        frontIsNonBlank: isCanvasNonBlank(frontIdRef.current === "a" ? canvasA : canvasB),
-        backIsNonBlank: isCanvasNonBlank(frontIdRef.current === "a" ? canvasB : canvasA),
+        frontIsNonBlank: bufferNonBlankRef.current[frontIdRef.current],
+        backIsNonBlank: bufferNonBlankRef.current[frontIdRef.current === "a" ? "b" : "a"],
         frontAlpha: sampleCenterAlpha(frontIdRef.current === "a" ? canvasA : canvasB),
         backAlpha: sampleCenterAlpha(frontIdRef.current === "a" ? canvasB : canvasA),
         frontHasContent: bufferHasContentRef.current[activeBufferRef.current],
