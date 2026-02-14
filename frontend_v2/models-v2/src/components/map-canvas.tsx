@@ -236,7 +236,7 @@ export function MapCanvas({
   const [isLoaded, setIsLoaded] = useState(false);
 
   const onRequestUrlRef = useRef(onRequestUrl);
-  const activeImageBufferRef = useRef<ActiveImageBuffer>("a");
+  const activeLayerRef = useRef<"twf-img-a" | "twf-img-b">("twf-img-a");
   const activeImageUrlRef = useRef<string>("");
   const crossfadeRafRef = useRef<number | null>(null);
   const renderTokenRef = useRef(0);
@@ -266,40 +266,37 @@ export function MapCanvas({
     return Boolean(map && !mapDestroyedRef.current && mapRef.current === map && isMapStyleReady(map));
   }, []);
 
-  const setLayerOpacity = useCallback((map: maplibregl.Map, id: string, value: number) => {
-    if (!isMapStyleReady(map)) {
-      return;
-    }
-    if (!map.getLayer(id)) {
-      return;
-    }
-    try {
-      map.setPaintProperty(id, "raster-opacity", value);
-    } catch {
-      // Style/source may have been torn down mid-frame.
-    }
-  }, []);
-
-  const setImageLayersForBuffer = useCallback(
-    (map: maplibregl.Map, activeBuffer: ActiveImageBuffer, targetOpacity: number) => {
-      if (
-        !overlayReadyRef.current ||
-        !isMapStyleReady(map) ||
-        !hasSource(map, IMG_SOURCE_A) ||
-        !hasSource(map, IMG_SOURCE_B) ||
-        !hasLayer(map, IMG_LAYER_A) ||
-        !hasLayer(map, IMG_LAYER_B)
-      ) {
+  const enforceOverlayState = useCallback(
+    (targetOpacity: number) => {
+      const map = mapRef.current;
+      if (!map || !canMutateMap(map) || !overlayReadyRef.current) {
         return;
       }
-      const showA = activeBuffer === "a";
-      const showB = activeBuffer === "b";
-      setLayerVisibility(map, IMG_LAYER_A, showA);
-      setLayerVisibility(map, IMG_LAYER_B, showB);
-      setLayerOpacity(map, IMG_LAYER_A, showA ? targetOpacity : HIDDEN_OPACITY);
-      setLayerOpacity(map, IMG_LAYER_B, showB ? targetOpacity : HIDDEN_OPACITY);
+
+      const active = activeLayerRef.current;
+      const inactive = active === IMG_LAYER_A ? IMG_LAYER_B : IMG_LAYER_A;
+
+      if (!map.getLayer(active) || !map.getLayer(inactive)) {
+        return;
+      }
+
+      try {
+        map.setLayoutProperty(active, "visibility", "visible");
+        map.setLayoutProperty(inactive, "visibility", "visible");
+        map.setPaintProperty(active, "raster-opacity", targetOpacity);
+        map.setPaintProperty(inactive, "raster-opacity", HIDDEN_OPACITY);
+
+        if (import.meta.env.DEV) {
+          const op = map.getPaintProperty(activeLayerRef.current, "raster-opacity");
+          if (op === 0) {
+            console.error("Overlay active layer opacity is 0 — THIS SHOULD NEVER HAPPEN");
+          }
+        }
+      } catch {
+        // Style/source may have been torn down mid-frame.
+      }
     },
-    [setLayerOpacity]
+    [canMutateMap]
   );
 
   const hideImageLayers = useCallback(
@@ -316,10 +313,8 @@ export function MapCanvas({
       }
       setLayerVisibility(map, IMG_LAYER_A, false);
       setLayerVisibility(map, IMG_LAYER_B, false);
-      setLayerOpacity(map, IMG_LAYER_A, HIDDEN_OPACITY);
-      setLayerOpacity(map, IMG_LAYER_B, HIDDEN_OPACITY);
     },
-    [setLayerOpacity]
+    []
   );
 
   const ensureOverlayInitialized = useCallback(
@@ -363,6 +358,7 @@ export function MapCanvas({
           return false;
         }
         (window as any).__twfOverlayReady = true;
+        enforceOverlayState(targetOpacity);
         return true;
       }
 
@@ -399,7 +395,7 @@ export function MapCanvas({
                 minzoom: minZoom,
                 layout: { visibility: "visible" },
                 paint: {
-                  "raster-opacity": targetOpacity,
+                  "raster-opacity": HIDDEN_OPACITY,
                   "raster-resampling": resampling,
                   "raster-fade-duration": 0,
                 },
@@ -414,7 +410,7 @@ export function MapCanvas({
                 type: "raster",
                 source: IMG_SOURCE_B,
                 minzoom: minZoom,
-                layout: { visibility: "none" },
+                layout: { visibility: "visible" },
                 paint: {
                   "raster-opacity": HIDDEN_OPACITY,
                   "raster-resampling": resampling,
@@ -446,10 +442,7 @@ export function MapCanvas({
       }
       setCanvasSourceCoordinates(map, IMG_SOURCE_A, canvasA, coords);
       setCanvasSourceCoordinates(map, IMG_SOURCE_B, canvasB, coords);
-      setLayerOpacity(map, IMG_LAYER_A, targetOpacity);
-      setLayerOpacity(map, IMG_LAYER_B, HIDDEN_OPACITY);
-      setLayerVisibility(map, IMG_LAYER_A, true);
-      setLayerVisibility(map, IMG_LAYER_B, false);
+      activeLayerRef.current = IMG_LAYER_A;
 
       try {
         map.setPaintProperty(IMG_LAYER_A, "raster-resampling", resampling);
@@ -466,6 +459,7 @@ export function MapCanvas({
 
       overlayReadyRef.current = true;
       (window as any).__twfOverlayReady = true;
+      enforceOverlayState(targetOpacity);
       (window as any).__twfOverlaySourceAUrl = activeImageUrlRef.current;
       console.info("[MapCanvas] overlay initialized", {
         source: IMG_SOURCE_A,
@@ -473,7 +467,7 @@ export function MapCanvas({
       });
       return true;
     },
-    [canMutateMap, setLayerOpacity]
+    [canMutateMap, enforceOverlayState]
   );
 
   const waitForNextRenderOrIdle = useCallback((map: maplibregl.Map, token: number): Promise<boolean> => {
@@ -519,8 +513,8 @@ export function MapCanvas({
   const runImageCrossfade = useCallback(
     (
       map: maplibregl.Map,
-      fromBuffer: ActiveImageBuffer,
-      toBuffer: ActiveImageBuffer,
+      fromLayer: "twf-img-a" | "twf-img-b",
+      toLayer: "twf-img-a" | "twf-img-b",
       targetOpacity: number,
       token: number
     ) => {
@@ -541,17 +535,15 @@ export function MapCanvas({
         return;
       }
 
-      if (fromBuffer === toBuffer) {
-        activeImageBufferRef.current = toBuffer;
-        setImageLayersForBuffer(map, toBuffer, targetOpacity);
+      if (fromLayer === toLayer) {
+        activeLayerRef.current = toLayer;
+        enforceOverlayState(targetOpacity);
         if (canMutateMap(map)) {
           map.triggerRepaint();
         }
         return;
       }
 
-      const fromLayer = fromBuffer === "a" ? IMG_LAYER_A : IMG_LAYER_B;
-      const toLayer = toBuffer === "a" ? IMG_LAYER_A : IMG_LAYER_B;
       const startedAt = performance.now();
       setLayerVisibility(map, fromLayer, true);
       setLayerVisibility(map, toLayer, true);
@@ -574,21 +566,13 @@ export function MapCanvas({
         }
 
         const progress = Math.min(1, (now - startedAt) / IMAGE_CROSSFADE_DURATION_MS);
-        const fromOpacity = targetOpacity * (1 - progress);
-        const toOpacity = targetOpacity * progress;
-
-        setLayerOpacity(map, fromLayer, fromOpacity);
-        setLayerOpacity(map, toLayer, toOpacity);
         if (canMutateMap(map)) {
           map.triggerRepaint();
         }
 
         if (progress >= 1) {
-          activeImageBufferRef.current = toBuffer;
-          setLayerVisibility(map, fromLayer, false);
-          setLayerVisibility(map, toLayer, true);
-          setLayerOpacity(map, fromLayer, HIDDEN_OPACITY);
-          setLayerOpacity(map, toLayer, targetOpacity);
+          activeLayerRef.current = toLayer;
+          enforceOverlayState(targetOpacity);
           crossfadeRafRef.current = null;
           if (canMutateMap(map)) {
             map.triggerRepaint();
@@ -601,7 +585,7 @@ export function MapCanvas({
 
       crossfadeRafRef.current = window.requestAnimationFrame(tick);
     },
-    [canMutateMap, setImageLayersForBuffer, setLayerOpacity]
+    [canMutateMap, enforceOverlayState]
   );
 
   useEffect(() => {
@@ -640,6 +624,7 @@ export function MapCanvas({
 
     mapDestroyedRef.current = false;
     overlayReadyRef.current = false;
+    activeLayerRef.current = IMG_LAYER_A;
     (window as any).__twfOverlayReady = false;
     (window as any).__twfOverlaySourceAUrl = "";
 
@@ -670,6 +655,7 @@ export function MapCanvas({
       }
 
       overlayReadyRef.current = false;
+      activeLayerRef.current = IMG_LAYER_A;
       (window as any).__twfOverlayReady = false;
       (window as any).__twfOverlaySourceAUrl = "";
       setIsLoaded(false);
@@ -733,7 +719,11 @@ export function MapCanvas({
       map.setPaintProperty(IMG_LAYER_B, "raster-fade-duration", 0);
       map.setLayerZoomRange(IMG_LAYER_B, overlayMinZoom, 24);
     }
-  }, [imageCoordinates, isLoaded, overlayMinZoom, resamplingMode]);
+
+    if (activeImageUrlRef.current) {
+      enforceOverlayState(opacity);
+    }
+  }, [imageCoordinates, isLoaded, overlayMinZoom, resamplingMode, opacity, enforceOverlayState]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -749,11 +739,11 @@ export function MapCanvas({
       return;
     }
 
-    setImageLayersForBuffer(map, activeImageBufferRef.current, opacity);
+    enforceOverlayState(opacity);
     if (isMapStyleReady(map)) {
       map.triggerRepaint();
     }
-  }, [hideImageLayers, isLoaded, opacity, setImageLayersForBuffer]);
+  }, [hideImageLayers, isLoaded, opacity, enforceOverlayState]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -778,7 +768,7 @@ export function MapCanvas({
     }
 
     if (activeImageUrlRef.current === targetImageUrl) {
-      setImageLayersForBuffer(map, activeImageBufferRef.current, opacity);
+      enforceOverlayState(opacity);
       if (isMapStyleReady(map)) {
         map.triggerRepaint();
       }
@@ -796,11 +786,12 @@ export function MapCanvas({
         }
 
         const hadActiveImage = Boolean(activeImageUrlRef.current);
-        const nextBuffer: ActiveImageBuffer = hadActiveImage
-          ? activeImageBufferRef.current === "a"
-            ? "b"
-            : "a"
-          : activeImageBufferRef.current;
+        const nextLayer: "twf-img-a" | "twf-img-b" = hadActiveImage
+          ? activeLayerRef.current === IMG_LAYER_A
+            ? IMG_LAYER_B
+            : IMG_LAYER_A
+          : activeLayerRef.current;
+        const nextBuffer: ActiveImageBuffer = nextLayer === IMG_LAYER_A ? "a" : "b";
 
         const targetCtx = nextBuffer === "a" ? ctxARef.current : ctxBRef.current;
         if (!targetCtx) {
@@ -899,10 +890,10 @@ export function MapCanvas({
           hasLayer(map, IMG_LAYER_A) &&
           hasLayer(map, IMG_LAYER_B)
         ) {
-          runImageCrossfade(map, activeImageBufferRef.current, nextBuffer, opacity, token);
+          runImageCrossfade(map, activeLayerRef.current, nextLayer, opacity, token);
         } else {
-          activeImageBufferRef.current = nextBuffer;
-          setImageLayersForBuffer(map, nextBuffer, opacity);
+          activeLayerRef.current = nextLayer;
+          enforceOverlayState(opacity);
           map.triggerRepaint();
         }
 
@@ -930,7 +921,7 @@ export function MapCanvas({
     resamplingMode,
     waitForNextRenderOrIdle,
     runImageCrossfade,
-    setImageLayersForBuffer,
+    enforceOverlayState,
     ensureOverlayInitialized,
   ]);
 
