@@ -438,6 +438,7 @@ export default function App() {
   const [scrubIsActive, setScrubIsActive] = useState(false);
   const readyFrameImageUrlsRef = useRef<Set<string>>(new Set());
   const badFrameImageUrlsRef = useRef<Set<string>>(new Set());
+  const frameImageFailureCountsRef = useRef<Map<string, number>>(new Map());
   const scrubRenderTimerRef = useRef<number | null>(null);
   const lastScrubRenderAtRef = useRef(0);
 
@@ -449,6 +450,26 @@ export default function App() {
   const frameByHour = useMemo(() => {
     return new Map(frameRows.map((row) => [Number(row.fh), row]));
   }, [frameRows]);
+
+  const nearestAvailableFrameImageUrl = useCallback(
+    (targetHour: number): string => {
+      let winnerUrl = "";
+      let winnerDistance = Number.POSITIVE_INFINITY;
+      for (const hour of frameHours) {
+        const imageUrl = frameByHour.get(hour)?.frameImageUrl?.trim() ?? "";
+        if (!imageUrl || badFrameImageUrlsRef.current.has(imageUrl)) {
+          continue;
+        }
+        const distance = Math.abs(hour - targetHour);
+        if (distance < winnerDistance) {
+          winnerDistance = distance;
+          winnerUrl = imageUrl;
+        }
+      }
+      return winnerUrl;
+    },
+    [frameByHour, frameHours]
+  );
 
   const currentFrame = frameByHour.get(forecastHour) ?? frameRows[0] ?? null;
 
@@ -464,14 +485,11 @@ export default function App() {
 
   const frameImageUrl = useMemo(() => {
     const normalized = currentFrame?.frameImageUrl?.trim() ?? "";
-    if (!normalized) {
-      return "";
+    if (normalized && !badFrameImageUrlsRef.current.has(normalized)) {
+      return normalized;
     }
-    if (badFrameImageUrlsRef.current.has(normalized)) {
-      return "";
-    }
-    return normalized;
-  }, [currentFrame, badFrameImageVersion]);
+    return nearestAvailableFrameImageUrl(forecastHour);
+  }, [badFrameImageVersion, currentFrame, forecastHour, nearestAvailableFrameImageUrl]);
 
   const legend = useMemo(() => {
     const normalizedMeta =
@@ -480,7 +498,7 @@ export default function App() {
   }, [currentFrame, frameRows, opacity, variable]);
 
   const prefetchFrameImageUrls = useMemo<string[]>(() => {
-    if (frameHours.length < 2) return [];
+    if (frameHours.length === 0) return [];
     const focusHour = nearestFrame(frameHours, isPlaying ? forecastHour : targetForecastHour);
     const focusIndex = frameHours.indexOf(focusHour);
     if (focusIndex < 0) return [];
@@ -529,6 +547,7 @@ export default function App() {
   const markFrameImageReady = useCallback((imageUrl: string) => {
     const normalized = imageUrl.trim();
     if (!normalized) return;
+    frameImageFailureCountsRef.current.delete(normalized);
     let changedImages = false;
     if (!readyFrameImageUrlsRef.current.has(normalized)) {
       readyFrameImageUrlsRef.current.add(normalized);
@@ -545,6 +564,11 @@ export default function App() {
   const markFrameImageUnavailable = useCallback((imageUrl: string) => {
     const normalized = imageUrl.trim();
     if (!normalized) return;
+    const failures = (frameImageFailureCountsRef.current.get(normalized) ?? 0) + 1;
+    frameImageFailureCountsRef.current.set(normalized, failures);
+    if (failures < 3) {
+      return;
+    }
     if (badFrameImageUrlsRef.current.has(normalized)) {
       return;
     }
@@ -673,6 +697,7 @@ export default function App() {
     setScrubIsActive(false);
     readyFrameImageUrlsRef.current = new Set();
     badFrameImageUrlsRef.current = new Set();
+    frameImageFailureCountsRef.current = new Map();
     setReadyVersionImages((prev) => prev + 1);
     setBadFrameImageVersion((prev) => prev + 1);
   }, [model, run, variable]);
@@ -719,6 +744,13 @@ export default function App() {
       }
     }
     badFrameImageUrlsRef.current = nextBadImages;
+    const nextFailureCounts = new Map<string, number>();
+    for (const [imageUrl, count] of frameImageFailureCountsRef.current.entries()) {
+      if (allowedImages.has(imageUrl)) {
+        nextFailureCounts.set(imageUrl, count);
+      }
+    }
+    frameImageFailureCountsRef.current = nextFailureCounts;
     if (changedBadImages) {
       setBadFrameImageVersion((prev) => prev + 1);
     }
