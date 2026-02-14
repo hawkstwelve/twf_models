@@ -92,6 +92,30 @@ function drawFrameToCanvas(canvas: HTMLCanvasElement, img: CanvasImageSource): v
   ctx.drawImage(img, 0, 0, w, h);
 }
 
+function sampleCenterAlpha(canvas: HTMLCanvasElement | null): number {
+  if (!canvas) {
+    return 0;
+  }
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    return 0;
+  }
+  const cx = Math.max(1, Math.floor(canvas.width / 2));
+  const cy = Math.max(1, Math.floor(canvas.height / 2));
+  try {
+    const data = ctx.getImageData(cx - 1, cy - 1, 3, 3).data;
+    let sum = 0;
+    let count = 0;
+    for (let i = 3; i < data.length; i += 4) {
+      sum += data[i];
+      count += 1;
+    }
+    return count > 0 ? sum / count : 0;
+  } catch {
+    return 0;
+  }
+}
+
 function setCanvasSourceCoordinates(
   map: maplibregl.Map,
   sourceId: string,
@@ -237,6 +261,13 @@ export function MapCanvas({
   const firstFramePromotedTokenRef = useRef<number>(-1);
   const firstFramePromotedRef = useRef(false);
   const rafStartedRef = useRef(false);
+  const bufferHasContentRef = useRef<{ a: boolean; b: boolean }>({ a: false, b: false });
+  const pendingPromotionRef = useRef<{
+    url: string;
+    backBuffer: ActiveImageBuffer;
+    requestedAt: number;
+  } | null>(null);
+  const lastPromoteTimestampRef = useRef<number>(0);
   const fadeRef = useRef<{
     fromLayer: "twf-img-a" | "twf-img-b";
     toLayer: "twf-img-a" | "twf-img-b";
@@ -624,6 +655,11 @@ export function MapCanvas({
 
       overlayReadyRef.current = false;
       activeLayerRef.current = IMG_LAYER_A;
+      activeBufferRef.current = "a";
+      bufferHasContentRef.current = { a: false, b: false };
+      pendingPromotionRef.current = null;
+      fadeRef.current = null;
+      lastPromoteTimestampRef.current = 0;
       (window as any).__twfOverlayReady = false;
       (window as any).__twfOverlaySourceAUrl = "";
       setIsLoaded(false);
@@ -668,6 +704,12 @@ export function MapCanvas({
     firstFramePromotedRef.current = false;
     currentFrameIndexRef.current = -1;
     currentFrameUrlRef.current = "";
+    pendingPromotionRef.current = null;
+    fadeRef.current = null;
+    bufferHasContentRef.current = {
+      a: bufferHasContentRef.current.a,
+      b: bufferHasContentRef.current.b,
+    };
     if (import.meta.env.DEV) {
       console.info("[OverlayContextChange]", { model, variable, token: runVarTokenRef.current });
     }
@@ -757,7 +799,7 @@ export function MapCanvas({
       return;
     }
 
-    if (!activeImageUrlRef.current) {
+    if (!activeImageUrlRef.current && !pendingFrameUrlRef.current && !pendingPromotionRef.current) {
       hideImageLayers(map);
       if (isMapStyleReady(map)) {
         map.triggerRepaint();
@@ -784,20 +826,7 @@ export function MapCanvas({
     pendingFrameUrlRef.current = "";
 
     if (!targetImageUrl) {
-      activeImageUrlRef.current = "";
-      lastDrawnFrameUrlRef.current = "";
-      currentFrameUrlRef.current = "";
-      currentFrameIndexRef.current = -1;
-      const canvasA = canvasARef.current;
-      const canvasB = canvasBRef.current;
-      if (canvasA) {
-        drawFrameToCanvas(canvasA, canvasA);
-      }
-      if (canvasB) {
-        drawFrameToCanvas(canvasB, canvasB);
-      }
-      hideImageLayers(map);
-      map.triggerRepaint();
+      pendingFrameUrlRef.current = "";
       return;
     }
 
@@ -810,8 +839,6 @@ export function MapCanvas({
       firstFramePromotedTokenRef.current = selectionToken;
       firstFramePromotedRef.current = true;
       pendingFrameUrlRef.current = targetImageUrl;
-      activeBufferRef.current = "a";
-      activeLayerRef.current = IMG_LAYER_A;
       enforceOverlayState(DEFAULT_OVERLAY_OPACITY);
       map.triggerRepaint();
     }
@@ -885,18 +912,37 @@ export function MapCanvas({
       if (pendingUrl && pendingUrl !== lastDrawnFrameUrlRef.current) {
         const decoded = bitmapCacheRef.current.get(pendingUrl);
         if (decoded) {
-          const nextBuffer: ActiveImageBuffer = crossfade
-            ? activeBufferRef.current === "a"
-              ? "b"
-              : "a"
-            : activeBufferRef.current;
-          const nextCanvas = nextBuffer === "a" ? canvasARef.current : canvasBRef.current;
+          const frontBuffer: ActiveImageBuffer = activeBufferRef.current;
+          const backBuffer: ActiveImageBuffer = frontBuffer === "a" ? "b" : "a";
+          const frontLayer = frontBuffer === "a" ? IMG_LAYER_A : IMG_LAYER_B;
+          const backLayer = backBuffer === "a" ? IMG_LAYER_A : IMG_LAYER_B;
+          const nextCanvas = backBuffer === "a" ? canvasARef.current : canvasBRef.current;
           if (nextCanvas) {
             if (import.meta.env.DEV && (window as any).__twfOverlayVerbose === true) {
-              console.log("[OverlayCanvasFrame]", { frameImageUrl: pendingUrl, nextBuffer });
+              console.log("[OverlayCanvasFrame]", { frameImageUrl: pendingUrl, nextBuffer: backBuffer });
+            }
+
+            const frontOpacity = Number(map.getPaintProperty(frontLayer, "raster-opacity") ?? 0);
+            if (frontOpacity > 0.05 && backBuffer === frontBuffer) {
+              if ((window as any).__twfOverlayVerbose === true) {
+                console.warn("[PROMOTE BLOCKED]", { reason: "draw attempted on front buffer", frontBuffer, backBuffer });
+              }
+              animationRafRef.current = window.requestAnimationFrame(tick);
+              return;
             }
             nextCanvas.dataset.resamplingMode = resamplingModeRef.current;
             drawFrameToCanvas(nextCanvas, decoded);
+            const alpha = sampleCenterAlpha(nextCanvas);
+            const backHasContent = alpha > 0;
+            bufferHasContentRef.current[backBuffer] = backHasContent;
+
+            if (!backHasContent) {
+              if ((window as any).__twfOverlayVerbose === true) {
+                console.warn("[PROMOTE BLOCKED]", { reason: "backHasContent false", url: pendingUrl, backBuffer, alpha });
+              }
+              animationRafRef.current = window.requestAnimationFrame(tick);
+              return;
+            }
 
             if (import.meta.env.DEV && (window as any).__twfOverlayVerbose === true) {
               try {
@@ -919,22 +965,13 @@ export function MapCanvas({
             }
 
             playCanvasSources(map);
-            setLayerVisibility(map, IMG_LAYER_A, true);
-            setLayerVisibility(map, IMG_LAYER_B, true);
+            map.triggerRepaint();
 
-            const nextLayer = nextBuffer === "a" ? IMG_LAYER_A : IMG_LAYER_B;
-            if (crossfade && lastDrawnFrameUrlRef.current && nextLayer !== activeLayerRef.current) {
-              fadeRef.current = {
-                fromLayer: activeLayerRef.current,
-                toLayer: nextLayer,
-                startedAt: now,
-                durationMs: 100,
-              };
-            } else {
-              activeLayerRef.current = nextLayer;
-              activeBufferRef.current = nextBuffer;
-              enforceOverlayState(opacityRef.current);
-            }
+            pendingPromotionRef.current = {
+              url: pendingUrl,
+              backBuffer,
+              requestedAt: now,
+            };
 
             lastDrawnFrameUrlRef.current = pendingUrl;
             activeImageUrlRef.current = pendingUrl;
@@ -969,12 +1006,53 @@ export function MapCanvas({
         }
       }
 
+      if (pendingPromotionRef.current) {
+        const { backBuffer, requestedAt, url } = pendingPromotionRef.current;
+        if (now > requestedAt) {
+          const backHasContent = bufferHasContentRef.current[backBuffer];
+          if (!backHasContent) {
+            if ((window as any).__twfOverlayVerbose === true) {
+              console.warn("[PROMOTE BLOCKED]", { reason: "promotion without back content", backBuffer, url });
+            }
+          } else {
+            const frontBuffer: ActiveImageBuffer = activeBufferRef.current;
+            const frontLayer = frontBuffer === "a" ? IMG_LAYER_A : IMG_LAYER_B;
+            const backLayer = backBuffer === "a" ? IMG_LAYER_A : IMG_LAYER_B;
+            const target = Math.max(opacityRef.current, DEFAULT_OVERLAY_OPACITY);
+
+            try {
+              setLayerVisibility(map, IMG_LAYER_A, true);
+              setLayerVisibility(map, IMG_LAYER_B, true);
+              map.setPaintProperty(frontLayer, "raster-opacity", Math.max(target, 0.05));
+              map.setPaintProperty(backLayer, "raster-opacity", Math.max(target, 0.05));
+            } catch {
+              // noop
+            }
+
+            fadeRef.current = {
+              fromLayer: frontLayer,
+              toLayer: backLayer,
+              startedAt: now,
+              durationMs: crossfade ? 120 : 1,
+            };
+            pendingPromotionRef.current = null;
+            lastPromoteTimestampRef.current = performance.now();
+          }
+        }
+      }
+
       if (fadeRef.current) {
         const { fromLayer, toLayer, startedAt, durationMs } = fadeRef.current;
         const progress = Math.min(1, (now - startedAt) / durationMs);
         try {
-          map.setPaintProperty(fromLayer, "raster-opacity", opacityRef.current * (1 - progress));
-          map.setPaintProperty(toLayer, "raster-opacity", opacityRef.current * progress);
+          const target = Math.max(opacityRef.current, DEFAULT_OVERLAY_OPACITY);
+          const fromOpacity = Math.max(0, target * (1 - progress));
+          const toOpacity = target;
+          map.setPaintProperty(fromLayer, "raster-opacity", fromOpacity);
+          map.setPaintProperty(toLayer, "raster-opacity", toOpacity);
+          if (fromOpacity < 0.05 && toOpacity < 0.05) {
+            map.setPaintProperty(toLayer, "raster-opacity", 0.05);
+          }
         } catch {
           fadeRef.current = null;
         }
@@ -982,6 +1060,8 @@ export function MapCanvas({
         if (progress >= 1) {
           activeLayerRef.current = toLayer;
           activeBufferRef.current = toLayer === IMG_LAYER_A ? "a" : "b";
+          const hiddenBuffer: ActiveImageBuffer = activeBufferRef.current === "a" ? "b" : "a";
+          bufferHasContentRef.current[hiddenBuffer] = false;
           enforceOverlayState(opacityRef.current);
           fadeRef.current = null;
         }
@@ -1064,6 +1144,8 @@ export function MapCanvas({
     (window as any).__twfOverlayDebug = () => {
       const map = mapRef.current;
       const activeCanvas = activeBufferRef.current === "a" ? canvasARef.current : canvasBRef.current;
+      const canvasA = canvasARef.current;
+      const canvasB = canvasBRef.current;
       let centerPixel: [number, number, number, number] | null = null;
       let tainted = false;
 
@@ -1095,6 +1177,13 @@ export function MapCanvas({
         cacheMisses: cacheMissesRef.current,
         cacheHitRate: totalLookups > 0 ? cacheHitsRef.current / totalLookups : 0,
         lastDrawTimestamp: lastDrawTimestampRef.current,
+        lastPromoteTs: lastPromoteTimestampRef.current,
+        front: activeBufferRef.current,
+        back: activeBufferRef.current === "a" ? "b" : "a",
+        frontHasContent: bufferHasContentRef.current[activeBufferRef.current],
+        backHasContent: bufferHasContentRef.current[activeBufferRef.current === "a" ? "b" : "a"],
+        aA: sampleCenterAlpha(canvasA),
+        aB: sampleCenterAlpha(canvasB),
         canvas: activeCanvas
           ? {
               width: activeCanvas.width,
@@ -1104,6 +1193,8 @@ export function MapCanvas({
           : null,
         opacityA: map ? map.getPaintProperty(IMG_LAYER_A, "raster-opacity") : null,
         opacityB: map ? map.getPaintProperty(IMG_LAYER_B, "raster-opacity") : null,
+        opA: map ? map.getPaintProperty(IMG_LAYER_A, "raster-opacity") : null,
+        opB: map ? map.getPaintProperty(IMG_LAYER_B, "raster-opacity") : null,
         tainted,
       };
     };
