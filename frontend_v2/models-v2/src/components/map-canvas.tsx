@@ -33,6 +33,7 @@ const REGION_BOUNDS: Record<string, [number, number, number, number]> = {
 
 const IMAGE_PREFETCH_THROTTLE_MS = 24;
 const HIDDEN_OPACITY = 0;
+const DEFAULT_OVERLAY_OPACITY = 0.85;
 const OVERLAY_CANVAS_WIDTH = 2048;
 const OVERLAY_CANVAS_HEIGHT = 2046;
 const BITMAP_CACHE_LIMIT = 12;
@@ -230,6 +231,12 @@ export function MapCanvas({
   const resamplingModeRef = useRef<"nearest" | "linear">("nearest");
   const runVarTokenRef = useRef(0);
   const activeBufferRef = useRef<ActiveImageBuffer>("a");
+  const currentFrameIndexRef = useRef<number>(-1);
+  const currentFrameUrlRef = useRef<string>("");
+  const firstDrawLoggedTokenRef = useRef<number>(-1);
+  const firstFramePromotedTokenRef = useRef<number>(-1);
+  const firstFramePromotedRef = useRef(false);
+  const rafStartedRef = useRef(false);
   const fadeRef = useRef<{
     fromLayer: "twf-img-a" | "twf-img-b";
     toLayer: "twf-img-a" | "twf-img-b";
@@ -277,10 +284,20 @@ export function MapCanvas({
       }
 
       try {
+        const effectiveOpacity = targetOpacity > 0 ? targetOpacity : DEFAULT_OVERLAY_OPACITY;
         map.setLayoutProperty(active, "visibility", "visible");
         map.setLayoutProperty(inactive, "visibility", "visible");
-        map.setPaintProperty(active, "raster-opacity", targetOpacity);
+        map.setPaintProperty(active, "raster-opacity", effectiveOpacity);
         map.setPaintProperty(inactive, "raster-opacity", HIDDEN_OPACITY);
+
+        const opacityA = Number(map.getPaintProperty(IMG_LAYER_A, "raster-opacity") ?? 0);
+        const opacityB = Number(map.getPaintProperty(IMG_LAYER_B, "raster-opacity") ?? 0);
+        const overlayActive = Boolean(activeImageUrlRef.current || pendingFrameUrlRef.current);
+        if (overlayActive && opacityA === 0 && opacityB === 0) {
+          map.setPaintProperty(IMG_LAYER_A, "raster-opacity", DEFAULT_OVERLAY_OPACITY);
+          activeLayerRef.current = IMG_LAYER_A;
+          activeBufferRef.current = "a";
+        }
 
         if (import.meta.env.DEV) {
           const op = map.getPaintProperty(activeLayerRef.current, "raster-opacity");
@@ -524,7 +541,7 @@ export function MapCanvas({
 
       overlayReadyRef.current = true;
       (window as any).__twfOverlayReady = true;
-      enforceOverlayState(targetOpacity);
+      enforceOverlayState(DEFAULT_OVERLAY_OPACITY);
       (window as any).__twfOverlaySourceAUrl = activeImageUrlRef.current;
       if (import.meta.env.DEV && activeImageUrlRef.current) {
         console.info("[MapCanvas] overlay initialized", {
@@ -646,6 +663,11 @@ export function MapCanvas({
 
   useEffect(() => {
     runVarTokenRef.current += 1;
+    firstDrawLoggedTokenRef.current = -1;
+    firstFramePromotedTokenRef.current = -1;
+    firstFramePromotedRef.current = false;
+    currentFrameIndexRef.current = -1;
+    currentFrameUrlRef.current = "";
     if (import.meta.env.DEV) {
       console.info("[OverlayContextChange]", { model, variable, token: runVarTokenRef.current });
     }
@@ -756,12 +778,16 @@ export function MapCanvas({
     }
 
     const token = ++renderTokenRef.current;
-    const targetImageUrl = frameImageUrl?.trim() ?? "";
+    const normalizedFrameImageUrl = frameImageUrl?.trim() ?? "";
+    const fallbackFrameUrl = prefetchFrameImageUrls[0]?.trim() ?? "";
+    const targetImageUrl = normalizedFrameImageUrl || fallbackFrameUrl;
     pendingFrameUrlRef.current = "";
 
     if (!targetImageUrl) {
       activeImageUrlRef.current = "";
       lastDrawnFrameUrlRef.current = "";
+      currentFrameUrlRef.current = "";
+      currentFrameIndexRef.current = -1;
       const canvasA = canvasARef.current;
       const canvasB = canvasBRef.current;
       if (canvasA) {
@@ -773,6 +799,21 @@ export function MapCanvas({
       hideImageLayers(map);
       map.triggerRepaint();
       return;
+    }
+
+    const knownIndex = prefetchFrameImageUrls.findIndex((url) => url.trim() === targetImageUrl);
+    currentFrameIndexRef.current = knownIndex >= 0 ? knownIndex : 0;
+    currentFrameUrlRef.current = targetImageUrl;
+
+    const selectionToken = runVarTokenRef.current;
+    if (firstFramePromotedTokenRef.current !== selectionToken || !firstFramePromotedRef.current) {
+      firstFramePromotedTokenRef.current = selectionToken;
+      firstFramePromotedRef.current = true;
+      pendingFrameUrlRef.current = targetImageUrl;
+      activeBufferRef.current = "a";
+      activeLayerRef.current = IMG_LAYER_A;
+      enforceOverlayState(DEFAULT_OVERLAY_OPACITY);
+      map.triggerRepaint();
     }
 
     const selectedRunVarToken = runVarTokenRef.current;
@@ -793,6 +834,7 @@ export function MapCanvas({
         }
 
         pendingFrameUrlRef.current = targetImageUrl;
+        currentFrameUrlRef.current = targetImageUrl;
         onFrameImageReady?.(targetImageUrl);
         map.triggerRepaint();
       } catch {
@@ -802,17 +844,36 @@ export function MapCanvas({
         onFrameImageError?.(targetImageUrl);
         activeImageUrlRef.current = "";
         pendingFrameUrlRef.current = "";
+        currentFrameUrlRef.current = "";
+        currentFrameIndexRef.current = -1;
         hideImageLayers(map);
         map.triggerRepaint();
       }
     })();
-  }, [canMutateMap, fetchBitmap, frameImageUrl, hideImageLayers, isLoaded, onFrameImageError, onFrameImageReady]);
+  }, [
+    canMutateMap,
+    enforceOverlayState,
+    fetchBitmap,
+    frameImageUrl,
+    hideImageLayers,
+    isLoaded,
+    onFrameImageError,
+    onFrameImageReady,
+    prefetchFrameImageUrls,
+  ]);
 
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !isLoaded || !isMapStyleReady(map)) {
       return;
     }
+
+    const hasFrameList = prefetchFrameImageUrls.length > 0 || Boolean(frameImageUrl?.trim());
+    const hasValidFrameIndex = currentFrameIndexRef.current >= 0;
+    if (!overlayReadyRef.current || !hasFrameList || !hasValidFrameIndex) {
+      return;
+    }
+    rafStartedRef.current = true;
 
     const tick = (now: number) => {
       if (!canMutateMap(map) || !overlayReadyRef.current) {
@@ -879,7 +940,22 @@ export function MapCanvas({
             activeImageUrlRef.current = pendingUrl;
             pendingFrameUrlRef.current = "";
             lastDrawTimestampRef.current = performance.now();
+            currentFrameUrlRef.current = pendingUrl;
+            const idx = prefetchFrameImageUrls.findIndex((url) => url.trim() === pendingUrl);
+            currentFrameIndexRef.current = idx >= 0 ? idx : Math.max(0, currentFrameIndexRef.current);
             map.triggerRepaint();
+
+            if (firstDrawLoggedTokenRef.current !== runVarTokenRef.current) {
+              firstDrawLoggedTokenRef.current = runVarTokenRef.current;
+              const width = (decoded as { width?: number }).width;
+              const height = (decoded as { height?: number }).height;
+              console.info("[MapCanvas] first overlay draw ok", {
+                index: currentFrameIndexRef.current,
+                url: pendingUrl,
+                w: width,
+                h: height,
+              });
+            }
 
             if (import.meta.env.DEV && (window as any).__twfOverlayVerbose === true) {
               console.log("[OverlayCanvasApply]", {
@@ -917,12 +993,21 @@ export function MapCanvas({
 
     animationRafRef.current = window.requestAnimationFrame(tick);
     return () => {
+      rafStartedRef.current = false;
       if (animationRafRef.current !== null) {
         window.cancelAnimationFrame(animationRafRef.current);
         animationRafRef.current = null;
       }
     };
-  }, [canMutateMap, crossfade, enforceOverlayState, isLoaded, playCanvasSources]);
+  }, [
+    canMutateMap,
+    crossfade,
+    enforceOverlayState,
+    frameImageUrl,
+    isLoaded,
+    playCanvasSources,
+    prefetchFrameImageUrls,
+  ]);
 
   useEffect(() => {
     const token = ++prefetchTokenRef.current;
@@ -998,8 +1083,13 @@ export function MapCanvas({
 
       const totalLookups = cacheHitsRef.current + cacheMissesRef.current;
       return {
-        currentFrameUrl: activeImageUrlRef.current,
-        currentFrameIndex: prefetchFrameImageUrls.indexOf(activeImageUrlRef.current),
+        currentFrameUrl: currentFrameUrlRef.current || pendingFrameUrlRef.current || activeImageUrlRef.current,
+        currentFrameIndex: currentFrameIndexRef.current,
+        framesCount: prefetchFrameImageUrls.length,
+        isPlaying: rafStartedRef.current,
+        selectionToken: runVarTokenRef.current,
+        selectedRun: "unknown-from-map-canvas",
+        selectedVar: variable ?? "",
         cacheSize: bitmapCacheRef.current.size,
         cacheHits: cacheHitsRef.current,
         cacheMisses: cacheMissesRef.current,
