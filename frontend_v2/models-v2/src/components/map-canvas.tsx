@@ -51,6 +51,34 @@ type MutableCanvasSource = maplibregl.CanvasSource & {
   play?: () => void;
 };
 
+type DecodeWorkerRequest = {
+  id: number;
+  url: string;
+  cacheMode: RequestCache;
+};
+
+type DecodeWorkerSuccess = {
+  id: number;
+  url: string;
+  bitmap: ImageBitmap;
+};
+
+type DecodeWorkerFailure = {
+  id: number;
+  url: string;
+  error: string;
+};
+
+type DecodeWorkerResponse = DecodeWorkerSuccess | DecodeWorkerFailure;
+
+type PendingDecodeRequest = {
+  id: number;
+  url: string;
+  resolve: (bitmap: ImageBitmap) => void;
+  reject: (error: Error) => void;
+  timeoutId: number;
+};
+
 function getResamplingMode(variable?: string): "nearest" | "linear" {
   if (variable && (variable.includes("radar") || variable.includes("ptype"))) {
     return "nearest";
@@ -337,6 +365,11 @@ export function MapCanvas({
     targetUrl: string;
   } | null>(null);
   const animationRafRef = useRef<number | null>(null);
+  const decodeWorkerRef = useRef<Worker | null>(null);
+  const decodeWorkerHealthyRef = useRef(true);
+  const decodeRequestSeqRef = useRef(0);
+  const decodeRequestsRef = useRef<Map<number, PendingDecodeRequest>>(new Map());
+  const inFlightDecodeByUrlRef = useRef<Map<string, Promise<DecodedFrame>>>(new Map());
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
@@ -411,6 +444,122 @@ export function MapCanvas({
     });
   }, []);
 
+  const resolveRequestCacheMode = useCallback((url: string): RequestCache => {
+    let cacheMode: RequestCache = "default";
+    try {
+      const parsed = new URL(url, window.location.origin);
+      if (parsed.searchParams.has("v")) {
+        cacheMode = "force-cache";
+      }
+    } catch {
+      cacheMode = "default";
+    }
+    return cacheMode;
+  }, []);
+
+  const rejectAllDecodeRequests = useCallback((reason: string) => {
+    for (const [, pending] of decodeRequestsRef.current) {
+      window.clearTimeout(pending.timeoutId);
+      pending.reject(new Error(reason));
+    }
+    decodeRequestsRef.current.clear();
+  }, []);
+
+  const decodeMainThread = useCallback(async (url: string, cacheMode: RequestCache): Promise<DecodedFrame> => {
+    if (typeof createImageBitmap === "function") {
+      const response = await fetch(url, { mode: "cors", credentials: "omit", cache: cacheMode });
+      if (!response.ok) {
+        throw new Error(`Failed to fetch overlay bitmap (${response.status} ${response.statusText}) for ${url}`);
+      }
+      const blob = await response.blob();
+      return createImageBitmap(blob);
+    }
+    return decodeWithImageElement(url);
+  }, [decodeWithImageElement]);
+
+  const ensureDecodeWorker = useCallback((): Worker | null => {
+    if (decodeWorkerRef.current) {
+      return decodeWorkerRef.current;
+    }
+    if (!decodeWorkerHealthyRef.current) {
+      return null;
+    }
+    if (typeof Worker === "undefined") {
+      return null;
+    }
+    try {
+      const worker = new Worker(new URL("../workers/overlayDecode.worker.ts", import.meta.url), { type: "module" });
+      worker.onmessage = (event: MessageEvent<DecodeWorkerResponse>) => {
+        const payload = event.data;
+        const requestId = Number(payload?.id);
+        if (!Number.isFinite(requestId)) {
+          return;
+        }
+        const pending = decodeRequestsRef.current.get(requestId);
+        if (!pending) {
+          return;
+        }
+        decodeRequestsRef.current.delete(requestId);
+        window.clearTimeout(pending.timeoutId);
+
+        if ("bitmap" in payload && payload.bitmap instanceof ImageBitmap) {
+          pending.resolve(payload.bitmap);
+          return;
+        }
+
+        const message = "error" in payload && payload.error ? payload.error : `Overlay decode failed for ${pending.url}`;
+        pending.reject(new Error(message));
+      };
+      worker.onerror = () => {
+        decodeWorkerHealthyRef.current = false;
+        try {
+          worker.terminate();
+        } catch {
+          // noop
+        }
+        decodeWorkerRef.current = null;
+        rejectAllDecodeRequests("Overlay decode worker crashed");
+      };
+      decodeWorkerRef.current = worker;
+      return worker;
+    } catch {
+      decodeWorkerHealthyRef.current = false;
+      return null;
+    }
+  }, [rejectAllDecodeRequests]);
+
+  const decodeInWorker = useCallback(
+    (url: string, cacheMode: RequestCache): Promise<ImageBitmap> => {
+      const worker = ensureDecodeWorker();
+      if (!worker) {
+        return Promise.reject(new Error("Overlay decode worker unavailable"));
+      }
+      return new Promise<ImageBitmap>((resolve, reject) => {
+        const id = ++decodeRequestSeqRef.current;
+        const timeoutId = window.setTimeout(() => {
+          const pending = decodeRequestsRef.current.get(id);
+          if (!pending) {
+            return;
+          }
+          decodeRequestsRef.current.delete(id);
+          reject(new Error(`Overlay decode worker timed out for ${url}`));
+        }, 30_000);
+
+        decodeRequestsRef.current.set(id, {
+          id,
+          url,
+          resolve,
+          reject,
+          timeoutId,
+        });
+
+        const message: DecodeWorkerRequest = { id, url, cacheMode };
+        worker.postMessage(message);
+      });
+    },
+    [ensureDecodeWorker]
+  );
+
   const fetchBitmap = useCallback(async (url: string): Promise<DecodedFrame> => {
     const cached = bitmapCacheRef.current.get(url);
     if (cached) {
@@ -419,42 +568,51 @@ export function MapCanvas({
       bitmapCacheOrderRef.current.push(url);
       return cached;
     }
+
+    const inFlight = inFlightDecodeByUrlRef.current.get(url);
+    if (inFlight) {
+      return inFlight;
+    }
+
     cacheMissesRef.current += 1;
 
-    let decoded: DecodedFrame;
-    if (typeof createImageBitmap === "function") {
-      let cacheMode: RequestCache = "default";
-      try {
-        const parsed = new URL(url, window.location.origin);
-        if (parsed.searchParams.has("v")) {
-          cacheMode = "force-cache";
+    const decodePromise = (async (): Promise<DecodedFrame> => {
+      const cacheMode = resolveRequestCacheMode(url);
+
+      let decoded: DecodedFrame;
+      if (typeof createImageBitmap === "function") {
+        try {
+          decoded = await decodeInWorker(url, cacheMode);
+        } catch {
+          decoded = await decodeMainThread(url, cacheMode);
         }
-      } catch {
-        cacheMode = "default";
+      } else {
+        decoded = await decodeMainThread(url, cacheMode);
       }
-      const response = await fetch(url, { mode: "cors", credentials: "omit", cache: cacheMode });
-      if (!response.ok) {
-        throw new Error(`Failed to fetch overlay bitmap (${response.status} ${response.statusText}) for ${url}`);
+
+      bitmapCacheRef.current.set(url, decoded);
+      bitmapCacheOrderRef.current = bitmapCacheOrderRef.current.filter((entry) => entry !== url);
+      bitmapCacheOrderRef.current.push(url);
+
+      while (bitmapCacheOrderRef.current.length > BITMAP_CACHE_LIMIT) {
+        const evictedUrl = bitmapCacheOrderRef.current.shift();
+        if (!evictedUrl) {
+          break;
+        }
+        removeBitmapFromCache(evictedUrl);
       }
-      const blob = await response.blob();
-      decoded = await createImageBitmap(blob);
-    } else {
-      decoded = await decodeWithImageElement(url);
+
+      return decoded;
+    })();
+
+    inFlightDecodeByUrlRef.current.set(url, decodePromise);
+
+    try {
+      return await decodePromise;
+    } finally {
+      inFlightDecodeByUrlRef.current.delete(url);
     }
-
-    bitmapCacheRef.current.set(url, decoded);
-    bitmapCacheOrderRef.current.push(url);
-
-    while (bitmapCacheOrderRef.current.length > BITMAP_CACHE_LIMIT) {
-      const evictedUrl = bitmapCacheOrderRef.current.shift();
-      if (!evictedUrl) {
-        break;
-      }
-      removeBitmapFromCache(evictedUrl);
-    }
-
-    return decoded;
-  }, [decodeWithImageElement, removeBitmapFromCache]);
+  }, [decodeInWorker, decodeMainThread, removeBitmapFromCache, resolveRequestCacheMode]);
 
   const playCanvasSources = useCallback((map: maplibregl.Map) => {
     const source = map.getSource(IMG_SOURCE_ID) as MutableCanvasSource | undefined;
@@ -681,13 +839,25 @@ export function MapCanvas({
       }
       bitmapCacheRef.current.clear();
       bitmapCacheOrderRef.current = [];
+      inFlightDecodeByUrlRef.current.clear();
+      rejectAllDecodeRequests("Overlay decode worker disposed");
+      const worker = decodeWorkerRef.current;
+      if (worker) {
+        try {
+          worker.terminate();
+        } catch {
+          // noop
+        }
+      }
+      decodeWorkerRef.current = null;
+      decodeWorkerHealthyRef.current = true;
       frameFailureCountsRef.current.clear();
       if (frameRetryTimerRef.current !== null) {
         window.clearTimeout(frameRetryTimerRef.current);
         frameRetryTimerRef.current = null;
       }
     };
-  }, []);
+  }, [rejectAllDecodeRequests]);
 
   useEffect(() => {
     opacityRef.current = opacity;
