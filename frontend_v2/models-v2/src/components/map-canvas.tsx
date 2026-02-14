@@ -125,17 +125,13 @@ function isCanvasNonBlank(canvas: HTMLCanvasElement | null): boolean {
     return false;
   }
 
-  const points: Array<[number, number]> = [
-    [Math.floor(canvas.width * 0.1), Math.floor(canvas.height * 0.1)],
-    [Math.floor(canvas.width * 0.5), Math.floor(canvas.height * 0.1)],
-    [Math.floor(canvas.width * 0.9), Math.floor(canvas.height * 0.1)],
-    [Math.floor(canvas.width * 0.1), Math.floor(canvas.height * 0.5)],
-    [Math.floor(canvas.width * 0.5), Math.floor(canvas.height * 0.5)],
-    [Math.floor(canvas.width * 0.9), Math.floor(canvas.height * 0.5)],
-    [Math.floor(canvas.width * 0.1), Math.floor(canvas.height * 0.9)],
-    [Math.floor(canvas.width * 0.5), Math.floor(canvas.height * 0.9)],
-    [Math.floor(canvas.width * 0.9), Math.floor(canvas.height * 0.9)],
-  ];
+  const points: Array<[number, number]> = [];
+  const fractions = [0.1, 0.3, 0.5, 0.7, 0.9];
+  for (const fy of fractions) {
+    for (const fx of fractions) {
+      points.push([Math.floor(canvas.width * fx), Math.floor(canvas.height * fy)]);
+    }
+  }
 
   try {
     for (const [xRaw, yRaw] of points) {
@@ -275,6 +271,7 @@ export function MapCanvas({
   const mapDestroyedRef = useRef(false);
   const overlayReadyRef = useRef(false);
   const [isLoaded, setIsLoaded] = useState(false);
+  const [retryNonce, setRetryNonce] = useState(0);
 
   const onRequestUrlRef = useRef(onRequestUrl);
   const activeLayerRef = useRef<"twf-img-a" | "twf-img-b">("twf-img-a");
@@ -306,6 +303,8 @@ export function MapCanvas({
     requestedAt: number;
   } | null>(null);
   const lastPromoteTimestampRef = useRef<number>(0);
+  const frameFailureCountsRef = useRef<Map<string, number>>(new Map());
+  const frameRetryTimerRef = useRef<number | null>(null);
   const fadeRef = useRef<{
     fromLayer: "twf-img-a" | "twf-img-b";
     toLayer: "twf-img-a" | "twf-img-b";
@@ -718,6 +717,11 @@ export function MapCanvas({
       }
       bitmapCacheRef.current.clear();
       bitmapCacheOrderRef.current = [];
+      frameFailureCountsRef.current.clear();
+      if (frameRetryTimerRef.current !== null) {
+        window.clearTimeout(frameRetryTimerRef.current);
+        frameRetryTimerRef.current = null;
+      }
     };
   }, []);
 
@@ -748,6 +752,11 @@ export function MapCanvas({
     pendingPromotionRef.current = null;
     fadeRef.current = null;
     bufferHasContentRef.current = { a: false, b: false };
+    frameFailureCountsRef.current.clear();
+    if (frameRetryTimerRef.current !== null) {
+      window.clearTimeout(frameRetryTimerRef.current);
+      frameRetryTimerRef.current = null;
+    }
     for (const [, bitmap] of bitmapCacheRef.current.entries()) {
       try {
         if (bitmap instanceof ImageBitmap) {
@@ -911,19 +920,36 @@ export function MapCanvas({
 
         pendingFrameUrlRef.current = targetImageUrl;
         currentFrameUrlRef.current = targetImageUrl;
+        frameFailureCountsRef.current.delete(targetImageUrl);
         onFrameImageReady?.(targetImageUrl);
         map.triggerRepaint();
       } catch {
         if (token !== renderTokenRef.current || !canMutateMap(map)) {
           return;
         }
-        onFrameImageError?.(targetImageUrl);
-        activeImageUrlRef.current = "";
-        pendingFrameUrlRef.current = "";
-        currentFrameUrlRef.current = "";
-        currentFrameIndexRef.current = -1;
-        hideImageLayers(map);
-        map.triggerRepaint();
+        const failures = (frameFailureCountsRef.current.get(targetImageUrl) ?? 0) + 1;
+        frameFailureCountsRef.current.set(targetImageUrl, failures);
+
+        if (failures >= 3) {
+          onFrameImageError?.(targetImageUrl);
+          activeImageUrlRef.current = "";
+          pendingFrameUrlRef.current = "";
+          currentFrameUrlRef.current = "";
+          currentFrameIndexRef.current = -1;
+          hideImageLayers(map);
+          map.triggerRepaint();
+          return;
+        }
+
+        if (frameRetryTimerRef.current !== null) {
+          window.clearTimeout(frameRetryTimerRef.current);
+        }
+        frameRetryTimerRef.current = window.setTimeout(() => {
+          frameRetryTimerRef.current = null;
+          if (!mapDestroyedRef.current && runVarTokenRef.current === selectedRunVarToken) {
+            setRetryNonce((prev) => prev + 1);
+          }
+        }, 700);
       }
     })();
   }, [
@@ -936,6 +962,7 @@ export function MapCanvas({
     onFrameImageError,
     onFrameImageReady,
     prefetchFrameImageUrls,
+    retryNonce,
   ]);
 
   useEffect(() => {
