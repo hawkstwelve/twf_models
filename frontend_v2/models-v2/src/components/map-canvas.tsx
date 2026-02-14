@@ -34,17 +34,17 @@ const REGION_BOUNDS: Record<string, [number, number, number, number]> = {
 const IMAGE_CROSSFADE_DURATION_MS = 60;
 const IMAGE_PREFETCH_THROTTLE_MS = 24;
 const HIDDEN_OPACITY = 0;
+const OVERLAY_CANVAS_SIZE = 2048;
 
-const IMG_SOURCE_A = "twf-img-a";
-const IMG_SOURCE_B = "twf-img-b";
+const IMG_SOURCE_A = "twf-canvas-a";
+const IMG_SOURCE_B = "twf-canvas-b";
 const IMG_LAYER_A = "twf-img-a";
 const IMG_LAYER_B = "twf-img-b";
 
 type ActiveImageBuffer = "a" | "b";
 type ImageCoordinates = [[number, number], [number, number], [number, number], [number, number]];
 
-type MutableImageSource = maplibregl.ImageSource & {
-  updateImage?: (options: { url: string; coordinates: ImageCoordinates }) => maplibregl.ImageSource;
+type MutableCanvasSource = maplibregl.CanvasSource & {
   setCoordinates?: (coordinates: ImageCoordinates) => void;
 };
 
@@ -65,25 +65,64 @@ function imageCoordinatesForRegion(region?: string): ImageCoordinates {
   ];
 }
 
-function imageSourceFor(url: string, coordinates: ImageCoordinates) {
+function canvasSourceFor(canvas: HTMLCanvasElement, coordinates: ImageCoordinates) {
   return {
-    type: "image" as const,
-    url,
+    type: "canvas" as const,
+    canvas,
     coordinates,
+    animate: true,
   };
 }
 
-function setImageSourceUrl(
-  source: maplibregl.Source | undefined,
-  url: string,
+async function fetchBitmap(url: string): Promise<ImageBitmap> {
+  const response = await fetch(url, { mode: "cors", credentials: "omit" });
+  if (!response.ok) {
+    throw new Error(`Failed to fetch overlay bitmap (${response.status} ${response.statusText}) for ${url}`);
+  }
+  const blob = await response.blob();
+  return createImageBitmap(blob);
+}
+
+function setCanvasSourceCoordinates(
+  map: maplibregl.Map,
+  sourceId: string,
+  canvas: HTMLCanvasElement,
   coordinates: ImageCoordinates
 ): boolean {
-  const imageSource = source as MutableImageSource | undefined;
-  if (!imageSource || typeof imageSource.updateImage !== "function") {
-    return false;
-  }
   try {
-    imageSource.updateImage({ url, coordinates });
+    const source = map.getSource(sourceId) as MutableCanvasSource | undefined;
+    if (source && typeof source.setCoordinates === "function") {
+      source.setCoordinates(coordinates);
+      return true;
+    }
+  } catch {
+    // Source lookup can throw during style teardown.
+  }
+
+  try {
+    const layerId = sourceId === IMG_SOURCE_A ? IMG_LAYER_A : sourceId === IMG_SOURCE_B ? IMG_LAYER_B : undefined;
+    if (layerId && hasLayer(map, layerId)) {
+      map.removeLayer(layerId);
+    }
+    if (hasSource(map, sourceId)) {
+      map.removeSource(sourceId);
+    }
+    map.addSource(sourceId, canvasSourceFor(canvas, coordinates));
+    if (layerId && !hasLayer(map, layerId)) {
+      map.addLayer(
+        {
+          id: layerId,
+          type: "raster",
+          source: sourceId,
+          paint: {
+            "raster-opacity": HIDDEN_OPACITY,
+            "raster-resampling": "nearest",
+            "raster-fade-duration": 0,
+          },
+        },
+        hasLayer(map, "twf-labels") ? "twf-labels" : undefined
+      );
+    }
     return true;
   } catch {
     return false;
@@ -131,7 +170,13 @@ function setLayerVisibility(map: maplibregl.Map, id: string, visible: boolean): 
   }
 }
 
-function styleFor(): StyleSpecification {
+function styleFor(
+  canvasA: HTMLCanvasElement,
+  canvasB: HTMLCanvasElement,
+  imageCoordinates: ImageCoordinates,
+  resampling: "nearest" | "linear",
+  minZoom: number
+): StyleSpecification {
   return {
     version: 8,
     sources: {
@@ -146,12 +191,38 @@ function styleFor(): StyleSpecification {
         tiles: CARTO_LIGHT_LABEL_TILES,
         tileSize: 256,
       },
+      [IMG_SOURCE_A]: canvasSourceFor(canvasA, imageCoordinates) as any,
+      [IMG_SOURCE_B]: canvasSourceFor(canvasB, imageCoordinates) as any,
     } as StyleSpecification["sources"],
     layers: [
       {
         id: "twf-basemap",
         type: "raster" as const,
         source: "twf-basemap",
+      },
+      {
+        id: IMG_LAYER_A,
+        type: "raster" as const,
+        source: IMG_SOURCE_A,
+        minzoom: minZoom,
+        layout: { visibility: "none" as const },
+        paint: {
+          "raster-opacity": HIDDEN_OPACITY,
+          "raster-resampling": resampling,
+          "raster-fade-duration": 0,
+        },
+      },
+      {
+        id: IMG_LAYER_B,
+        type: "raster" as const,
+        source: IMG_SOURCE_B,
+        minzoom: minZoom,
+        layout: { visibility: "none" as const },
+        paint: {
+          "raster-opacity": HIDDEN_OPACITY,
+          "raster-resampling": resampling,
+          "raster-fade-duration": 0,
+        },
       },
       {
         id: "twf-labels",
@@ -202,9 +273,10 @@ export function MapCanvas({
   const renderTokenRef = useRef(0);
   const prefetchTokenRef = useRef(0);
 
-  const loadedImageUrlsRef = useRef<Set<string>>(new Set());
-  const failedImageUrlsRef = useRef<Set<string>>(new Set());
-  const inflightImageLoadsRef = useRef<Map<string, Promise<boolean>>>(new Map());
+  const canvasARef = useRef<HTMLCanvasElement | null>(null);
+  const canvasBRef = useRef<HTMLCanvasElement | null>(null);
+  const ctxARef = useRef<CanvasRenderingContext2D | null>(null);
+  const ctxBRef = useRef<CanvasRenderingContext2D | null>(null);
 
   useEffect(() => {
     onRequestUrlRef.current = onRequestUrl;
@@ -281,61 +353,9 @@ export function MapCanvas({
     [setLayerOpacity]
   );
 
-  const preloadImageUrl = useCallback(
-    async (url: string): Promise<boolean> => {
-      const normalizedUrl = url.trim();
-      if (!normalizedUrl) {
-        return false;
-      }
-      if (loadedImageUrlsRef.current.has(normalizedUrl)) {
-        onFrameImageReady?.(normalizedUrl);
-        return true;
-      }
-
-      const inflight = inflightImageLoadsRef.current.get(normalizedUrl);
-      if (inflight) {
-        return inflight;
-      }
-
-      const promise = new Promise<boolean>((resolve) => {
-        const image = new Image();
-        image.crossOrigin = "anonymous";
-        image.decoding = "async";
-
-        const cleanup = () => {
-          image.onload = null;
-          image.onerror = null;
-          inflightImageLoadsRef.current.delete(normalizedUrl);
-        };
-
-        image.onload = () => {
-          cleanup();
-          failedImageUrlsRef.current.delete(normalizedUrl);
-          loadedImageUrlsRef.current.add(normalizedUrl);
-          onFrameImageReady?.(normalizedUrl);
-          resolve(true);
-        };
-
-        image.onerror = () => {
-          cleanup();
-          failedImageUrlsRef.current.add(normalizedUrl);
-          onFrameImageError?.(normalizedUrl);
-          resolve(false);
-        };
-
-        image.src = normalizedUrl;
-      });
-
-      inflightImageLoadsRef.current.set(normalizedUrl, promise);
-      return promise;
-    },
-    [onFrameImageError, onFrameImageReady]
-  );
-
   const ensureOverlayInitialized = useCallback(
     (
       map: maplibregl.Map,
-      firstUrl: string,
       coords: ImageCoordinates,
       targetOpacity: number,
       resampling: "nearest" | "linear",
@@ -352,10 +372,15 @@ export function MapCanvas({
       const overlayPresent = hasSourceA && hasSourceB && hasLayerA && hasLayerB;
 
       if (overlayReadyRef.current && overlayPresent) {
-        const readySourceA = map.getSource(IMG_SOURCE_A) as MutableImageSource | undefined;
-        const readySourceB = map.getSource(IMG_SOURCE_B) as MutableImageSource | undefined;
-        readySourceA?.setCoordinates?.(coords);
-        readySourceB?.setCoordinates?.(coords);
+        const canvasA = canvasARef.current;
+        const canvasB = canvasBRef.current;
+        if (!canvasA || !canvasB) {
+          overlayReadyRef.current = false;
+          (window as any).__twfOverlayReady = false;
+          return false;
+        }
+        setCanvasSourceCoordinates(map, IMG_SOURCE_A, canvasA, coords);
+        setCanvasSourceCoordinates(map, IMG_SOURCE_B, canvasB, coords);
         try {
           map.setPaintProperty(IMG_LAYER_A, "raster-resampling", resampling);
           map.setPaintProperty(IMG_LAYER_A, "raster-fade-duration", 0);
@@ -373,12 +398,19 @@ export function MapCanvas({
       }
 
       if (!(hasSourceA && hasSourceB)) {
+        const canvasA = canvasARef.current;
+        const canvasB = canvasBRef.current;
+        if (!canvasA || !canvasB) {
+          overlayReadyRef.current = false;
+          (window as any).__twfOverlayReady = false;
+          return false;
+        }
         try {
           if (!hasSourceA) {
-            map.addSource(IMG_SOURCE_A, imageSourceFor(firstUrl, coords));
+            map.addSource(IMG_SOURCE_A, canvasSourceFor(canvasA, coords));
           }
           if (!hasSourceB) {
-            map.addSource(IMG_SOURCE_B, imageSourceFor(firstUrl, coords));
+            map.addSource(IMG_SOURCE_B, canvasSourceFor(canvasB, coords));
           }
         } catch {
           overlayReadyRef.current = false;
@@ -436,10 +468,15 @@ export function MapCanvas({
         return false;
       }
 
-      const sourceA = map.getSource(IMG_SOURCE_A) as MutableImageSource | undefined;
-      const sourceB = map.getSource(IMG_SOURCE_B) as MutableImageSource | undefined;
-      sourceA?.setCoordinates?.(coords);
-      sourceB?.setCoordinates?.(coords);
+      const canvasA = canvasARef.current;
+      const canvasB = canvasBRef.current;
+      if (!canvasA || !canvasB) {
+        overlayReadyRef.current = false;
+        (window as any).__twfOverlayReady = false;
+        return false;
+      }
+      setCanvasSourceCoordinates(map, IMG_SOURCE_A, canvasA, coords);
+      setCanvasSourceCoordinates(map, IMG_SOURCE_B, canvasB, coords);
       setLayerOpacity(map, IMG_LAYER_A, targetOpacity);
       setLayerOpacity(map, IMG_LAYER_B, HIDDEN_OPACITY);
       setLayerVisibility(map, IMG_LAYER_A, true);
@@ -460,11 +497,10 @@ export function MapCanvas({
 
       overlayReadyRef.current = true;
       (window as any).__twfOverlayReady = true;
-      const sourceWithUrl = map.getSource(IMG_SOURCE_A) as (MutableImageSource & { url?: string }) | undefined;
-      (window as any).__twfOverlaySourceAUrl = sourceWithUrl?.url ?? firstUrl;
+      (window as any).__twfOverlaySourceAUrl = activeImageUrlRef.current;
       console.info("[MapCanvas] overlay initialized", {
         source: IMG_SOURCE_A,
-        url: sourceWithUrl?.url ?? firstUrl,
+        url: activeImageUrlRef.current,
       });
       return true;
     },
@@ -604,19 +640,34 @@ export function MapCanvas({
       return;
     }
 
-    const map = new maplibregl.Map({
+    const canvasA = document.createElement("canvas");
+    const canvasB = document.createElement("canvas");
+    canvasA.width = OVERLAY_CANVAS_SIZE;
+    canvasA.height = OVERLAY_CANVAS_SIZE;
+    canvasB.width = OVERLAY_CANVAS_SIZE;
+    canvasB.height = OVERLAY_CANVAS_SIZE;
+
+    canvasARef.current = canvasA;
+    canvasBRef.current = canvasB;
+    ctxARef.current = canvasA.getContext("2d");
+    ctxBRef.current = canvasB.getContext("2d");
+
+    const mapOptions: any = {
       container: mapContainerRef.current,
-      style: styleFor(),
+      style: styleFor(canvasA, canvasB, imageCoordinates, resamplingMode, overlayMinZoom),
       center: view.center,
       zoom: view.zoom,
       minZoom: 3,
       maxZoom: 11,
       renderWorldCopies: false,
-      transformRequest: (url) => {
+      contextType: "webgl",
+      transformRequest: (url: string) => {
         onRequestUrlRef.current?.(url);
         return { url };
       },
-    });
+    };
+
+    const map = new maplibregl.Map(mapOptions as any);
 
     mapDestroyedRef.current = false;
     overlayReadyRef.current = false;
@@ -630,7 +681,7 @@ export function MapCanvas({
 
     mapRef.current = map;
     (window as any).__twfMap = map;
-  }, []);
+  }, [imageCoordinates, overlayMinZoom, resamplingMode, view.center, view.zoom]);
 
   useEffect(() => {
     return () => {
@@ -653,9 +704,10 @@ export function MapCanvas({
       (window as any).__twfOverlayReady = false;
       (window as any).__twfOverlaySourceAUrl = "";
       setIsLoaded(false);
-      loadedImageUrlsRef.current.clear();
-      failedImageUrlsRef.current.clear();
-      inflightImageLoadsRef.current.clear();
+      canvasARef.current = null;
+      canvasBRef.current = null;
+      ctxARef.current = null;
+      ctxBRef.current = null;
     };
   }, []);
 
@@ -688,18 +740,18 @@ export function MapCanvas({
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !isLoaded || !isMapStyleReady(map) || !overlayReadyRef.current) {
+    if (!map || !isLoaded || !isMapStyleReady(map)) {
       return;
     }
 
-    const sourceA = (hasSource(map, IMG_SOURCE_A) ? map.getSource(IMG_SOURCE_A) : undefined) as
-      | MutableImageSource
-      | undefined;
-    sourceA?.setCoordinates?.(imageCoordinates);
-    const sourceB = (hasSource(map, IMG_SOURCE_B) ? map.getSource(IMG_SOURCE_B) : undefined) as
-      | MutableImageSource
-      | undefined;
-    sourceB?.setCoordinates?.(imageCoordinates);
+    const canvasA = canvasARef.current;
+    const canvasB = canvasBRef.current;
+    if (!canvasA || !canvasB || mapDestroyedRef.current) {
+      return;
+    }
+
+    setCanvasSourceCoordinates(map, IMG_SOURCE_A, canvasA, imageCoordinates);
+    setCanvasSourceCoordinates(map, IMG_SOURCE_B, canvasB, imageCoordinates);
 
     if (hasLayer(map, IMG_LAYER_A)) {
       map.setPaintProperty(IMG_LAYER_A, "raster-resampling", resamplingMode);
@@ -764,26 +816,8 @@ export function MapCanvas({
       return;
     }
 
-    void preloadImageUrl(targetImageUrl)
-      .then(async (ready) => {
-        if (!ready || token !== renderTokenRef.current || !canMutateMap(map)) {
-          if (token === renderTokenRef.current && canMutateMap(map)) {
-            activeImageUrlRef.current = "";
-            hideImageLayers(map);
-            map.triggerRepaint();
-          }
-          return;
-        }
-
-        const initialized = ensureOverlayInitialized(
-          map,
-          targetImageUrl,
-          imageCoordinates,
-          opacity,
-          resamplingMode,
-          overlayMinZoom
-        );
-        if (!initialized || !overlayReadyRef.current || !canMutateMap(map)) {
+    void (async () => {
+        if (token !== renderTokenRef.current || !canMutateMap(map)) {
           if (token === renderTokenRef.current && canMutateMap(map)) {
             activeImageUrlRef.current = "";
             hideImageLayers(map);
@@ -799,18 +833,83 @@ export function MapCanvas({
             : "a"
           : activeImageBufferRef.current;
 
-        const sourceId = nextBuffer === "a" ? IMG_SOURCE_A : IMG_SOURCE_B;
-        if (!hasSource(map, sourceId)) {
-          return;
-        }
-        const source = map.getSource(sourceId);
-        if (!setImageSourceUrl(source, targetImageUrl, imageCoordinates)) {
+        const targetCtx = nextBuffer === "a" ? ctxARef.current : ctxBRef.current;
+        if (!targetCtx) {
           onFrameImageError?.(targetImageUrl);
           activeImageUrlRef.current = "";
           hideImageLayers(map);
           map.triggerRepaint();
           return;
         }
+
+        let bitmap: ImageBitmap | null = null;
+        try {
+          bitmap = await fetchBitmap(targetImageUrl);
+        } catch {
+          onFrameImageError?.(targetImageUrl);
+          activeImageUrlRef.current = "";
+          hideImageLayers(map);
+          map.triggerRepaint();
+          return;
+        }
+
+        if (token !== renderTokenRef.current || !canMutateMap(map)) {
+          bitmap.close();
+          return;
+        }
+
+        const initialized = ensureOverlayInitialized(
+          map,
+          imageCoordinates,
+          opacity,
+          resamplingMode,
+          overlayMinZoom
+        );
+        if (!initialized || !overlayReadyRef.current || !canMutateMap(map)) {
+          bitmap.close();
+          if (token === renderTokenRef.current && canMutateMap(map)) {
+            activeImageUrlRef.current = "";
+            hideImageLayers(map);
+            map.triggerRepaint();
+          }
+          return;
+        }
+
+        try {
+          targetCtx.clearRect(0, 0, OVERLAY_CANVAS_SIZE, OVERLAY_CANVAS_SIZE);
+          targetCtx.drawImage(bitmap, 0, 0, OVERLAY_CANVAS_SIZE, OVERLAY_CANVAS_SIZE);
+        } catch {
+          bitmap.close();
+          onFrameImageError?.(targetImageUrl);
+          activeImageUrlRef.current = "";
+          hideImageLayers(map);
+          map.triggerRepaint();
+          return;
+        }
+        bitmap.close();
+
+        if (!canMutateMap(map)) {
+          return;
+        }
+
+        const glVersion = (() => {
+          const gl = (map as any)?.painter?.context?.gl;
+          if (!gl || typeof gl.getParameter !== "function") {
+            return undefined;
+          }
+          try {
+            return gl.getParameter(gl.VERSION);
+          } catch {
+            return undefined;
+          }
+        })();
+        console.log("[OverlayCanvasApply]", {
+          url: targetImageUrl,
+          buffer: nextBuffer,
+          zoom: map.getZoom(),
+          gl: glVersion,
+        });
+        onFrameImageReady?.(targetImageUrl);
 
         map.triggerRepaint();
         const renderSettled = await waitForNextRenderOrIdle(map, token);
@@ -833,7 +932,7 @@ export function MapCanvas({
         }
 
         activeImageUrlRef.current = targetImageUrl;
-      })
+      })()
       .catch(() => {
         if (token !== renderTokenRef.current || !canMutateMap(map)) {
           return;
@@ -850,9 +949,9 @@ export function MapCanvas({
     imageCoordinates,
     isLoaded,
     onFrameImageError,
+    onFrameImageReady,
     opacity,
     overlayMinZoom,
-    preloadImageUrl,
     resamplingMode,
     waitForNextRenderOrIdle,
     runImageCrossfade,
@@ -885,7 +984,13 @@ export function MapCanvas({
         if (cancelled || token !== prefetchTokenRef.current) {
           return;
         }
-        await preloadImageUrl(url);
+        try {
+          const bitmap = await fetchBitmap(url);
+          bitmap.close();
+          onFrameImageReady?.(url);
+        } catch {
+          onFrameImageError?.(url);
+        }
         if (cancelled || token !== prefetchTokenRef.current) {
           return;
         }
@@ -903,7 +1008,7 @@ export function MapCanvas({
         prefetchTokenRef.current += 1;
       }
     };
-  }, [prefetchFrameImageUrls, preloadImageUrl]);
+  }, [onFrameImageError, onFrameImageReady, prefetchFrameImageUrls]);
 
   useEffect(() => {
     const map = mapRef.current;
