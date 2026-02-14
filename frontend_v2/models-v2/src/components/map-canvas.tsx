@@ -112,49 +112,40 @@ function drawFrameToCanvas(
   progress: number
 ): void {
   const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("2D canvas context unavailable for overlay draw");
-
+  if (!ctx) {
+    throw new Error("2D canvas context unavailable for overlay draw");
+  }
   const w = canvas.width;
   const h = canvas.height;
-  const p = Math.min(1, Math.max(0, progress));
-
-  const hasFront = !!frontFrame;
-  const hasBack = !!backFrame;
-
-  if (!hasFront && !hasBack) return;
+  const clampedProgress = Math.min(1, Math.max(0, progress));
+  const hasFront = Boolean(frontFrame);
+  const hasBack = Boolean(backFrame);
 
   ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, w, h);
   ctx.imageSmoothingEnabled = canvas.dataset.resamplingMode !== "nearest";
 
-  // HARD RESET of state every call (canvas state is sticky).
-  ctx.globalAlpha = 1;
-  ctx.globalCompositeOperation = "source-over";
-
-  // Option A (recommended for “no white flash”): paint opaque underlay.
-  // Use black; it won’t brighten and is visually neutral behind precip/wind colors.
-  ctx.globalCompositeOperation = "copy";
-  ctx.fillStyle = "#000";
-  ctx.fillRect(0, 0, w, h);
-
-  // Now composite frames on top.
-  ctx.globalCompositeOperation = "source-over";
-
-  if (hasFront && hasBack && p < 1) {
-    ctx.globalAlpha = 1 - p;
-    ctx.drawImage(frontFrame!, 0, 0, w, h);
-    ctx.globalAlpha = p;
-    ctx.drawImage(backFrame!, 0, 0, w, h);
-  } else if (hasBack) {
-    ctx.globalAlpha = 1;
-    ctx.drawImage(backFrame!, 0, 0, w, h);
-  } else {
-    ctx.globalAlpha = 1;
-    ctx.drawImage(frontFrame!, 0, 0, w, h);
+  if (!hasFront && !hasBack) {
+    return;
   }
 
-  // Restore defaults for safety (prevents future surprises).
+  if (hasFront && hasBack && clampedProgress < 1) {
+    ctx.globalAlpha = 1 - clampedProgress;
+    ctx.drawImage(frontFrame as CanvasImageSource, 0, 0, w, h);
+    ctx.globalAlpha = clampedProgress;
+    ctx.drawImage(backFrame as CanvasImageSource, 0, 0, w, h);
+    ctx.globalAlpha = 1;
+    return;
+  }
+
+  if (hasBack) {
+    ctx.globalAlpha = 1;
+    ctx.drawImage(backFrame as CanvasImageSource, 0, 0, w, h);
+    return;
+  }
+
   ctx.globalAlpha = 1;
-  ctx.globalCompositeOperation = "source-over";
+  ctx.drawImage(frontFrame as CanvasImageSource, 0, 0, w, h);
 }
 
 function sampleCenterAlpha(canvas: HTMLCanvasElement | null): number {
