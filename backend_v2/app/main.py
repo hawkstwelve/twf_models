@@ -40,7 +40,9 @@ def _manifest_latest_path(model: str) -> Path:
 def _frame_cache_control(version: str | None) -> str:
     if version and FRAME_VERSION_RE.match(version):
         return "public, max-age=31536000, immutable"
-    return "public, max-age=31536000, immutable"
+    # No version token → content may change (progressive publish).
+    # Allow revalidation so refreshed frames are picked up promptly.
+    return "public, max-age=60, stale-while-revalidate=300"
 
 
 @app.get("/tiles/{model}/{run}/{var}/{frame_id}.pmtiles")

@@ -61,7 +61,10 @@ export type VarRow =
     };
 
 async function fetchJson<T>(url: string): Promise<T> {
-  const response = await fetch(absolutizeUrl(url), { credentials: "omit" });
+  const response = await fetch(absolutizeUrl(url), {
+    credentials: "omit",
+    cache: "no-cache",         // always revalidate — API data changes with each model run
+  });
   if (!response.ok) {
     throw new Error(`Request failed: ${response.status} ${response.statusText}`);
   }
