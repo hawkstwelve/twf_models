@@ -451,6 +451,7 @@ export default function App() {
   const scrubRenderTimerRef = useRef<number | null>(null);
   const lastScrubRenderAtRef = useRef(0);
   const isFrameReadyRef = useRef<((url: string) => boolean) | null>(null);
+  const promoteFrameRef = useRef<((url: string) => void) | null>(null);
 
   const commitHourIfChanged = useCallback(
     (
@@ -943,6 +944,16 @@ export default function App() {
           lastAdvancedIndex = nextIndex;
           forecastHourRef.current = nextHour;
           targetHourRef.current = nextHour;
+
+          // Bypass React state: push the URL straight into MapCanvas's
+          // pendingFrameUrl ref so the RAF tick picks it up on the very
+          // next animation frame — no re-render round-trip needed.
+          if (nextUrl && promoteFrameRef.current) {
+            promoteFrameRef.current(nextUrl);
+          }
+
+          // Still sync React state (throttled) so the UI label / slider
+          // updates, but this is no longer on the critical visual path.
           commitHourIfChanged(nextHour, { syncTarget: true });
         } else {
           // Frame not decoded yet — stall playback clock so we don't skip frames
@@ -1050,6 +1061,7 @@ export default function App() {
           crossfade
           crossfadeDurationMs={crossfadeDurationMs}
           isFrameReadyRef={isFrameReadyRef}
+          promoteFrameRef={promoteFrameRef}
           onFrameImageReady={markFrameImageReady}
           onFrameImageError={markFrameImageUnavailable}
           onZoomHint={setShowZoomHint}

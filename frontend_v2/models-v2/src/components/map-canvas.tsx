@@ -124,11 +124,25 @@ function canvasSourceFor(canvas: HTMLCanvasElement, coordinates: ImageCoordinate
   };
 }
 
+/**
+ * Atomically blit a fully-composited source canvas onto the display canvas
+ * that MapLibre reads from.  A single "copy" drawImage ensures the GPU
+ * texture is never sampled between two sequential draw calls.
+ */
+function blitToDisplay(display: HTMLCanvasElement, source: HTMLCanvasElement): void {
+  const ctx = display.getContext("2d");
+  if (!ctx) return;
+  ctx.globalCompositeOperation = "copy";
+  ctx.drawImage(source, 0, 0);
+  ctx.globalCompositeOperation = "source-over";
+}
+
 function drawFrameToCanvas(
   canvas: HTMLCanvasElement,
   frontFrame: CanvasImageSource | null,
   backFrame: CanvasImageSource | null,
-  progress: number
+  progress: number,
+  displayCanvas?: HTMLCanvasElement | null
 ): void {
   const ctx = canvas.getContext("2d");
   if (!ctx) {
@@ -190,6 +204,13 @@ function drawFrameToCanvas(
     safeDraw(frontFrame as CanvasImageSource, "copy");
   }
   ctx.globalCompositeOperation = "source-over";
+
+  // Double-buffer: if a separate display canvas was provided, atomically
+  // blit the fully-composited result so MapLibre never reads a half-drawn
+  // intermediate state.
+  if (displayCanvas && displayCanvas !== canvas) {
+    blitToDisplay(displayCanvas, canvas);
+  }
 }
 
 function sampleCenterAlpha(canvas: HTMLCanvasElement | null): number {
@@ -349,6 +370,10 @@ type MapCanvasProps = {
   crossfade?: boolean;
   crossfadeDurationMs?: number;
   isFrameReadyRef?: React.MutableRefObject<((url: string) => boolean) | null>;
+  /** Direct frame-promotion handle.  Lets the playback loop bypass React
+   *  state entirely — sets pendingFrameUrl and triggers a repaint so the
+   *  RAF tick picks it up on the very next animation frame. */
+  promoteFrameRef?: React.MutableRefObject<((url: string) => void) | null>;
   onFrameImageReady?: (imageUrl: string) => void;
   onFrameImageError?: (imageUrl: string) => void;
   onZoomHint?: (show: boolean) => void;
@@ -365,6 +390,7 @@ export function MapCanvas({
   crossfade = true,
   crossfadeDurationMs = CROSSFADE_DURATION_MS,
   isFrameReadyRef,
+  promoteFrameRef,
   onFrameImageReady,
   onFrameImageError,
   onZoomHint,
@@ -401,6 +427,33 @@ export function MapCanvas({
       }
     };
   }, [isFrameReadyRef]);
+
+  // Expose direct frame-promotion handle so the playback loop in App.tsx
+  // can push a URL straight into pendingFrameUrlRef without waiting for a
+  // React state → prop → useEffect round-trip.
+  useEffect(() => {
+    if (promoteFrameRef) {
+      promoteFrameRef.current = (url: string) => {
+        if (!url || pendingFrameUrlRef.current === url || frontFrameUrlRef.current === url) {
+          return;
+        }
+        pendingFrameUrlRef.current = url;
+        const map = mapRef.current;
+        if (map && !mapDestroyedRef.current) {
+          try {
+            map.triggerRepaint();
+          } catch {
+            // Map may have been torn down.
+          }
+        }
+      };
+    }
+    return () => {
+      if (promoteFrameRef) {
+        promoteFrameRef.current = null;
+      }
+    };
+  }, [promoteFrameRef]);
   const pendingFrameUrlRef = useRef<string>("");
   const lastDrawnFrameUrlRef = useRef<string>("");
   const lastDrawTimestampRef = useRef<number>(0);
@@ -433,6 +486,7 @@ export function MapCanvas({
   const inFlightDecodeByUrlRef = useRef<Map<string, Promise<DecodedFrame>>>(new Map());
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const compositeCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
 
   useEffect(() => {
@@ -838,7 +892,15 @@ export function MapCanvas({
     canvas.width = OVERLAY_CANVAS_WIDTH;
     canvas.height = OVERLAY_CANVAS_HEIGHT;
 
+    // Offscreen composite canvas — all frame compositing happens here first,
+    // then the result is atomically blitted to the display canvas so MapLibre
+    // never reads a half-drawn intermediate state.
+    const compositeCanvas = document.createElement("canvas");
+    compositeCanvas.width = OVERLAY_CANVAS_WIDTH;
+    compositeCanvas.height = OVERLAY_CANVAS_HEIGHT;
+
     canvasRef.current = canvas;
+    compositeCanvasRef.current = compositeCanvas;
     ctxRef.current = canvas.getContext("2d");
 
     const mapOptions: any = {
@@ -905,6 +967,7 @@ export function MapCanvas({
       (window as any).__twfOverlaySourceAUrl = "";
       setIsLoaded(false);
       canvasRef.current = null;
+      compositeCanvasRef.current = null;
       ctxRef.current = null;
       for (const [, bitmap] of bitmapCacheRef.current.entries()) {
         try {
@@ -946,6 +1009,10 @@ export function MapCanvas({
     const canvas = canvasRef.current;
     if (canvas) {
       canvas.dataset.resamplingMode = resamplingMode;
+    }
+    const composite = compositeCanvasRef.current;
+    if (composite) {
+      composite.dataset.resamplingMode = resamplingMode;
     }
   }, [resamplingMode]);
 
@@ -1176,7 +1243,8 @@ export function MapCanvas({
     const hasFrameList = prefetchFrameImageUrls.length > 0 || Boolean(frameImageUrl?.trim());
     const hasValidFrameIndex = currentFrameIndexRef.current >= 0;
     const overlayCanvas = canvasRef.current;
-    if (!overlayReadyRef.current || !overlayCanvas || !hasFrameList || !hasValidFrameIndex) {
+    const compositeCanvas = compositeCanvasRef.current;
+    if (!overlayReadyRef.current || !overlayCanvas || !compositeCanvas || !hasFrameList || !hasValidFrameIndex) {
       return;
     }
     rafStartedRef.current = true;
@@ -1206,14 +1274,14 @@ export function MapCanvas({
               frontFrameUrlRef.current = pendingUrl;
               backFrameRef.current = null;
               fadeRef.current = null;
-              drawFrameToCanvas(overlayCanvas, frontFrameRef.current, null, 1);
+              drawFrameToCanvas(compositeCanvas, frontFrameRef.current, null, 1, overlayCanvas);
             } else {
               fadeRef.current = {
                 startedAt: now,
                 durationMs: crossfadeDurationMs,
                 targetUrl: pendingUrl,
               };
-              drawFrameToCanvas(overlayCanvas, frontFrameRef.current, backFrameRef.current, 0);
+              drawFrameToCanvas(compositeCanvas, frontFrameRef.current, backFrameRef.current, 0, overlayCanvas);
             }
 
             playCanvasSources(map);
@@ -1264,13 +1332,13 @@ export function MapCanvas({
           }
           backFrameRef.current = null;
           fadeRef.current = null;
-          drawFrameToCanvas(overlayCanvas, frontFrameRef.current, null, 1);
+          drawFrameToCanvas(compositeCanvas, frontFrameRef.current, null, 1, overlayCanvas);
           playCanvasSources(map);
           map.triggerRepaint();
           enforceOverlayState(opacityRef.current);
         } else {
           const progress = Math.min(1, (now - startedAt) / durationMs);
-          drawFrameToCanvas(overlayCanvas, frontFrameRef.current, backFrameRef.current, progress);
+          drawFrameToCanvas(compositeCanvas, frontFrameRef.current, backFrameRef.current, progress, overlayCanvas);
           playCanvasSources(map);
           map.triggerRepaint();
 
