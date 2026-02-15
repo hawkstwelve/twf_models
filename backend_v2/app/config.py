@@ -57,7 +57,7 @@ class Settings:
     OFFLINE_FRAME_IMAGE_SIZE_PX: int = _env_int("OFFLINE_FRAME_IMAGE_SIZE_PX", default=2048, minimum=256, maximum=4096)
     OFFLINE_FRAME_IMAGE_WEBP_QUALITY: int = _env_int(
         "OFFLINE_FRAME_IMAGE_WEBP_QUALITY",
-        default=82,
+        default=90,
         minimum=1,
         maximum=100,
     )

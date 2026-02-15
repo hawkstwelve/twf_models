@@ -58,12 +58,20 @@ def _rgba_from_encoded_bands(tile_data: np.ndarray, var_key: str) -> np.ndarray:
     raise RuntimeError(f"Unsupported source band count for frame image conversion: {band_count}")
 
 
+# Variables using discrete/categorical palette indices — must use nearest-neighbor
+# resampling to avoid creating invalid intermediate palette values.
+DISCRETE_VARS: frozenset[str] = frozenset({
+    "radar_ptype", "ptype", "radar", "radar_ptype_combo", "precip_ptype",
+})
+
+
 def _read_encoded_frame(
     *,
     source_cog_path: Path,
     region_bounds: Sequence[float],
     output_width: int,
     output_height: int,
+    resampling: Resampling = Resampling.nearest,
 ) -> np.ndarray:
     west, south, east, north = [float(v) for v in region_bounds]
     if east <= west or north <= south:
@@ -91,7 +99,7 @@ def _read_encoded_frame(
                 dst_transform=dst_transform,
                 dst_crs="EPSG:4326",
                 dst_nodata=dst_nodata,
-                resampling=Resampling.nearest,
+                resampling=resampling,
             )
 
     return destination
@@ -124,12 +132,18 @@ def render_frame_image_webp(
     if not source_cog_path.exists():
         raise FileNotFoundError(f"Source COG not found for frame image render: {source_cog_path}")
 
+    var_key_lower = str(varKey or "").strip().lower()
+    frame_resampling = (
+        Resampling.nearest if var_key_lower in DISCRETE_VARS else Resampling.bilinear
+    )
+
     width, height = _normalize_size_px(size_px)
     encoded = _read_encoded_frame(
         source_cog_path=source_cog_path,
         region_bounds=region_bounds,
         output_width=width,
         output_height=height,
+        resampling=frame_resampling,
     )
     rgba = _rgba_from_encoded_bands(encoded, varKey)
     image = Image.fromarray(rgba, mode="RGBA")

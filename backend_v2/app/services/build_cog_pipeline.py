@@ -43,8 +43,8 @@ GFS_RADAR_PTYPE_FOOTPRINT_MIN_DBZ = float(
 RUN_RE = re.compile(r"^\d{8}_\d{2}z$")
 TARGET_GRID_METERS_BY_MODEL_REGION: dict[tuple[str, str], tuple[float, float]] = {
     ("hrrr", "pnw"): (3000.0, 3000.0),
-    ("gfs", "pnw"): (25000.0, 25000.0),
-    ("gfs", "conus"): (25000.0, 25000.0),
+    ("gfs", "pnw"): (8000.0, 8000.0),
+    ("gfs", "conus"): (8000.0, 8000.0),
     # Future-facing defaults for planned ECMWF support; tune once product is finalized.
     ("ecmwf", "pnw"): (9000.0, 9000.0),
     ("ecmwf", "conus"): (9000.0, 9000.0),
@@ -289,7 +289,7 @@ def _is_discrete(var: str, meta: dict) -> bool:
 def _warp_tr_meters(model: str, var: str, meta: dict) -> tuple[float, float] | None:
     model_key = str(model or "").strip().lower()
     if model_key == "gfs":
-        return (20000.0, 20000.0)
+        return (8000.0, 8000.0)
     return None
 
 
@@ -1607,7 +1607,7 @@ def warp_to_3857(
 ) -> None:
     require_gdal("gdalwarp")
     dst_tif.parent.mkdir(parents=True, exist_ok=True)
-    if resampling not in {"near", "bilinear"}:
+    if resampling not in {"near", "bilinear", "cubic", "lanczos"}:
         raise ValueError(f"Unsupported warp resampling: {resampling}")
 
     cmd = [
@@ -3063,7 +3063,12 @@ def main() -> int:
                 )
 
                 is_discrete = _is_discrete(args.var, meta)
-                warp_resampling = "near" if is_discrete else "bilinear"
+                if is_discrete:
+                    warp_resampling = "near"
+                elif str(args.model or "").strip().lower() == "gfs":
+                    warp_resampling = "cubic"
+                else:
+                    warp_resampling = "bilinear"
                 print(f"Warping to EPSG:3857 ({warp_resampling}): {warped_tif}")
                 warp_to_3857(
                     byte_tif,
