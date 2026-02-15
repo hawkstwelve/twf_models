@@ -214,12 +214,55 @@ def enforce_cycle_retention(cfg: HRRRCacheConfig) -> dict[str, int]:
                 parent_day.rmdir()
                 deleted_day_dirs += 1
 
+    deleted_day_dirs += _remove_orphan_day_dirs(cfg, keep_dirs)
+
     return {
         "kept_cycles": len(keep_dirs),
         "deleted_cycles": deleted_cycles,
         "deleted_files": deleted_files,
         "deleted_day_dirs": deleted_day_dirs,
     }
+
+
+def _remove_orphan_day_dirs(cfg: HRRRCacheConfig, keep_dirs: list[Path]) -> int:
+    """Remove day directories that have no valid cycle subdirectories.
+
+    These are stale directories from old flat-layout runs where GRIB files
+    were placed directly in the day directory without an hour subdirectory.
+    Only removes day dirs that are older than the oldest kept cycle.
+    """
+    if not keep_dirs:
+        return 0
+
+    oldest_kept = keep_dirs[-1]
+    oldest_day = parse_run_dir_name(oldest_kept.parent.name)
+    oldest_hour = parse_cycle_dir_name(oldest_kept.name)
+    if oldest_day is None or oldest_hour is None:
+        return 0
+    oldest_dt = datetime(oldest_day.year, oldest_day.month, oldest_day.day, oldest_hour)
+
+    keep_day_names = {d.parent.name for d in keep_dirs}
+    removed = 0
+
+    for day_dir in list_day_dirs(cfg):
+        if day_dir.name in keep_day_names:
+            continue
+        parsed_day = parse_run_dir_name(day_dir.name)
+        if parsed_day is None:
+            continue
+        day_dt = datetime(parsed_day.year, parsed_day.month, parsed_day.day, 23, 59)
+        if day_dt >= oldest_dt:
+            continue
+        cycle_subdirs = list_cycle_dirs_for_day(day_dir)
+        if cycle_subdirs:
+            continue
+        if not _is_under_base(day_dir, cfg.base_dir):
+            continue
+        logger.info("Deleting orphan day directory (no cycle subdirs): %s", day_dir)
+        shutil.rmtree(day_dir)
+        removed += 1
+
+    return removed
 
 
 def enforce_latest_run_only(cfg: HRRRCacheConfig) -> dict[str, int]:

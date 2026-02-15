@@ -36,6 +36,7 @@ BUSY_POLL_SECONDS = 60
 BACKOFF_INITIAL_SECONDS = 60
 BACKOFF_MAX_SECONDS = 600
 SLEEP_JITTER_RATIO = 0.1
+CACHE_RETENTION_KEEP_RUNS = 2
 
 COMPONENT_ONLY_VARS_BY_MODEL: dict[str, set[str]] = {
     "gfs": {"10u", "10v", "crain", "csnow", "cicep", "cfrzr"},
@@ -859,6 +860,13 @@ def run_scheduler(
                 newest_run_id,
                 active_run_id,
             )
+
+            try:
+                plugin.ensure_latest_cycles(CACHE_RETENTION_KEEP_RUNS)
+            except FileNotFoundError:
+                pass
+            except Exception:
+                logger.warning("herbie_cache retention failed for model=%s", model, exc_info=True)
 
             caught_up = len(pending) == 0 and completed == total and active_run_id == newest_run_id
             base_sleep, window_label = compute_sleep_seconds(

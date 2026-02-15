@@ -766,7 +766,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [model, run]);
+  }, [model]);
 
   useEffect(() => {
     setFrameRows([]);
@@ -851,7 +851,9 @@ export default function App() {
         const manifest = await fetchRunManifest(model, resolvedRunForRequests);
         if (cancelled) return;
         const payload = getOfflineFrames(manifest, model, variable);
-        setResolvedRunId(payload.runId);
+        if (run === "latest") {
+          setResolvedRunId(payload.runId);
+        }
         setFrameRows(payload.frames);
         setAvailableFramesCount(payload.available);
         setExpectedFrames(payload.expected);
@@ -888,7 +890,9 @@ export default function App() {
       try {
         const manifest = await fetchRunManifest(model, resolvedRunForRequests);
         const payload = getOfflineFrames(manifest, model, variable);
-        setResolvedRunId(payload.runId);
+        if (run === "latest") {
+          setResolvedRunId(payload.runId);
+        }
         setFrameRows(payload.frames);
         setAvailableFramesCount(payload.available);
         setExpectedFrames(payload.expected);

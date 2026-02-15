@@ -11,6 +11,10 @@ Environment=PYTHONUNBUFFERED=1
 Environment=TWF_DATA_V2_ROOT=/opt/twf_models/data/v2
 Environment=TWF_V2_WORKERS=4
 Environment=PYTHONPATH=/opt/twf_models/backend_v2:/opt/twf_models
+Environment=OFFLINE_TILES_ENABLED=true
+Environment=STAGING_ROOT=/opt/twf_models/data/staging
+Environment=PUBLISH_ROOT=/opt/twf_models/data/published
+Environment=MANIFEST_ROOT=/opt/twf_models/data/manifests
 ExecStartPre=/usr/bin/test -f /opt/twf_models/backend_v2/app/services/model_scheduler_v2.py
 ExecStart=/opt/twf_models/venv_v2/bin/python -m app.services.model_scheduler_v2 --model hrrr --region pnw --vars tmp2m,wspd10m --primary-vars tmp2m --data-root /opt/twf_models/data/v2
 Restart=on-failure
