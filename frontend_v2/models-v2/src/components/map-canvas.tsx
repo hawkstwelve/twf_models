@@ -1060,6 +1060,13 @@ export function MapCanvas({
     }
     bitmapCacheRef.current.clear();
     bitmapCacheOrderRef.current = [];
+    cacheBytesRef.current = 0;
+    cacheHitsRef.current = 0;
+    cacheMissesRef.current = 0;
+    // Discard any in-flight decode promises left over from the previous
+    // context so they don't silently insert stale bitmaps (and inflate
+    // cacheBytesRef) into the freshly cleared cache.
+    inFlightDecodeByUrlRef.current.clear();
     if (import.meta.env.DEV) {
       console.info("[OverlayContextChange]", { model, variable, token: runVarTokenRef.current });
     }

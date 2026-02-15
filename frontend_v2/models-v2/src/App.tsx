@@ -529,7 +529,12 @@ export default function App() {
     return resolvedRunId ?? runs[0] ?? null;
   }, [resolvedRunId, runs]);
 
-  const resolvedRunForRequests = run === "latest" ? (latestRunId ?? "latest") : run;
+  // Always pass "latest" to the API when the user hasn't pinned a
+  // specific run.  The server resolves it, so there's no need to
+  // translate it to a concrete run ID client-side (which used to
+  // trigger a redundant second manifest fetch every time
+  // resolvedRunId was set).
+  const resolvedRunForRequests = run === "latest" ? "latest" : run;
 
   const runOptions = useMemo<Option[]>(() => {
     return buildRunOptions(runs, latestRunId);
@@ -738,13 +743,26 @@ export default function App() {
     async function loadRunsAndVars() {
       setError(null);
       try {
-        const runData = await fetchRuns(model);
+        // When run is "latest" we can fetch runs and vars in parallel
+        // (both resolve "latest" server-side), saving one full
+        // round-trip on initial page load.
+        let runData: string[];
+        let varData: Awaited<ReturnType<typeof fetchVars>>;
+
+        if (run === "latest") {
+          [runData, varData] = await Promise.all([
+            fetchRuns(model),
+            fetchVars(model, "latest"),
+          ]);
+        } else {
+          runData = await fetchRuns(model);
+          if (cancelled) return;
+          const nextRun = runData.includes(run) ? run : "latest";
+          varData = await fetchVars(model, nextRun);
+        }
         if (cancelled) return;
 
         const nextRun = run !== "latest" && runData.includes(run) ? run : "latest";
-        const varData = await fetchVars(model, nextRun);
-        if (cancelled) return;
-
         setRuns(runData);
 
         const normalizedVars = normalizeVarRows(varData);
