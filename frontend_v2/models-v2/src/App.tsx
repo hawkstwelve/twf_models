@@ -733,6 +733,7 @@ export default function App() {
     if (!model) return;
     let cancelled = false;
     setResolvedRunId(null);
+    setRuns([]);
 
     async function loadRunsAndVars() {
       setError(null);
