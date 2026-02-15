@@ -509,7 +509,16 @@ export function MapCanvas({
   }, []);
 
   const enforceOverlayState = useCallback(
-    (targetOpacity: number) => {
+    (targetOpacity: number, { force = false }: { force?: boolean } = {}) => {
+      // During an active crossfade, skip raster-opacity / visibility
+      // changes — they cause MapLibre to schedule an internal re-render
+      // that can briefly glitch the canvas source texture.  The RAF tick
+      // calls enforceOverlayState with { force: true } once the fade
+      // completes or is canceled.
+      if (!force && fadeRef.current) {
+        return;
+      }
+
       const map = mapRef.current;
       if (!map || !canMutateMap(map) || !overlayReadyRef.current) {
         return;
@@ -1335,7 +1344,7 @@ export function MapCanvas({
           drawFrameToCanvas(compositeCanvas, frontFrameRef.current, null, 1, overlayCanvas);
           playCanvasSources(map);
           map.triggerRepaint();
-          enforceOverlayState(opacityRef.current);
+          enforceOverlayState(opacityRef.current, { force: true });
         } else {
           const progress = Math.min(1, (now - startedAt) / durationMs);
           drawFrameToCanvas(compositeCanvas, frontFrameRef.current, backFrameRef.current, progress, overlayCanvas);
@@ -1346,8 +1355,8 @@ export function MapCanvas({
             frontFrameRef.current = backFrameRef.current;
             frontFrameUrlRef.current = targetUrl;
             backFrameRef.current = null;
-            enforceOverlayState(opacityRef.current);
             fadeRef.current = null;
+            enforceOverlayState(opacityRef.current, { force: true });
           }
         }
       }
