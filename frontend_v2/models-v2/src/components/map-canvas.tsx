@@ -140,16 +140,10 @@ function drawFrameToCanvas(
   ctx.globalCompositeOperation = "source-over";
   ctx.imageSmoothingEnabled = canvas.dataset.resamplingMode !== "nearest";
 
-  // --- Paint opaque black underlay using "copy" to atomically replace all pixels.
-  // This guarantees the canvas is NEVER presented as transparent/empty. ---
-  ctx.globalCompositeOperation = "copy";
-  ctx.fillStyle = "#000";
-  ctx.fillRect(0, 0, w, h);
-  ctx.globalCompositeOperation = "source-over";
-
   // Guard against closed ImageBitmaps (evicted from cache while still referenced)
-  const safeDraw = (img: CanvasImageSource) => {
+  const safeDraw = (img: CanvasImageSource, composite: GlobalCompositeOperation) => {
     try {
+      ctx.globalCompositeOperation = composite;
       ctx.drawImage(img, 0, 0, w, h);
     } catch {
       // ImageBitmap was closed — skip this frame silently.
@@ -160,27 +154,36 @@ function drawFrameToCanvas(
   const hasBack = Boolean(backFrame);
 
   if (!hasFront && !hasBack) {
-    // Canvas stays opaque black — no transparent flash.
+    // Nothing to draw — clear canvas so overlay is fully transparent
+    // (basemap shows through).
+    ctx.globalCompositeOperation = "copy";
+    ctx.clearRect(0, 0, w, h);
     return;
   }
 
   if (hasFront && hasBack && clampedProgress < 1) {
+    // Crossfade: draw front with "copy" (atomically replaces all pixels —
+    // no transient transparent frame even at reduced alpha), then
+    // composite back on top with "source-over".
     ctx.globalAlpha = 1 - clampedProgress;
-    safeDraw(frontFrame as CanvasImageSource);
+    safeDraw(frontFrame as CanvasImageSource, "copy");
     ctx.globalAlpha = clampedProgress;
-    safeDraw(backFrame as CanvasImageSource);
+    safeDraw(backFrame as CanvasImageSource, "source-over");
     ctx.globalAlpha = 1;
     ctx.globalCompositeOperation = "source-over";
     return;
   }
 
-  // Single frame (or crossfade complete): draw at full alpha.
+  // Single frame (or crossfade complete): draw at full alpha using "copy"
+  // to atomically replace all canvas contents — transparent source pixels
+  // stay transparent (basemap shows through), no flash.
   ctx.globalAlpha = 1;
   if (hasBack) {
-    safeDraw(backFrame as CanvasImageSource);
+    safeDraw(backFrame as CanvasImageSource, "copy");
   } else {
-    safeDraw(frontFrame as CanvasImageSource);
+    safeDraw(frontFrame as CanvasImageSource, "copy");
   }
+  ctx.globalCompositeOperation = "source-over";
 }
 
 function sampleCenterAlpha(canvas: HTMLCanvasElement | null): number {
