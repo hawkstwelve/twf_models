@@ -62,3 +62,4 @@ venv_v2/
 .github/
 .pytest_cache/
 data/
+/docs/
