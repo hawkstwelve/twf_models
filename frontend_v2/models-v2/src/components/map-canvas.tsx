@@ -369,6 +369,9 @@ type MapCanvasProps = {
   prefetchFrameImageUrls?: string[];
   crossfade?: boolean;
   crossfadeDurationMs?: number;
+  /** When true the user is actively scrubbing the slider — crossfade is
+   *  disabled so frames swap instantly without lingering transitions. */
+  isScrubbing?: boolean;
   isFrameReadyRef?: React.MutableRefObject<((url: string) => boolean) | null>;
   /** Direct frame-promotion handle.  Lets the playback loop bypass React
    *  state entirely — sets pendingFrameUrl and triggers a repaint so the
@@ -389,6 +392,7 @@ export function MapCanvas({
   prefetchFrameImageUrls = [],
   crossfade = true,
   crossfadeDurationMs = CROSSFADE_DURATION_MS,
+  isScrubbing = false,
   isFrameReadyRef,
   promoteFrameRef,
   onFrameImageReady,
@@ -1035,6 +1039,8 @@ export function MapCanvas({
     frontFrameUrlRef.current = "";
     frontFrameRef.current = null;
     backFrameRef.current = null;
+    activeImageUrlRef.current = "";
+    lastDrawnFrameUrlRef.current = "";
     pendingFrameUrlRef.current = "";
     pendingPromotionRef.current = null;
     fadeRef.current = null;
@@ -1179,6 +1185,20 @@ export function MapCanvas({
       map.triggerRepaint();
     }
 
+    // Synchronous fast-path: if the bitmap is already cached, promote it
+    // immediately instead of going through the async decode pipeline.
+    // This eliminates the ~1-frame microtask delay during scrubbing and
+    // playback when frames are pre-fetched.
+    const cachedBitmap = bitmapCacheRef.current.get(targetImageUrl);
+    if (cachedBitmap) {
+      pendingFrameUrlRef.current = targetImageUrl;
+      currentFrameUrlRef.current = targetImageUrl;
+      frameFailureCountsRef.current.delete(targetImageUrl);
+      onFrameImageReady?.(targetImageUrl);
+      map.triggerRepaint();
+      return;
+    }
+
     const selectedRunVarToken = runVarTokenRef.current;
     void (async () => {
       try {
@@ -1250,10 +1270,9 @@ export function MapCanvas({
     }
 
     const hasFrameList = prefetchFrameImageUrls.length > 0 || Boolean(frameImageUrl?.trim());
-    const hasValidFrameIndex = currentFrameIndexRef.current >= 0;
     const overlayCanvas = canvasRef.current;
     const compositeCanvas = compositeCanvasRef.current;
-    if (!overlayReadyRef.current || !overlayCanvas || !compositeCanvas || !hasFrameList || !hasValidFrameIndex) {
+    if (!overlayReadyRef.current || !overlayCanvas || !compositeCanvas || !hasFrameList) {
       return;
     }
     rafStartedRef.current = true;
@@ -1277,7 +1296,7 @@ export function MapCanvas({
             };
             backFrameRef.current = decoded;
             const hasFrontFrame = Boolean(frontFrameRef.current);
-            const shouldCrossfade = crossfade && hasFrontFrame;
+            const shouldCrossfade = crossfade && !isScrubbing && hasFrontFrame;
             if (!shouldCrossfade) {
               frontFrameRef.current = decoded;
               frontFrameUrlRef.current = pendingUrl;
@@ -1376,6 +1395,7 @@ export function MapCanvas({
     canMutateMap,
     crossfade,
     crossfadeDurationMs,
+    isScrubbing,
     enforceOverlayState,
     frameImageUrl,
     isLoaded,

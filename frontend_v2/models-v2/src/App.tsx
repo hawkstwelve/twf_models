@@ -1060,6 +1060,7 @@ export default function App() {
           prefetchFrameImageUrls={prefetchFrameImageUrls}
           crossfade
           crossfadeDurationMs={crossfadeDurationMs}
+          isScrubbing={scrubIsActive}
           isFrameReadyRef={isFrameReadyRef}
           promoteFrameRef={promoteFrameRef}
           onFrameImageReady={markFrameImageReady}
