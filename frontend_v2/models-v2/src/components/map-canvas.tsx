@@ -133,16 +133,19 @@ function drawFrameToCanvas(
   const w = canvas.width;
   const h = canvas.height;
   const clampedProgress = Math.min(1, Math.max(0, progress));
-  const hasFront = Boolean(frontFrame);
-  const hasBack = Boolean(backFrame);
 
+  // --- Reset all sticky canvas state ---
   ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.clearRect(0, 0, w, h);
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = "source-over";
   ctx.imageSmoothingEnabled = canvas.dataset.resamplingMode !== "nearest";
 
-  if (!hasFront && !hasBack) {
-    return;
-  }
+  // --- Paint opaque black underlay using "copy" to atomically replace all pixels.
+  // This guarantees the canvas is NEVER presented as transparent/empty. ---
+  ctx.globalCompositeOperation = "copy";
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, w, h);
+  ctx.globalCompositeOperation = "source-over";
 
   // Guard against closed ImageBitmaps (evicted from cache while still referenced)
   const safeDraw = (img: CanvasImageSource) => {
@@ -153,23 +156,31 @@ function drawFrameToCanvas(
     }
   };
 
+  const hasFront = Boolean(frontFrame);
+  const hasBack = Boolean(backFrame);
+
+  if (!hasFront && !hasBack) {
+    // Canvas stays opaque black — no transparent flash.
+    return;
+  }
+
   if (hasFront && hasBack && clampedProgress < 1) {
     ctx.globalAlpha = 1 - clampedProgress;
     safeDraw(frontFrame as CanvasImageSource);
     ctx.globalAlpha = clampedProgress;
     safeDraw(backFrame as CanvasImageSource);
     ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = "source-over";
     return;
   }
 
-  if (hasBack) {
-    ctx.globalAlpha = 1;
-    safeDraw(backFrame as CanvasImageSource);
-    return;
-  }
-
+  // Single frame (or crossfade complete): draw at full alpha.
   ctx.globalAlpha = 1;
-  safeDraw(frontFrame as CanvasImageSource);
+  if (hasBack) {
+    safeDraw(backFrame as CanvasImageSource);
+  } else {
+    safeDraw(frontFrame as CanvasImageSource);
+  }
 }
 
 function sampleCenterAlpha(canvas: HTMLCanvasElement | null): number {
@@ -1230,19 +1241,35 @@ export function MapCanvas({
 
       if (fadeRef.current) {
         const { startedAt, durationMs, targetUrl } = fadeRef.current;
-        const progress = Math.min(1, (now - startedAt) / durationMs);
-        drawFrameToCanvas(overlayCanvas, frontFrameRef.current, backFrameRef.current, progress);
-        playCanvasSources(map);
-        map.triggerRepaint();
 
-        if (progress >= 1) {
-          if (backFrameRef.current) {
+        // Safety guard: if either frame vanished mid-fade, cancel the fade
+        // and draw whatever is available at full alpha — never present a
+        // blank tick.
+        if (!frontFrameRef.current || !backFrameRef.current) {
+          const survivor = backFrameRef.current ?? frontFrameRef.current;
+          if (survivor === backFrameRef.current && backFrameRef.current) {
             frontFrameRef.current = backFrameRef.current;
             frontFrameUrlRef.current = targetUrl;
           }
           backFrameRef.current = null;
-          enforceOverlayState(opacityRef.current);
           fadeRef.current = null;
+          drawFrameToCanvas(overlayCanvas, frontFrameRef.current, null, 1);
+          playCanvasSources(map);
+          map.triggerRepaint();
+          enforceOverlayState(opacityRef.current);
+        } else {
+          const progress = Math.min(1, (now - startedAt) / durationMs);
+          drawFrameToCanvas(overlayCanvas, frontFrameRef.current, backFrameRef.current, progress);
+          playCanvasSources(map);
+          map.triggerRepaint();
+
+          if (progress >= 1) {
+            frontFrameRef.current = backFrameRef.current;
+            frontFrameUrlRef.current = targetUrl;
+            backFrameRef.current = null;
+            enforceOverlayState(opacityRef.current);
+            fadeRef.current = null;
+          }
         }
       }
 
