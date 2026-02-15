@@ -385,6 +385,56 @@ def _enforce_output_retention(
         shutil.rmtree(entry, ignore_errors=True)
 
 
+def _enforce_staging_published_retention(
+    model: str,
+    latest_pointer_run: str | None,
+    newest_run: str | None,
+    active_run: str | None,
+) -> None:
+    """Remove old run directories from STAGING_ROOT and PUBLISH_ROOT.
+
+    Mirrors _enforce_output_retention logic: keeps the 2 newest runs plus
+    any runs referenced by the latest pointer, newest probe, or active build.
+    """
+    for label, root_base in [
+        ("staging", settings.STAGING_ROOT),
+        ("published", settings.PUBLISH_ROOT),
+    ]:
+        model_root = root_base / model
+        if not model_root.exists():
+            continue
+
+        runs: list[tuple[datetime, Path]] = []
+        for entry in model_root.iterdir():
+            if not entry.is_dir():
+                continue
+            run_dt = _parse_run_id_datetime(entry.name)
+            if run_dt is None:
+                continue
+            runs.append((run_dt, entry))
+
+        if not runs:
+            continue
+
+        runs.sort(key=lambda item: item[0], reverse=True)
+        keep_names = {p.name for _, p in runs[:2]}
+        if latest_pointer_run:
+            keep_names.add(latest_pointer_run)
+        if newest_run:
+            keep_names.add(newest_run)
+        if active_run:
+            keep_names.add(active_run)
+
+        for _run_dt, entry in runs:
+            if entry.name in keep_names:
+                continue
+            if not _is_under_root(entry, model_root):
+                logger.warning("Skipping %s retention delete outside root: %s", label, entry)
+                continue
+            logger.info("Removing old %s run dir: %s", label, entry)
+            shutil.rmtree(entry, ignore_errors=True)
+
+
 def _run_build_task(task: dict) -> dict:
     cmd = [
         sys.executable,
@@ -867,6 +917,17 @@ def run_scheduler(
                 pass
             except Exception:
                 logger.warning("herbie_cache retention failed for model=%s", model, exc_info=True)
+
+            if settings.OFFLINE_TILES_ENABLED:
+                try:
+                    _enforce_staging_published_retention(
+                        model,
+                        latest_pointer_run,
+                        newest_run_id,
+                        active_run_id,
+                    )
+                except Exception:
+                    logger.warning("staging/published retention failed for model=%s", model, exc_info=True)
 
             caught_up = len(pending) == 0 and completed == total and active_run_id == newest_run_id
             base_sleep, window_label = compute_sleep_seconds(

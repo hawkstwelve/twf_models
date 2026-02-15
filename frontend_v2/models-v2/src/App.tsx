@@ -732,6 +732,7 @@ export default function App() {
   useEffect(() => {
     if (!model) return;
     let cancelled = false;
+    setResolvedRunId(null);
 
     async function loadRunsAndVars() {
       setError(null);
