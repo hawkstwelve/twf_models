@@ -1191,7 +1191,14 @@ export function MapCanvas({
     // playback when frames are pre-fetched.
     const cachedBitmap = bitmapCacheRef.current.get(targetImageUrl);
     if (cachedBitmap) {
-      pendingFrameUrlRef.current = targetImageUrl;
+      // Only write pendingFrameUrlRef when nothing fresher is already
+      // queued.  During playback the promoteFrameRef callback may have
+      // already pushed a newer URL — overwriting it with a stale prop
+      // value was the root cause of animation freezing at fh0.
+      const stale = pendingFrameUrlRef.current && pendingFrameUrlRef.current !== targetImageUrl;
+      if (!stale) {
+        pendingFrameUrlRef.current = targetImageUrl;
+      }
       currentFrameUrlRef.current = targetImageUrl;
       frameFailureCountsRef.current.delete(targetImageUrl);
       onFrameImageReady?.(targetImageUrl);

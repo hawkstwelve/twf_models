@@ -20,7 +20,7 @@ import { buildRunOptions } from "@/lib/run-options";
 
 const MANIFEST_REFRESH_ACTIVE_MS = 5_000;
 const MANIFEST_REFRESH_IDLE_MS = 30_000;
-const SCRUB_RENDER_THROTTLE_MS = 80;
+const SCRUB_RENDER_THROTTLE_MS = 40;
 const PREFETCH_LOOKAHEAD = 20;
 const PLAYBACK_COMMIT_MS = 100;
 const CROSSFADE_MS_DEFAULT = 120;
@@ -1000,7 +1000,11 @@ export default function App() {
     }
 
     const target = nearestFrame(frameHours, targetHourRef.current);
-    const desiredHour = scrubIsActive ? nearestReadyImageHour(target, forecastHourRef.current) : target;
+    // Commit the actual target hour directly — the double-buffered canvas
+    // keeps the previous frame visible until the new bitmap decodes, so
+    // the old "nearest ready" fallback is no longer needed and was the
+    // cause of scrub feeling stuck on the starting forecast hour.
+    const desiredHour = target;
     const now = performance.now();
     const elapsed = now - lastScrubRenderAtRef.current;
 
@@ -1027,7 +1031,7 @@ export default function App() {
         scrubRenderTimerRef.current = null;
       }
     };
-  }, [isPlaying, frameHours, scrubIsActive, readyVersionImages, nearestReadyImageHour, commitHourIfChanged]);
+  }, [isPlaying, frameHours, targetForecastHour, scrubIsActive, commitHourIfChanged]);
 
   return (
     <div className="flex h-full flex-col">
