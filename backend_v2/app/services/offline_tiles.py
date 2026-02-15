@@ -941,14 +941,29 @@ def load_published_var_manifest(model: str, run: str, var: str) -> dict[str, Any
 
 def load_published_run_manifest(model: str, run: str) -> dict[str, Any]:
     resolved_run = resolve_published_run(model, run)
-    vars_list = list_published_vars(model, resolved_run)
+    run_root = settings.PUBLISH_ROOT / model / resolved_run
     variables: dict[str, dict[str, Any]] = {}
-    for var in vars_list:
-        variables[var] = load_published_var_manifest(model, resolved_run, var)
+
+    # Single-pass: read each variable's manifest once (instead of reading
+    # it twice — once in list_published_vars and again in
+    # load_published_var_manifest).
+    if run_root.exists() and run_root.is_dir():
+        for path in run_root.iterdir():
+            if not path.is_dir():
+                continue
+            manifest = _read_json(path / "manifest.json")
+            if manifest is None:
+                continue
+            try:
+                validate_manifest_contract(manifest)
+            except Exception:
+                continue
+            variables[path.name] = manifest
+
     return {
         "contract_version": CONTRACT_VERSION,
         "model": model,
         "run": resolved_run,
-        "variables": variables,
+        "variables": dict(sorted(variables.items())),
         "last_updated": _now_utc_iso(),
     }

@@ -1,4 +1,4 @@
-import { API_BASE, absolutizeUrl } from "@/lib/config";
+import { API_BASE, DEFAULTS, absolutizeUrl } from "@/lib/config";
 
 export type ModelOption = {
   id: string;
@@ -60,10 +60,10 @@ export type VarRow =
       label?: string;
     };
 
-async function fetchJson<T>(url: string): Promise<T> {
+async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(absolutizeUrl(url), {
     credentials: "omit",
-    cache: "no-cache",         // always revalidate — API data changes with each model run
+    ...init,
   });
   if (!response.ok) {
     throw new Error(`Request failed: ${response.status} ${response.statusText}`);
@@ -87,9 +87,39 @@ export async function fetchVars(model: string, run: string): Promise<VarRow[]> {
   return vars;
 }
 
+/**
+ * Module-level early manifest prefetch.  Starts the network request for the
+ * default model+run manifest the moment this module is evaluated — well
+ * before React mounts and effects fire — shaving the React-mount latency
+ * off the critical path for the initial overlay.
+ */
+const _earlyManifestUrl =
+  `${API_BASE}/run/${encodeURIComponent(DEFAULTS.model)}/${encodeURIComponent(DEFAULTS.run)}/manifest.json`;
+let _earlyManifestPromise: Promise<OfflineRunManifest> | null =
+  fetchJson<OfflineRunManifest>(_earlyManifestUrl, { cache: "no-cache" });
+
 export async function fetchRunManifest(model: string, run: string): Promise<OfflineRunManifest> {
   const runKey = run || "latest";
+
+  // If this is the very first call for the default model+run, re-use the
+  // module-level prefetch promise instead of issuing a duplicate request.
+  if (_earlyManifestPromise) {
+    const isDefault =
+      model === DEFAULTS.model &&
+      (runKey === DEFAULTS.run || runKey === "latest");
+    if (isDefault) {
+      const promise = _earlyManifestPromise;
+      _earlyManifestPromise = null;           // consume once
+      return promise;
+    }
+    // Different model/run requested first — discard early prefetch.
+    _earlyManifestPromise = null;
+  }
+
+  // Manifest must always be fresh (progressive publishing can change it
+  // at any moment), so bypass the browser cache.
   return fetchJson<OfflineRunManifest>(
-    `${API_BASE}/run/${encodeURIComponent(model)}/${encodeURIComponent(runKey)}/manifest.json`
+    `${API_BASE}/run/${encodeURIComponent(model)}/${encodeURIComponent(runKey)}/manifest.json`,
+    { cache: "no-cache" },
   );
 }
