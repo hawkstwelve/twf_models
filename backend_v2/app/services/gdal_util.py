@@ -463,7 +463,7 @@ def build_gdalwarp_3857_cmd(
     with_alpha: bool = True,
     clip_bounds_3857: tuple[float, float, float, float] | None = None,
 ) -> list[str]:
-    if resampling not in {"near", "bilinear"}:
+    if resampling not in {"near", "bilinear", "cubic", "lanczos"}:
         raise ValueError(f"Unsupported warp resampling: {resampling}")
     cmd = [
         "gdalwarp",
