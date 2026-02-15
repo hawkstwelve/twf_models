@@ -23,6 +23,7 @@ const MANIFEST_REFRESH_IDLE_MS = 30_000;
 const SCRUB_RENDER_THROTTLE_MS = 80;
 const PREFETCH_LOOKAHEAD = 20;
 const PLAYBACK_COMMIT_MS = 100;
+const CROSSFADE_MS_DEFAULT = 120;
 
 const TMP2M_COLORS = [
   "#e8d0d8", "#d8b0c8", "#c080b0", "#9050a0", "#703090",
@@ -582,6 +583,12 @@ export default function App() {
     }, []);
   }, [frameHours, frameByHour, forecastHour, targetForecastHour, isPlaying, badFrameImageVersion]);
 
+  const crossfadeDurationMs = useMemo(() => {
+    if (!isPlaying) return CROSSFADE_MS_DEFAULT;
+    if (autoplayTickMs <= 300) return 0;
+    return Math.min(CROSSFADE_MS_DEFAULT, Math.round(autoplayTickMs * 0.3));
+  }, [isPlaying, autoplayTickMs]);
+
   useEffect(() => {
     forecastHourRef.current = forecastHour;
   }, [forecastHour]);
@@ -1041,6 +1048,7 @@ export default function App() {
           model={model}
           prefetchFrameImageUrls={prefetchFrameImageUrls}
           crossfade
+          crossfadeDurationMs={crossfadeDurationMs}
           isFrameReadyRef={isFrameReadyRef}
           onFrameImageReady={markFrameImageReady}
           onFrameImageError={markFrameImageUnavailable}

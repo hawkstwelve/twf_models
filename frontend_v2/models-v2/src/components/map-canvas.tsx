@@ -166,10 +166,12 @@ function drawFrameToCanvas(
   }
 
   if (hasFront && hasBack && clampedProgress < 1) {
-    // Crossfade: draw front with "copy" (atomically replaces all pixels —
-    // no transient transparent frame even at reduced alpha), then
-    // composite back on top with "source-over".
-    ctx.globalAlpha = 1 - clampedProgress;
+    // Crossfade: draw front at full alpha with "copy" so the canvas always
+    // holds fully-opaque pixels (no alpha dip that lets the white basemap
+    // bleed through). Then composite the incoming frame on top at the
+    // crossfade progress alpha — it smoothly fades in without any
+    // intermediate transparency.
+    ctx.globalAlpha = 1;
     safeDraw(frontFrame as CanvasImageSource, "copy");
     ctx.globalAlpha = clampedProgress;
     safeDraw(backFrame as CanvasImageSource, "source-over");
@@ -345,6 +347,7 @@ type MapCanvasProps = {
   model?: string;
   prefetchFrameImageUrls?: string[];
   crossfade?: boolean;
+  crossfadeDurationMs?: number;
   isFrameReadyRef?: React.MutableRefObject<((url: string) => boolean) | null>;
   onFrameImageReady?: (imageUrl: string) => void;
   onFrameImageError?: (imageUrl: string) => void;
@@ -360,6 +363,7 @@ export function MapCanvas({
   model,
   prefetchFrameImageUrls = [],
   crossfade = true,
+  crossfadeDurationMs = CROSSFADE_DURATION_MS,
   isFrameReadyRef,
   onFrameImageReady,
   onFrameImageError,
@@ -1206,7 +1210,7 @@ export function MapCanvas({
             } else {
               fadeRef.current = {
                 startedAt: now,
-                durationMs: CROSSFADE_DURATION_MS,
+                durationMs: crossfadeDurationMs,
                 targetUrl: pendingUrl,
               };
               drawFrameToCanvas(overlayCanvas, frontFrameRef.current, backFrameRef.current, 0);
@@ -1294,6 +1298,7 @@ export function MapCanvas({
   }, [
     canMutateMap,
     crossfade,
+    crossfadeDurationMs,
     enforceOverlayState,
     frameImageUrl,
     isLoaded,
