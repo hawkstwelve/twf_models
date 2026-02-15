@@ -288,12 +288,20 @@ function setCanvasSourceCoordinates(
   return false;
 }
 
+/**
+ * Check whether the map's style has been **parsed** (layers queryable,
+ * addSource / addLayer safe).  Unlike `map.isStyleLoaded()`, this does
+ * NOT wait for every raster source's tile data to finish downloading, so
+ * overlay initialisation can begin while basemap tiles stream in from
+ * the CDN in the background.
+ */
 function isMapStyleReady(map: maplibregl.Map | null | undefined): map is maplibregl.Map {
   if (!map) {
     return false;
   }
   try {
-    return map.isStyleLoaded() === true;
+    const style = map.getStyle();
+    return style != null && Array.isArray(style.layers) && style.layers.length > 0;
   } catch {
     return false;
   }
@@ -942,11 +950,44 @@ export function MapCanvas({
     (window as any).__twfOverlaySourceAUrl = "";
 
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-left");
-    map.on("load", () => {
-      setIsLoaded(true);
-      if (import.meta.env.DEV) {
-        console.info("[OverlayInit]", { model, variable });
+
+    // ── Early-readiness gate ───────────────────────────────────────────
+    // The MapLibre "load" event fires only after every basemap / label
+    // tile has been fetched from the CARTO CDN.  On a cold cache that can
+    // take 15-25 s — far too long to keep the overlay hidden.
+    //
+    // Instead we poll for style-parsed readiness: once getLayer()
+    // resolves for our inline style layers, addSource / addLayer are safe
+    // and we can start the overlay pipeline immediately.  Basemap tiles
+    // continue streaming in the background.
+    console.time("[MapCanvas] style-ready");
+    console.time("[MapCanvas] tiles-loaded");
+
+    const pollStyleReady = () => {
+      if (mapDestroyedRef.current) return;
+      try {
+        if (map.getLayer("twf-basemap")) {
+          console.timeEnd("[MapCanvas] style-ready");
+          setIsLoaded(true);
+          return;
+        }
+      } catch {
+        // style not yet available — retry next frame
       }
+      requestAnimationFrame(pollStyleReady);
+    };
+    requestAnimationFrame(pollStyleReady);
+
+    // Keep the full-load event for diagnostics only — overlay no longer
+    // waits for it.
+    map.on("load", () => {
+      console.timeEnd("[MapCanvas] tiles-loaded");
+      console.info("[MapCanvas] basemap tiles fully loaded", { model, variable });
+    });
+
+    // Show zoom level on debug console dont remove this, it is very useful for testing and debugging
+    map.on("zoomend", () => {
+      console.log("[ZoomLevel]", map.getZoom().toFixed(2));
     });
 
     mapRef.current = map;
