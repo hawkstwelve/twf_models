@@ -512,7 +512,8 @@ export function MapCanvas({
     };
   }, [region]);
 
-  const overlayMinZoom = useMemo(() => (model === "gfs" ? 6 : 3), [model]);
+  const overlayMinZoom = useMemo(() => 3, [model]);
+  const overlayMaxZoom = useMemo(() => (model === "gfs" ? 7 : 24), [model]);
   const resamplingMode = useMemo(() => getResamplingMode(variable), [variable]);
   const imageCoordinates = useMemo(() => imageCoordinatesForRegion(region), [region]);
 
@@ -793,7 +794,8 @@ export function MapCanvas({
       coords: ImageCoordinates,
       targetOpacity: number,
       resampling: "nearest" | "linear",
-      minZoom: number
+      minZoom: number,
+      maxZoom: number
     ): boolean => {
       if (!canMutateMap(map)) {
         return false;
@@ -814,7 +816,7 @@ export function MapCanvas({
         try {
           map.setPaintProperty(IMG_LAYER_ID, "raster-resampling", resampling);
           map.setPaintProperty(IMG_LAYER_ID, "raster-fade-duration", 0);
-          map.setLayerZoomRange(IMG_LAYER_ID, minZoom, 24);
+          map.setLayerZoomRange(IMG_LAYER_ID, minZoom, maxZoom);
         } catch {
           overlayReadyRef.current = false;
           (window as any).__twfOverlayReady = false;
@@ -849,6 +851,7 @@ export function MapCanvas({
               type: "raster",
               source: IMG_SOURCE_ID,
               minzoom: minZoom,
+              maxzoom: maxZoom,
               layout: { visibility: "visible" },
               paint: {
                 "raster-opacity": targetOpacity > 0 ? targetOpacity : DEFAULT_OVERLAY_OPACITY,
@@ -882,7 +885,7 @@ export function MapCanvas({
       try {
         map.setPaintProperty(IMG_LAYER_ID, "raster-resampling", resampling);
         map.setPaintProperty(IMG_LAYER_ID, "raster-fade-duration", 0);
-        map.setLayerZoomRange(IMG_LAYER_ID, minZoom, 24);
+        map.setLayerZoomRange(IMG_LAYER_ID, minZoom, maxZoom);
       } catch {
         overlayReadyRef.current = false;
         (window as any).__twfOverlayReady = false;
@@ -1151,7 +1154,8 @@ export function MapCanvas({
       imageCoordinates,
       opacity,
       resamplingMode,
-      overlayMinZoom
+      overlayMinZoom,
+      overlayMaxZoom
     );
     if (!initialized) {
       return;
@@ -1167,7 +1171,7 @@ export function MapCanvas({
     if (hasLayer(map, IMG_LAYER_ID)) {
       map.setPaintProperty(IMG_LAYER_ID, "raster-resampling", resamplingMode);
       map.setPaintProperty(IMG_LAYER_ID, "raster-fade-duration", 0);
-      map.setLayerZoomRange(IMG_LAYER_ID, overlayMinZoom, 24);
+      map.setLayerZoomRange(IMG_LAYER_ID, overlayMinZoom, overlayMaxZoom);
     }
 
     if (activeImageUrlRef.current) {
@@ -1177,6 +1181,7 @@ export function MapCanvas({
     imageCoordinates,
     isLoaded,
     overlayMinZoom,
+    overlayMaxZoom,
     resamplingMode,
     opacity,
     enforceOverlayState,
