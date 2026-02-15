@@ -133,18 +133,37 @@ def render_frame_image_webp(
         raise FileNotFoundError(f"Source COG not found for frame image render: {source_cog_path}")
 
     var_key_lower = str(varKey or "").strip().lower()
-    frame_resampling = (
-        Resampling.nearest if var_key_lower in DISCRETE_VARS else Resampling.bilinear
-    )
-
+    is_discrete = var_key_lower in DISCRETE_VARS
     width, height = _normalize_size_px(size_px)
-    encoded = _read_encoded_frame(
-        source_cog_path=source_cog_path,
-        region_bounds=region_bounds,
-        output_width=width,
-        output_height=height,
-        resampling=frame_resampling,
-    )
-    rgba = _rgba_from_encoded_bands(encoded, varKey)
-    image = Image.fromarray(rgba, mode="RGBA")
+
+    if is_discrete:
+        # Discrete/categorical: nearest-neighbor at full output size to
+        # preserve hard category boundaries.
+        encoded = _read_encoded_frame(
+            source_cog_path=source_cog_path,
+            region_bounds=region_bounds,
+            output_width=width,
+            output_height=height,
+            resampling=Resampling.nearest,
+        )
+        rgba = _rgba_from_encoded_bands(encoded, varKey)
+        image = Image.fromarray(rgba, mode="RGBA")
+    else:
+        # Continuous: read byte-encoded data at native COG resolution with
+        # nearest-neighbor (to avoid blending palette indices), apply the
+        # colormap to get RGBA, then resize in color space with LANCZOS
+        # for smooth, sharp gradients.
+        with rasterio.open(source_cog_path) as src:
+            native_w, native_h = src.width, src.height
+        encoded = _read_encoded_frame(
+            source_cog_path=source_cog_path,
+            region_bounds=region_bounds,
+            output_width=native_w,
+            output_height=native_h,
+            resampling=Resampling.nearest,
+        )
+        rgba = _rgba_from_encoded_bands(encoded, varKey)
+        native_image = Image.fromarray(rgba, mode="RGBA")
+        image = native_image.resize((width, height), Image.LANCZOS)
+
     _atomic_save_webp(image, out_webp_path, quality=quality)
