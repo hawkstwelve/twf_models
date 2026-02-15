@@ -95,10 +95,14 @@ type PendingDecodeRequest = {
 };
 
 function getResamplingMode(variable?: string): "nearest" | "linear" {
+  // Categorical fields must use nearest-neighbor to avoid interpolating
+  // between discrete ptype/reflectivity bins.
   if (variable && (variable.includes("radar") || variable.includes("ptype"))) {
     return "nearest";
   }
-  return "nearest";
+  // Continuous fields (tmp2m, wspd10m, qpf6h, etc.) benefit from bilinear
+  // filtering — smoother gradients and no visible pixel edges.
+  return "linear";
 }
 
 function imageCoordinatesForRegion(region?: string): ImageCoordinates {
