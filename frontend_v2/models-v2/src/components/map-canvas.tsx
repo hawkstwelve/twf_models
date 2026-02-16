@@ -521,6 +521,10 @@ export function MapCanvas({
     onRequestUrlRef.current = onRequestUrl;
   }, [onRequestUrl]);
 
+  useEffect(() => {
+    legacyActiveRef.current = useLegacyTiles;
+  }, [useLegacyTiles]);
+
   const view = useMemo(() => {
     return REGION_VIEWS[region] ?? {
       center: [DEFAULTS.center[1], DEFAULTS.center[0]] as [number, number],
@@ -1169,6 +1173,12 @@ export function MapCanvas({
   }, [isLoaded, model, onZoomHint]);
 
   useEffect(() => {
+    if (useLegacyTiles) {
+      pendingFrameUrlRef.current = "";
+      currentFrameUrlRef.current = "";
+      return;
+    }
+
     const map = mapRef.current;
     if (!map || !isLoaded || !isMapStyleReady(map)) {
       return;
@@ -1211,6 +1221,7 @@ export function MapCanvas({
     opacity,
     enforceOverlayState,
     ensureOverlayInitialized,
+    useLegacyTiles,
   ]);
 
   useEffect(() => {
@@ -1346,9 +1357,14 @@ export function MapCanvas({
     onFrameImageReady,
     prefetchFrameImageUrls,
     retryNonce,
+    useLegacyTiles,
   ]);
 
   useEffect(() => {
+    if (useLegacyTiles) {
+      return;
+    }
+
     const map = mapRef.current;
     if (!map || !isLoaded || !isMapStyleReady(map)) {
       return;
@@ -1491,9 +1507,14 @@ export function MapCanvas({
     isLoaded,
     playCanvasSources,
     prefetchFrameImageUrls,
+    useLegacyTiles,
   ]);
 
   useEffect(() => {
+    if (useLegacyTiles) {
+      return;
+    }
+
     const token = ++prefetchTokenRef.current;
 
     const uniqueQueue: string[] = [];
@@ -1546,7 +1567,7 @@ export function MapCanvas({
         prefetchTokenRef.current += 1;
       }
     };
-  }, [fetchBitmap, onFrameImageReady, prefetchFrameImageUrls]);
+  }, [fetchBitmap, onFrameImageReady, prefetchFrameImageUrls, useLegacyTiles]);
 
   useEffect(() => {
     (window as any).__twfOverlayDebug = () => {
@@ -1633,7 +1654,7 @@ export function MapCanvas({
       return;
     }
 
-    // ── Legacy OFF: tear down legacy layers, ensure WebP overlay visible ──
+    // ── Legacy OFF: tear down legacy layers, restore WebP overlay ──
     if (!useLegacyTiles) {
       legacyActiveRef.current = false;
       if (hasLayer(map, LEGACY_LAYER_ID)) {
@@ -1654,9 +1675,29 @@ export function MapCanvas({
     // ── Legacy ON ──
     legacyActiveRef.current = true;
 
-    // Hide the WebP canvas overlay so it doesn't stack on top
+    // Remove the WebP canvas overlay source/layer while legacy mode is on.
+    // This prevents stray WebP rendering/fetch state and avoids source-id conflicts.
     if (hasLayer(map, IMG_LAYER_ID)) {
-      setLayerVisibility(map, IMG_LAYER_ID, false);
+      try { map.removeLayer(IMG_LAYER_ID); } catch { /* noop */ }
+    }
+    if (hasSource(map, IMG_SOURCE_ID)) {
+      try { map.removeSource(IMG_SOURCE_ID); } catch { /* noop */ }
+    }
+    overlayReadyRef.current = false;
+    (window as any).__twfOverlayReady = false;
+
+    // Clear any pending WebP frame promotion while in legacy mode
+    pendingFrameUrlRef.current = "";
+    currentFrameUrlRef.current = "";
+    activeImageUrlRef.current = "";
+    pendingPromotionRef.current = null;
+    fadeRef.current = null;
+    frontFrameRef.current = null;
+    backFrameRef.current = null;
+    frontFrameUrlRef.current = "";
+    if (frameRetryTimerRef.current !== null) {
+      window.clearTimeout(frameRetryTimerRef.current);
+      frameRetryTimerRef.current = null;
     }
 
     // Build tile URL
@@ -1693,7 +1734,7 @@ export function MapCanvas({
           type: "raster",
           source: LEGACY_SOURCE_ID,
           paint: {
-            "raster-opacity": opacity > 0 ? opacity : DEFAULT_OVERLAY_OPACITY,
+            "raster-opacity": 1,
             "raster-fade-duration": 0,
           },
         },

@@ -1105,7 +1105,7 @@ export default function App() {
           onZoomHint={setShowZoomHint}
           onRequestUrl={(url) => reportLegacyRequestViolation(url, "map")}
           useLegacyTiles={useLegacyTiles}
-          run={resolvedRunForRequests}
+          run={effectiveRunId ?? resolvedRunForRequests}
           forecastHour={forecastHour}
         />
 
