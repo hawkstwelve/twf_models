@@ -425,6 +425,9 @@ export function MapCanvas({
   const mapRef = useRef<maplibregl.Map | null>(null);
   const mapDestroyedRef = useRef(false);
   const overlayReadyRef = useRef(false);
+  /** When true, the legacy raster-tile layer is active — all WebP canvas
+   *  overlay rendering must be suppressed so the two don't fight. */
+  const legacyActiveRef = useRef(useLegacyTiles);
   const [isLoaded, setIsLoaded] = useState(false);
   const [retryNonce, setRetryNonce] = useState(0);
 
@@ -536,6 +539,15 @@ export function MapCanvas({
 
   const enforceOverlayState = useCallback(
     (targetOpacity: number, { force = false }: { force?: boolean } = {}) => {
+      // When legacy tiles are active, the WebP overlay must stay hidden.
+      if (legacyActiveRef.current) {
+        const map = mapRef.current;
+        if (map && canMutateMap(map) && map.getLayer(IMG_LAYER_ID)) {
+          try { setLayerVisibility(map, IMG_LAYER_ID, false); } catch { /* noop */ }
+        }
+        return;
+      }
+
       // During an active crossfade, skip raster-opacity / visibility
       // changes — they cause MapLibre to schedule an internal re-render
       // that can briefly glitch the canvas source texture.  The RAF tick
@@ -1351,6 +1363,11 @@ export function MapCanvas({
     rafStartedRef.current = true;
 
     const tick = (now: number) => {
+      // Skip all WebP canvas work while legacy raster tiles are active.
+      if (legacyActiveRef.current) {
+        animationRafRef.current = window.requestAnimationFrame(tick);
+        return;
+      }
       if (!canMutateMap(map) || !overlayReadyRef.current) {
         animationRafRef.current = window.requestAnimationFrame(tick);
         return;
@@ -1618,6 +1635,7 @@ export function MapCanvas({
 
     // ── Legacy OFF: tear down legacy layers, ensure WebP overlay visible ──
     if (!useLegacyTiles) {
+      legacyActiveRef.current = false;
       if (hasLayer(map, LEGACY_LAYER_ID)) {
         try { map.removeLayer(LEGACY_LAYER_ID); } catch { /* already removed */ }
       }
@@ -1634,6 +1652,8 @@ export function MapCanvas({
     }
 
     // ── Legacy ON ──
+    legacyActiveRef.current = true;
+
     // Hide the WebP canvas overlay so it doesn't stack on top
     if (hasLayer(map, IMG_LAYER_ID)) {
       setLayerVisibility(map, IMG_LAYER_ID, false);
