@@ -1705,7 +1705,15 @@ export function MapCanvas({
     const resolvedRun = run || "latest";
     const resolvedVar = variable || "tmp2m";
     const resolvedFh = forecastHourProp ?? 0;
+    console.log("[legacy] enabled=", useLegacyTiles, {
+      model: resolvedModel,
+      region,
+      run: resolvedRun,
+      varKey: resolvedVar,
+      fh: resolvedFh,
+    });
     const tileUrl = getLegacyTileTemplate(resolvedModel, region, resolvedRun, resolvedVar, resolvedFh);
+    console.log("[legacy] tileUrl=", tileUrl);
 
     // If the URL hasn't changed, nothing to do
     if (tileUrl === legacyTileUrlRef.current && hasSource(map, LEGACY_SOURCE_ID) && hasLayer(map, LEGACY_LAYER_ID)) {
