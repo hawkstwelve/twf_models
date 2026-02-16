@@ -2,6 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import maplibregl, { type StyleSpecification } from "maplibre-gl";
 
 import { DEFAULTS } from "@/lib/config";
+import { getLegacyTileTemplate } from "@/lib/tiles";
+
+const LEGACY_SOURCE_ID = "wx-legacy";
+const LEGACY_LAYER_ID = "wx-legacy";
 
 const BASEMAP_ATTRIBUTION =
   '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors ' +
@@ -389,6 +393,12 @@ type MapCanvasProps = {
   onFrameImageError?: (imageUrl: string) => void;
   onZoomHint?: (show: boolean) => void;
   onRequestUrl?: (url: string) => void;
+  /** When true, render via legacy TiTiler raster tiles instead of WebP overlay. */
+  useLegacyTiles?: boolean;
+  /** Current run id (e.g. "20260216_12z") — needed for legacy tile URL. */
+  run?: string;
+  /** Forecast hour string (e.g. "012") — needed for legacy tile URL. */
+  forecastHour?: string | number;
 };
 
 export function MapCanvas({
@@ -404,6 +414,9 @@ export function MapCanvas({
   isFrameReadyRef,
   promoteFrameRef,
   onFrameImageReady,
+  useLegacyTiles = false,
+  run,
+  forecastHour: forecastHourProp,
   onFrameImageError,
   onZoomHint,
   onRequestUrl,
@@ -1585,6 +1598,104 @@ export function MapCanvas({
     }
     map.easeTo({ center: view.center, zoom: view.zoom, duration: 600 });
   }, [isLoaded, view]);
+
+  // ── Legacy raster-tile layer management ────────────────────────────
+  //
+  // When `useLegacyTiles` is true we add (or update) a standard MapLibre
+  // raster source + layer from the legacy TiTiler server.  When it's false
+  // (default) we tear down any legacy source/layer and let the normal
+  // canvas-overlay path render.
+  //
+  // The effect fires whenever model/region/run/variable/forecastHour
+  // change, keeping the tile URL in sync with the active selection.
+  const legacyTileUrlRef = useRef<string>("");
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isLoaded || !isMapStyleReady(map)) {
+      return;
+    }
+
+    // ── Legacy OFF: tear down legacy layers, ensure WebP overlay visible ──
+    if (!useLegacyTiles) {
+      if (hasLayer(map, LEGACY_LAYER_ID)) {
+        try { map.removeLayer(LEGACY_LAYER_ID); } catch { /* already removed */ }
+      }
+      if (hasSource(map, LEGACY_SOURCE_ID)) {
+        try { map.removeSource(LEGACY_SOURCE_ID); } catch { /* already removed */ }
+      }
+      legacyTileUrlRef.current = "";
+      // Restore WebP overlay visibility if it exists
+      if (hasLayer(map, IMG_LAYER_ID)) {
+        setLayerVisibility(map, IMG_LAYER_ID, true);
+        enforceOverlayState(opacity);
+      }
+      return;
+    }
+
+    // ── Legacy ON ──
+    // Hide the WebP canvas overlay so it doesn't stack on top
+    if (hasLayer(map, IMG_LAYER_ID)) {
+      setLayerVisibility(map, IMG_LAYER_ID, false);
+    }
+
+    // Build tile URL
+    const resolvedModel = model || "hrrr";
+    const resolvedRun = run || "latest";
+    const resolvedVar = variable || "tmp2m";
+    const resolvedFh = forecastHourProp ?? 0;
+    const tileUrl = getLegacyTileTemplate(resolvedModel, region, resolvedRun, resolvedVar, resolvedFh);
+
+    // If the URL hasn't changed, nothing to do
+    if (tileUrl === legacyTileUrlRef.current && hasSource(map, LEGACY_SOURCE_ID) && hasLayer(map, LEGACY_LAYER_ID)) {
+      return;
+    }
+    legacyTileUrlRef.current = tileUrl;
+
+    // Remove stale source/layer before re-adding to avoid "already exists" errors
+    if (hasLayer(map, LEGACY_LAYER_ID)) {
+      try { map.removeLayer(LEGACY_LAYER_ID); } catch { /* noop */ }
+    }
+    if (hasSource(map, LEGACY_SOURCE_ID)) {
+      try { map.removeSource(LEGACY_SOURCE_ID); } catch { /* noop */ }
+    }
+
+    try {
+      map.addSource(LEGACY_SOURCE_ID, {
+        type: "raster",
+        tiles: [tileUrl],
+        tileSize: 256,
+      });
+
+      map.addLayer(
+        {
+          id: LEGACY_LAYER_ID,
+          type: "raster",
+          source: LEGACY_SOURCE_ID,
+          paint: {
+            "raster-opacity": opacity > 0 ? opacity : DEFAULT_OVERLAY_OPACITY,
+            "raster-fade-duration": 0,
+          },
+        },
+        hasLayer(map, "twf-labels") ? "twf-labels" : undefined
+      );
+    } catch (err) {
+      console.error("[MapCanvas] Failed to add legacy tile layer", err);
+    }
+
+    // Cleanup on unmount / dependency change
+    return () => {
+      if (mapDestroyedRef.current) return;
+      const m = mapRef.current;
+      if (!m) return;
+      if (hasLayer(m, LEGACY_LAYER_ID)) {
+        try { m.removeLayer(LEGACY_LAYER_ID); } catch { /* noop */ }
+      }
+      if (hasSource(m, LEGACY_SOURCE_ID)) {
+        try { m.removeSource(LEGACY_SOURCE_ID); } catch { /* noop */ }
+      }
+    };
+  }, [useLegacyTiles, model, region, run, variable, forecastHourProp, opacity, isLoaded, enforceOverlayState]);
 
   return <div ref={mapContainerRef} className="absolute inset-0" aria-label="Weather map" />;
 }

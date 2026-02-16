@@ -15,6 +15,7 @@ import {
   fetchVars,
 } from "@/lib/api";
 import { DEFAULTS, VARIABLE_LABELS } from "@/lib/config";
+import { getUseLegacyTiles, setUseLegacyTiles } from "@/lib/featureFlags";
 import { buildOfflineFrameImageUrl } from "@/lib/frames";
 import { buildRunOptions } from "@/lib/run-options";
 
@@ -425,6 +426,7 @@ export default function App() {
   const [forecastHour, setForecastHour] = useState(0);
   const [targetForecastHour, setTargetForecastHour] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [useLegacyTiles, setUseLegacyTilesState] = useState(getUseLegacyTiles);
   const [autoplayTickMs, setAutoplayTickMs] = useState(
     AUTOPLAY_SPEED_PRESETS.find((preset) => preset.label === "1x")?.tickMs ?? 500
   );
@@ -492,6 +494,11 @@ export default function App() {
   const handleSetIsPlaying = useCallback((value: boolean) => {
     isPlayingRef.current = value;
     setIsPlaying((prev) => (prev === value ? prev : value));
+  }, []);
+
+  const handleLegacyTilesChange = useCallback((enabled: boolean) => {
+    setUseLegacyTiles(enabled);
+    setUseLegacyTilesState(enabled);
   }, []);
 
   const frameHours = useMemo(() => {
@@ -1076,6 +1083,8 @@ export default function App() {
         variables={variables}
         showRegion={false}
         disabled={loading || models.length === 0}
+        useLegacyTiles={useLegacyTiles}
+        onLegacyTilesChange={handleLegacyTilesChange}
       />
 
       <div className="relative flex-1 overflow-hidden">
@@ -1095,6 +1104,9 @@ export default function App() {
           onFrameImageError={markFrameImageUnavailable}
           onZoomHint={setShowZoomHint}
           onRequestUrl={(url) => reportLegacyRequestViolation(url, "map")}
+          useLegacyTiles={useLegacyTiles}
+          run={resolvedRunForRequests}
+          forecastHour={forecastHour}
         />
 
         {error && (

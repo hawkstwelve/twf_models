@@ -1,5 +1,28 @@
 import { API_BASE_URL, absolutizeUrl } from "@/lib/config";
 
+// ---------------------------------------------------------------------------
+// Legacy TiTiler raster-tile support
+// ---------------------------------------------------------------------------
+const LEGACY_BASE = "https://legacy-api.sodakweather.com";
+
+/**
+ * Build a TiTiler raster-tile URL template for the legacy tile server.
+ * The returned string contains `{z}/{x}/{y}` placeholders that MapLibre
+ * substitutes at render-time.
+ */
+export function getLegacyTileTemplate(
+  model: string,
+  region: string,
+  run: string,
+  varKey: string,
+  fh: string | number
+): string {
+  const normalizedFh = String(fh).padStart(3, "0");
+  return `${LEGACY_BASE}/tiles/${model}/${region}/${run}/${varKey}/${normalizedFh}/{z}/{x}/{y}.png`;
+}
+
+// ---------------------------------------------------------------------------
+
 function rewriteFrontendOriginToApiOrigin(url: string): string {
   try {
     const resolved = new URL(url);

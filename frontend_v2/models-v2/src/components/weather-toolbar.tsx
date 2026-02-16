@@ -28,6 +28,9 @@ type WeatherToolbarProps = {
   variables: Option[];
   showRegion?: boolean;
   disabled?: boolean;
+  /** Legacy raster-tile toggle */
+  useLegacyTiles?: boolean;
+  onLegacyTilesChange?: (enabled: boolean) => void;
 };
 
 function ToolbarSelect(props: {
@@ -80,6 +83,8 @@ export function WeatherToolbar(props: WeatherToolbarProps) {
     variables,
     showRegion = true,
     disabled = false,
+    useLegacyTiles = false,
+    onLegacyTilesChange,
   } = props;
 
   return (
@@ -130,6 +135,23 @@ export function WeatherToolbar(props: WeatherToolbarProps) {
           disabled={disabled}
           placeholder="Variable"
         />
+
+        {/* Legacy tiles toggle */}
+        {onLegacyTilesChange && (
+          <div className="flex flex-col justify-end gap-1">
+            <label className="flex cursor-pointer items-center gap-1.5 select-none">
+              <input
+                type="checkbox"
+                checked={useLegacyTiles}
+                onChange={(e) => onLegacyTilesChange(e.target.checked)}
+                className="h-3.5 w-3.5 rounded border-border/50 accent-primary"
+              />
+              <span className="whitespace-nowrap text-[10px] font-medium uppercase tracking-wider text-muted-foreground/80">
+                Legacy tiles
+              </span>
+            </label>
+          </div>
+        )}
       </div>
     </header>
   );
