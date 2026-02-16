@@ -169,21 +169,26 @@ def render_frame_image_webp(
 
     var_key_lower = str(varKey or "").strip().lower()
     is_discrete = var_key_lower in DISCRETE_VARS
+    out_w, out_h = _normalize_size_px(size_px)
 
-    # Read COG at native resolution — no resize.  The GDAL warp already
-    # baked smooth gradients into the COG via bilinear interpolation on
-    # byte-encoded values (which is mathematically equivalent to interpolating
-    # float physical values for linear encodings).  Outputting at native size
-    # avoids a second interpolation step that would add softness/blur.
-    # The browser/frontend handles display scaling via imageSmoothingEnabled
-    # and MapLibre raster-resampling: "linear".
+    # Step 1: Read byte-encoded COG at native resolution with nearest
+    # resampling so palette indices are never interpolated.
     encoded = _read_cog_direct(
         source_cog_path=source_cog_path,
         resampling=Resampling.nearest,
     )
 
-    # Apply colormap → RGBA.
+    # Step 2: Apply LUT colormap → RGBA at native resolution.
     rgba = _rgba_from_encoded_bands(encoded, varKey)
     image = Image.fromarray(rgba, mode="RGBA")
+
+    # Step 3: Resize RGBA to the requested output size.  For continuous
+    # vars use LANCZOS (high-quality color interpolation on actual RGBA
+    # values, not byte palette indices).  For discrete/categorical vars
+    # use NEAREST to preserve exact palette boundaries.
+    native_w, native_h = image.size
+    if native_w != out_w or native_h != out_h:
+        resample = Image.Resampling.NEAREST if is_discrete else Image.Resampling.LANCZOS
+        image = image.resize((out_w, out_h), resample=resample)
 
     _atomic_save_webp(image, out_webp_path, quality=quality)
