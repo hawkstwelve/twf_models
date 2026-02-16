@@ -2,10 +2,21 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import maplibregl, { type StyleSpecification } from "maplibre-gl";
 
 import { DEFAULTS } from "@/lib/config";
-import { getLegacyTileTemplate } from "@/lib/tiles";
+import { fetchRuns } from "@/lib/api";
+import { buildLegacyTileSampleUrl, getLegacyTileTemplate } from "@/lib/tiles";
 
 const LEGACY_SOURCE_ID = "wx-legacy";
 const LEGACY_LAYER_ID = "wx-legacy";
+const LEGACY_MODEL = "gfs";
+const LEGACY_REGION = "pnw";
+const LEGACY_SUPPORTED_VARS = new Set([
+  "tmp2m",
+  "wspd10m",
+  "refc",
+  "radar_ptype",
+  "precip_ptype",
+  "qpf6h",
+]);
 
 const BASEMAP_ATTRIBUTION =
   '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors ' +
@@ -52,6 +63,22 @@ const IS_MOBILE =
   typeof navigator !== "undefined" &&
   (navigator.maxTouchPoints > 0 || /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent));
 const BITMAP_CACHE_BUDGET_BYTES = IS_MOBILE ? 300 * 1024 * 1024 : 800 * 1024 * 1024;
+const RUN_ID_RE = /^\d{8}_\d{2}z$/i;
+
+function normalizeForecastHour(fh: string | number | undefined): number {
+  const parsed = typeof fh === "number" ? fh : Number.parseInt(String(fh ?? 0), 10);
+  if (!Number.isFinite(parsed)) {
+    return 0;
+  }
+  return Math.max(0, Math.trunc(parsed));
+}
+
+function resolveLatestLegacyRun(runs: string[]): string | null {
+  const concreteRuns = Array.from(new Set(runs.filter((runId) => RUN_ID_RE.test(runId)))).sort((a, b) =>
+    b.localeCompare(a)
+  );
+  return concreteRuns[0] ?? null;
+}
 
 function estimateBitmapBytes(frame: DecodedFrame): number {
   const w = (frame as { width?: number }).width ?? OVERLAY_CANVAS_WIDTH;
@@ -428,8 +455,10 @@ export function MapCanvas({
   /** When true, the legacy raster-tile layer is active — all WebP canvas
    *  overlay rendering must be suppressed so the two don't fight. */
   const legacyActiveRef = useRef(useLegacyTiles);
+  const warnedUnsupportedLegacyVarRef = useRef<string>("");
   const [isLoaded, setIsLoaded] = useState(false);
   const [retryNonce, setRetryNonce] = useState(0);
+  const [legacyRunId, setLegacyRunId] = useState<string | null>(null);
 
   const onRequestUrlRef = useRef(onRequestUrl);
   const activeImageUrlRef = useRef<string>("");
@@ -522,8 +551,48 @@ export function MapCanvas({
   }, [onRequestUrl]);
 
   useEffect(() => {
-    legacyActiveRef.current = useLegacyTiles;
+    if (!useLegacyTiles) {
+      setLegacyRunId(null);
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const runs = await fetchRuns(LEGACY_MODEL);
+        if (cancelled) {
+          return;
+        }
+        const latestRun = resolveLatestLegacyRun(runs);
+        setLegacyRunId(latestRun);
+        if (!latestRun) {
+          console.warn("[legacy] No valid gfs/pnw run returned for legacy tiles", { runs });
+        }
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        setLegacyRunId(null);
+        console.warn("[legacy] Failed to resolve gfs/pnw run for legacy tiles", error);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [useLegacyTiles]);
+
+  const legacyVarKey = useMemo(() => variable || "tmp2m", [variable]);
+  const legacyVarSupported = useMemo(() => LEGACY_SUPPORTED_VARS.has(legacyVarKey), [legacyVarKey]);
+  const legacyForecastHour = useMemo(() => normalizeForecastHour(forecastHourProp), [forecastHourProp]);
+  const shouldRenderLegacyTiles = useMemo(
+    () => useLegacyTiles && legacyVarSupported && Boolean(legacyRunId),
+    [useLegacyTiles, legacyVarSupported, legacyRunId]
+  );
+
+  useEffect(() => {
+    legacyActiveRef.current = shouldRenderLegacyTiles;
+  }, [shouldRenderLegacyTiles]);
 
   const view = useMemo(() => {
     return REGION_VIEWS[region] ?? {
@@ -1022,6 +1091,15 @@ export function MapCanvas({
       console.log("[ZoomLevel]", map.getZoom().toFixed(2));
     });
 
+    map.on("error", (event) => {
+      console.error("[MapCanvas] map error", {
+        error: (event as { error?: unknown }).error,
+        sourceId: (event as { sourceId?: string }).sourceId,
+        tile: (event as { tile?: unknown }).tile,
+        type: (event as { type?: string }).type,
+      });
+    });
+
     mapRef.current = map;
     (window as any).__twfMap = map;
   }, [model, variable]);
@@ -1173,7 +1251,7 @@ export function MapCanvas({
   }, [isLoaded, model, onZoomHint]);
 
   useEffect(() => {
-    if (useLegacyTiles) {
+    if (shouldRenderLegacyTiles) {
       pendingFrameUrlRef.current = "";
       currentFrameUrlRef.current = "";
       return;
@@ -1221,7 +1299,7 @@ export function MapCanvas({
     opacity,
     enforceOverlayState,
     ensureOverlayInitialized,
-    useLegacyTiles,
+    shouldRenderLegacyTiles,
   ]);
 
   useEffect(() => {
@@ -1361,7 +1439,7 @@ export function MapCanvas({
   ]);
 
   useEffect(() => {
-    if (useLegacyTiles) {
+    if (shouldRenderLegacyTiles) {
       return;
     }
 
@@ -1507,11 +1585,11 @@ export function MapCanvas({
     isLoaded,
     playCanvasSources,
     prefetchFrameImageUrls,
-    useLegacyTiles,
+    shouldRenderLegacyTiles,
   ]);
 
   useEffect(() => {
-    if (useLegacyTiles) {
+    if (shouldRenderLegacyTiles) {
       return;
     }
 
@@ -1567,7 +1645,7 @@ export function MapCanvas({
         prefetchTokenRef.current += 1;
       }
     };
-  }, [fetchBitmap, onFrameImageReady, prefetchFrameImageUrls, useLegacyTiles]);
+  }, [fetchBitmap, onFrameImageReady, prefetchFrameImageUrls, shouldRenderLegacyTiles]);
 
   useEffect(() => {
     (window as any).__twfOverlayDebug = () => {
@@ -1644,7 +1722,7 @@ export function MapCanvas({
   // (default) we tear down any legacy source/layer and let the normal
   // canvas-overlay path render.
   //
-  // The effect fires whenever model/region/run/variable/forecastHour
+  // The effect fires whenever model/run/variable/forecastHour
   // change, keeping the tile URL in sync with the active selection.
   const legacyTileUrlRef = useRef<string>("");
 
@@ -1654,8 +1732,30 @@ export function MapCanvas({
       return;
     }
 
-    // ── Legacy OFF: tear down legacy layers, restore WebP overlay ──
-    if (!useLegacyTiles) {
+    const resolvedModel = LEGACY_MODEL;
+    const resolvedRegion = LEGACY_REGION;
+    const resolvedRun = legacyRunId ?? "";
+    const resolvedVar = legacyVarKey;
+    const resolvedFh = legacyForecastHour;
+
+    console.log("[legacy] enabled=", useLegacyTiles, {
+      model: resolvedModel,
+      region: resolvedRegion,
+      run: resolvedRun || "(pending)",
+      varKey: resolvedVar,
+      fh: resolvedFh,
+    });
+
+    if (useLegacyTiles && !legacyVarSupported && warnedUnsupportedLegacyVarRef.current !== resolvedVar) {
+      warnedUnsupportedLegacyVarRef.current = resolvedVar;
+      console.warn("[legacy] Variable is not supported by legacy tiles; falling back to WebP overlay", {
+        varKey: resolvedVar,
+        supportedVars: Array.from(LEGACY_SUPPORTED_VARS),
+      });
+    }
+
+    // ── Legacy not active: tear down legacy layers, restore WebP overlay ──
+    if (!shouldRenderLegacyTiles) {
       legacyActiveRef.current = false;
       if (hasLayer(map, LEGACY_LAYER_ID)) {
         try { map.removeLayer(LEGACY_LAYER_ID); } catch { /* already removed */ }
@@ -1700,20 +1800,10 @@ export function MapCanvas({
       frameRetryTimerRef.current = null;
     }
 
-    // Build tile URL
-    const resolvedModel = model || "hrrr";
-    const resolvedRun = run || "latest";
-    const resolvedVar = variable || "tmp2m";
-    const resolvedFh = forecastHourProp ?? 0;
-    console.log("[legacy] enabled=", useLegacyTiles, {
-      model: resolvedModel,
-      region,
-      run: resolvedRun,
-      varKey: resolvedVar,
-      fh: resolvedFh,
-    });
-    const tileUrl = getLegacyTileTemplate(resolvedModel, region, resolvedRun, resolvedVar, resolvedFh);
-    console.log("[legacy] tileUrl=", tileUrl);
+    const tileUrl = getLegacyTileTemplate(resolvedModel, resolvedRegion, resolvedRun, resolvedVar, resolvedFh);
+    const tileSampleUrl = buildLegacyTileSampleUrl(tileUrl, 0, 0, 0);
+    console.log("[legacy] tileUrlTemplate=", tileUrl);
+    console.log("[legacy] tileSample(z=0,x=0,y=0)=", tileSampleUrl);
 
     // If the URL hasn't changed, nothing to do
     if (tileUrl === legacyTileUrlRef.current && hasSource(map, LEGACY_SOURCE_ID) && hasLayer(map, LEGACY_LAYER_ID)) {
@@ -1748,6 +1838,13 @@ export function MapCanvas({
         },
         hasLayer(map, "twf-labels") ? "twf-labels" : undefined
       );
+
+      const sourceKeys = Object.keys(map.getStyle()?.sources ?? {});
+      console.log("[legacy] layer attached", {
+        hasLegacyLayer: Boolean(map.getLayer(LEGACY_LAYER_ID)),
+        hasLegacySource: Boolean(map.getSource(LEGACY_SOURCE_ID)),
+        sourceIds: sourceKeys,
+      });
     } catch (err) {
       console.error("[MapCanvas] Failed to add legacy tile layer", err);
     }
@@ -1764,7 +1861,17 @@ export function MapCanvas({
         try { m.removeSource(LEGACY_SOURCE_ID); } catch { /* noop */ }
       }
     };
-  }, [useLegacyTiles, model, region, run, variable, forecastHourProp, opacity, isLoaded, enforceOverlayState]);
+  }, [
+    useLegacyTiles,
+    shouldRenderLegacyTiles,
+    legacyVarSupported,
+    legacyVarKey,
+    legacyForecastHour,
+    legacyRunId,
+    opacity,
+    isLoaded,
+    enforceOverlayState,
+  ]);
 
   return <div ref={mapContainerRef} className="absolute inset-0" aria-label="Weather map" />;
 }

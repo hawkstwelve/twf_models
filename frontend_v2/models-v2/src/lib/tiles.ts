@@ -17,8 +17,16 @@ export function getLegacyTileTemplate(
   varKey: string,
   fh: string | number
 ): string {
-  const normalizedFh = String(fh).padStart(3, "0");
+  const parsed = typeof fh === "number" ? fh : Number.parseInt(String(fh), 10);
+  const normalizedFh = Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : 0;
   return `${LEGACY_BASE}/tiles/${model}/${region}/${run}/${varKey}/${normalizedFh}/{z}/{x}/{y}.png`;
+}
+
+export function buildLegacyTileSampleUrl(tileTemplate: string, z = 0, x = 0, y = 0): string {
+  return tileTemplate
+    .replace("{z}", String(z))
+    .replace("{x}", String(x))
+    .replace("{y}", String(y));
 }
 
 // ---------------------------------------------------------------------------
