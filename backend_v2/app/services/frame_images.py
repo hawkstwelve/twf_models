@@ -171,21 +171,22 @@ def render_frame_image_webp(
     is_discrete = var_key_lower in DISCRETE_VARS
     out_w, out_h = _normalize_size_px(size_px)
 
-    # Single-resample path: read byte-encoded COG at the final output
-    # resolution in one step, then apply LUT.  For continuous vars the
-    # COG bytes were encoded from float-warped data, so bilinear on the
-    # byte indices produces correct intermediate palette positions in
-    # the smooth colour gradient.  For discrete/categorical vars we use
-    # nearest to preserve exact palette boundaries.
-    read_resampling = Resampling.nearest if is_discrete else Resampling.bilinear
+    # Read COG at native resolution with nearest so byte palette indices
+    # are never interpolated, then apply LUT to get true RGBA colours.
     encoded = _read_cog_direct(
         source_cog_path=source_cog_path,
-        output_width=out_w,
-        output_height=out_h,
-        resampling=read_resampling,
+        resampling=Resampling.nearest,
     )
 
     rgba = _rgba_from_encoded_bands(encoded, varKey)
     image = Image.fromarray(rgba, mode="RGBA")
+
+    # Resize RGBA to the requested output size.  For continuous vars
+    # LANCZOS on actual colour channels gives smooth gradients.  For
+    # discrete/categorical vars NEAREST preserves exact palette edges.
+    native_w, native_h = image.size
+    if native_w != out_w or native_h != out_h:
+        resample = Image.Resampling.NEAREST if is_discrete else Image.Resampling.LANCZOS
+        image = image.resize((out_w, out_h), resample=resample)
 
     _atomic_save_webp(image, out_webp_path, quality=quality)

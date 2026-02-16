@@ -43,8 +43,8 @@ GFS_RADAR_PTYPE_FOOTPRINT_MIN_DBZ = float(
 RUN_RE = re.compile(r"^\d{8}_\d{2}z$")
 TARGET_GRID_METERS_BY_MODEL_REGION: dict[tuple[str, str], tuple[float, float]] = {
     ("hrrr", "pnw"): (3000.0, 3000.0),
-    ("gfs", "pnw"): (10000.0, 10000.0),
-    ("gfs", "conus"): (10000.0, 10000.0),
+    ("gfs", "pnw"): (3000.0, 3000.0),
+    ("gfs", "conus"): (3000.0, 3000.0),
     # Future-facing defaults for planned ECMWF support; tune once product is finalized.
     ("ecmwf", "pnw"): (9000.0, 9000.0),
     ("ecmwf", "conus"): (9000.0, 9000.0),
@@ -289,7 +289,7 @@ def _is_discrete(var: str, meta: dict) -> bool:
 def _warp_tr_meters(model: str, var: str, meta: dict) -> tuple[float, float] | None:
     model_key = str(model or "").strip().lower()
     if model_key == "gfs":
-        return (10000.0, 10000.0)
+        return (3000.0, 3000.0)
     return None
 
 
