@@ -206,8 +206,8 @@ def test_resolve_target_grid_meters_defaults(monkeypatch) -> None:
     monkeypatch.delenv("TWF_TARGET_GRID_METERS_GFS_CONUS", raising=False)
 
     assert resolve_target_grid_meters("hrrr", "pnw") == (3000.0, 3000.0)
-    assert resolve_target_grid_meters("gfs", "pnw") == (8000.0, 8000.0)
-    assert resolve_target_grid_meters("gfs", "conus") == (8000.0, 8000.0)
+    assert resolve_target_grid_meters("gfs", "pnw") == (3000.0, 3000.0)
+    assert resolve_target_grid_meters("gfs", "conus") == (3000.0, 3000.0)
     assert resolve_target_grid_meters("ecmwf", "pnw") == (9000.0, 9000.0)
 
 
