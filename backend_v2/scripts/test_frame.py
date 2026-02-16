@@ -58,7 +58,11 @@ def main() -> None:
     args = parser.parse_args()
 
     run_id = args.run or _latest_run(args.model, args.region)
-    out_webp = Path(args.out) if args.out else Path(f"/tmp/test_frame_{args.var}_fh{args.fh:03d}.webp")
+    run_short = run_id.replace("_", "")  # e.g. 20260216_06z → 2026021606z
+    if args.out:
+        out_webp = Path(args.out)
+    else:
+        out_webp = Path(f"/tmp/test_{args.model}_{args.var}_fh{args.fh:03d}_{run_short}.webp")
 
     print(f"{'=' * 60}")
     print(f"  Model:   {args.model}")
