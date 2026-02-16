@@ -456,6 +456,8 @@ export function MapCanvas({
    *  overlay rendering must be suppressed so the two don't fight. */
   const legacyActiveRef = useRef(useLegacyTiles);
   const warnedUnsupportedLegacyVarRef = useRef<string>("");
+  const loggedLegacySuppressedRef = useRef(false);
+  const warnedLegacyScopeRef = useRef(false);
   const [isLoaded, setIsLoaded] = useState(false);
   const [retryNonce, setRetryNonce] = useState(0);
   const [legacyRunId, setLegacyRunId] = useState<string | null>(null);
@@ -585,14 +587,44 @@ export function MapCanvas({
   const legacyVarKey = useMemo(() => variable || "tmp2m", [variable]);
   const legacyVarSupported = useMemo(() => LEGACY_SUPPORTED_VARS.has(legacyVarKey), [legacyVarKey]);
   const legacyForecastHour = useMemo(() => normalizeForecastHour(forecastHourProp), [forecastHourProp]);
+  const propRunLooksValid = useMemo(() => Boolean(run && RUN_ID_RE.test(run)), [run]);
+  const resolvedLegacyRun = useMemo(() => {
+    if (propRunLooksValid && run) {
+      return run;
+    }
+    return legacyRunId ?? "";
+  }, [propRunLooksValid, run, legacyRunId]);
   const shouldRenderLegacyTiles = useMemo(
-    () => useLegacyTiles && legacyVarSupported && Boolean(legacyRunId),
-    [useLegacyTiles, legacyVarSupported, legacyRunId]
+    () => useLegacyTiles && legacyVarSupported && Boolean(resolvedLegacyRun),
+    [useLegacyTiles, legacyVarSupported, resolvedLegacyRun]
+  );
+  const suppressWebPPipeline = useMemo(
+    () => useLegacyTiles || shouldRenderLegacyTiles,
+    [useLegacyTiles, shouldRenderLegacyTiles]
   );
 
   useEffect(() => {
-    legacyActiveRef.current = shouldRenderLegacyTiles;
-  }, [shouldRenderLegacyTiles]);
+    legacyActiveRef.current = useLegacyTiles;
+    if (!useLegacyTiles) {
+      loggedLegacySuppressedRef.current = false;
+    }
+  }, [useLegacyTiles]);
+
+  useEffect(() => {
+    if (!useLegacyTiles) {
+      warnedLegacyScopeRef.current = false;
+      return;
+    }
+    if (!warnedLegacyScopeRef.current && (model !== LEGACY_MODEL || region !== LEGACY_REGION)) {
+      warnedLegacyScopeRef.current = true;
+      console.warn("[legacy] Legacy tile mode is GFS/PNW only; ignoring selected model/region", {
+        selectedModel: model,
+        selectedRegion: region,
+        effectiveModel: LEGACY_MODEL,
+        effectiveRegion: LEGACY_REGION,
+      });
+    }
+  }, [useLegacyTiles, model, region]);
 
   const view = useMemo(() => {
     return REGION_VIEWS[region] ?? {
@@ -1251,9 +1283,10 @@ export function MapCanvas({
   }, [isLoaded, model, onZoomHint]);
 
   useEffect(() => {
-    if (shouldRenderLegacyTiles) {
+    if (suppressWebPPipeline || legacyActiveRef.current) {
       pendingFrameUrlRef.current = "";
       currentFrameUrlRef.current = "";
+      activeImageUrlRef.current = "";
       return;
     }
 
@@ -1299,10 +1332,14 @@ export function MapCanvas({
     opacity,
     enforceOverlayState,
     ensureOverlayInitialized,
-    shouldRenderLegacyTiles,
+    suppressWebPPipeline,
   ]);
 
   useEffect(() => {
+    if (legacyActiveRef.current) {
+      return;
+    }
+
     const map = mapRef.current;
     if (!map || !isLoaded || !isMapStyleReady(map)) {
       return;
@@ -1325,6 +1362,29 @@ export function MapCanvas({
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !isLoaded || !isMapStyleReady(map)) {
+      return;
+    }
+
+    if (useLegacyTiles || shouldRenderLegacyTiles || legacyActiveRef.current) {
+      pendingFrameUrlRef.current = "";
+      currentFrameUrlRef.current = "";
+      activeImageUrlRef.current = "";
+      pendingPromotionRef.current = null;
+      fadeRef.current = null;
+      backFrameRef.current = null;
+      frontFrameRef.current = null;
+      frontFrameUrlRef.current = "";
+      if (frameRetryTimerRef.current !== null) {
+        window.clearTimeout(frameRetryTimerRef.current);
+        frameRetryTimerRef.current = null;
+      }
+      if (!loggedLegacySuppressedRef.current) {
+        loggedLegacySuppressedRef.current = true;
+        console.log("[legacy] WebP pipeline suppressed");
+      }
+      if (hasLayer(map, IMG_LAYER_ID)) {
+        setLayerVisibility(map, IMG_LAYER_ID, false);
+      }
       return;
     }
 
@@ -1436,10 +1496,11 @@ export function MapCanvas({
     prefetchFrameImageUrls,
     retryNonce,
     useLegacyTiles,
+    shouldRenderLegacyTiles,
   ]);
 
   useEffect(() => {
-    if (shouldRenderLegacyTiles) {
+    if (suppressWebPPipeline || legacyActiveRef.current) {
       return;
     }
 
@@ -1585,11 +1646,11 @@ export function MapCanvas({
     isLoaded,
     playCanvasSources,
     prefetchFrameImageUrls,
-    shouldRenderLegacyTiles,
+    suppressWebPPipeline,
   ]);
 
   useEffect(() => {
-    if (shouldRenderLegacyTiles) {
+    if (suppressWebPPipeline || legacyActiveRef.current) {
       return;
     }
 
@@ -1645,7 +1706,7 @@ export function MapCanvas({
         prefetchTokenRef.current += 1;
       }
     };
-  }, [fetchBitmap, onFrameImageReady, prefetchFrameImageUrls, shouldRenderLegacyTiles]);
+  }, [fetchBitmap, onFrameImageReady, prefetchFrameImageUrls, suppressWebPPipeline]);
 
   useEffect(() => {
     (window as any).__twfOverlayDebug = () => {
@@ -1734,7 +1795,7 @@ export function MapCanvas({
 
     const resolvedModel = LEGACY_MODEL;
     const resolvedRegion = LEGACY_REGION;
-    const resolvedRun = legacyRunId ?? "";
+    const resolvedRun = resolvedLegacyRun;
     const resolvedVar = legacyVarKey;
     const resolvedFh = legacyForecastHour;
 
@@ -1754,8 +1815,8 @@ export function MapCanvas({
       });
     }
 
-    // ── Legacy not active: tear down legacy layers, restore WebP overlay ──
-    if (!shouldRenderLegacyTiles) {
+    // ── Legacy OFF: tear down legacy layers, restore WebP overlay ──
+    if (!useLegacyTiles) {
       legacyActiveRef.current = false;
       if (hasLayer(map, LEGACY_LAYER_ID)) {
         try { map.removeLayer(LEGACY_LAYER_ID); } catch { /* already removed */ }
@@ -1768,6 +1829,22 @@ export function MapCanvas({
       if (hasLayer(map, IMG_LAYER_ID)) {
         setLayerVisibility(map, IMG_LAYER_ID, true);
         enforceOverlayState(opacity);
+      }
+      return;
+    }
+
+    // Legacy toggle is ON but inputs may still be resolving/unsupported:
+    // keep WebP suppressed and avoid mixed rendering state.
+    if (!shouldRenderLegacyTiles) {
+      legacyActiveRef.current = true;
+      if (hasLayer(map, LEGACY_LAYER_ID)) {
+        try { map.removeLayer(LEGACY_LAYER_ID); } catch { /* already removed */ }
+      }
+      if (hasSource(map, LEGACY_SOURCE_ID)) {
+        try { map.removeSource(LEGACY_SOURCE_ID); } catch { /* already removed */ }
+      }
+      if (hasLayer(map, IMG_LAYER_ID)) {
+        setLayerVisibility(map, IMG_LAYER_ID, false);
       }
       return;
     }
@@ -1867,7 +1944,7 @@ export function MapCanvas({
     legacyVarSupported,
     legacyVarKey,
     legacyForecastHour,
-    legacyRunId,
+    resolvedLegacyRun,
     opacity,
     isLoaded,
     enforceOverlayState,
