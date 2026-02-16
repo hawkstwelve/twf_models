@@ -196,14 +196,16 @@ RADAR_PTYPE_LEVELS, RADAR_PTYPE_COLORS, RADAR_PTYPE_BREAKS = _build_radar_ptype_
 
 # 2m temperature (°F) palette
 temp_colors = [
-    "#e8d0d8", "#d8b0c8", "#c080b0", "#9050a0", "#703090",
-    "#a070b0", "#c8a0d0", "#e8e0f0", "#d0e0f0", "#a0c0e0",
-    "#7090c0", "#4070b0", "#2050a0", "#103070",
-    "#204048", "#406058", "#709078", "#a0c098", "#d0e0b0",
-    "#f0f0c0", "#e0d0a0", "#c0b080", "#a08060", "#805040",
-    "#602018", "#801010", "#a01010", "#702020",
-    "#886666", "#a08888", "#c0a0a0", "#d8c8c8", "#e8e0e0",
-    "#b0a0a0", "#807070", "#504040",
+    "#e6c7cc", "#d9a9b6", "#c98aa6", "#b56a9a", "#9d4e91",
+    "#823a8b", "#6b2f88",
+    "#5b2d8a", "#4a2f8f", "#3b3f98", "#3052a1", "#2a66aa",
+    "#2f7db3", "#3f95bc", "#59acc6", "#79c2cf",
+    "#a3d7d6", "#c7e6df", "#e6efe6", "#f2f2dc",
+    "#e6d4b5", "#d5bb96", "#c3a178", "#b1875e",
+    "#9e6d46", "#8b5534", "#7a3f26",
+    "#8c2e23", "#a1271c", "#b81f17", "#cf1713",
+    "#9f1b16", "#7a1f1c", "#5a2422",
+    "#3f2a28", "#2a2626"
 ]
 
 # Total precipitation (inches)
@@ -404,7 +406,7 @@ VAR_SPECS = {
     "tmp2m": {
         "type": "continuous",
         "units": "F",
-        "range": (-40.0, 122.5),
+        "range": (-40.0, 120.0),
         "colors": temp_colors,
         "display_name": "2m Temperature",
         "legend_title": "Temperature (°F)",
