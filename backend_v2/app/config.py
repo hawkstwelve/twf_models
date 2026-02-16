@@ -47,8 +47,8 @@ def _env_int(name: str, *, default: int, minimum: int | None = None, maximum: in
 class Settings:
     DATA_V2_ROOT: Path = Path(os.environ.get("TWF_DATA_V2_ROOT", "/opt/twf_models/data/v2")).resolve()
     OFFLINE_TILES_ENABLED: bool = _env_bool("OFFLINE_TILES_ENABLED", default=False)
-    STAGING_ROOT: Path = Path(os.environ.get("STAGING_ROOT", "/opt/twf_models/data/staging")).resolve()
-    PUBLISH_ROOT: Path = Path(os.environ.get("PUBLISH_ROOT", "/opt/twf_models/data/published")).resolve()
+    STAGING_ROOT: Path = Path(os.environ.get("STAGING_ROOT", "/data/staging")).resolve()
+    PUBLISH_ROOT: Path = Path(os.environ.get("PUBLISH_ROOT", "/data/published")).resolve()
     MANIFEST_ROOT: Path = Path(os.environ.get("MANIFEST_ROOT", "/opt/twf_models/data/manifests")).resolve()
     OFFLINE_TILES_MAX_WORKERS: int = _env_int("OFFLINE_TILES_MAX_WORKERS", default=4, minimum=1, maximum=6)
     OFFLINE_TILES_INITIAL_GATE: int = _env_int("OFFLINE_TILES_INITIAL_GATE", default=6)
