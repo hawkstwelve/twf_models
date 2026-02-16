@@ -170,36 +170,20 @@ def render_frame_image_webp(
     var_key_lower = str(varKey or "").strip().lower()
     is_discrete = var_key_lower in DISCRETE_VARS
 
-    # Compute aspect-preserving output dimensions.  size_px gives the
-    # maximum extent; the COG's native aspect ratio is preserved so pixels
-    # aren't stretched.
-    max_w, max_h = _normalize_size_px(size_px)
-    with rasterio.open(source_cog_path) as src:
-        native_w, native_h = src.width, src.height
-
-    if native_w > 0 and native_h > 0:
-        scale = min(max_w / native_w, max_h / native_h)
-        out_w = max(1, round(native_w * scale))
-        out_h = max(1, round(native_h * scale))
-    else:
-        out_w, out_h = max_w, max_h
-
-    # ALWAYS read at native COG resolution with nearest-neighbor.
-    # Byte-encoded palette indices must never be interpolated — blending
-    # index values produces wrong colors via the LUT.
+    # Read COG at native resolution — no resize.  The GDAL warp already
+    # baked smooth gradients into the COG via bilinear interpolation on
+    # byte-encoded values (which is mathematically equivalent to interpolating
+    # float physical values for linear encodings).  Outputting at native size
+    # avoids a second interpolation step that would add softness/blur.
+    # The browser/frontend handles display scaling via imageSmoothingEnabled
+    # and MapLibre raster-resampling: "linear".
     encoded = _read_cog_direct(
         source_cog_path=source_cog_path,
         resampling=Resampling.nearest,
     )
 
-    # Apply colormap at native resolution → RGBA with exact colors.
+    # Apply colormap → RGBA.
     rgba = _rgba_from_encoded_bands(encoded, varKey)
-    native_image = Image.fromarray(rgba, mode="RGBA")
-
-    # Upscale in RGBA color space (the only interpolation step).
-    if is_discrete:
-        image = native_image.resize((out_w, out_h), Image.NEAREST)
-    else:
-        image = native_image.resize((out_w, out_h), Image.LANCZOS)
+    image = Image.fromarray(rgba, mode="RGBA")
 
     _atomic_save_webp(image, out_webp_path, quality=quality)

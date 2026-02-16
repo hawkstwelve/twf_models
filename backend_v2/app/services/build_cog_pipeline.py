@@ -3066,12 +3066,16 @@ def main() -> int:
                 if is_discrete:
                     warp_resampling = "near"
                 else:
-                    # Continuous vars: nearest-neighbor on byte-encoded palette
-                    # indices.  Interpolating byte indices (cubic/bilinear)
-                    # creates invalid intermediate values that map to wrong
-                    # colors via the LUT, causing a washed-out/blurry look.
-                    # Smooth upscaling happens later in RGBA color space.
-                    warp_resampling = "near"
+                    # Continuous vars: bilinear warp on byte-encoded indices.
+                    # Because byte = scale * float + offset (linear mapping),
+                    # bilinear interpolation of byte values is mathematically
+                    # equivalent to interpolating the float physical values
+                    # (e.g. temperatures) and then encoding.  This produces
+                    # correct intermediate values and smooth gradients in the
+                    # COG at the target grid resolution.  This is the ONLY
+                    # interpolation step — frame images are saved at native
+                    # COG resolution with no resize.
+                    warp_resampling = "bilinear"
                 print(f"Warping to EPSG:3857 ({warp_resampling}): {warped_tif}")
                 warp_to_3857(
                     byte_tif,
