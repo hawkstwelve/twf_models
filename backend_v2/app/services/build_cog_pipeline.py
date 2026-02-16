@@ -43,8 +43,8 @@ GFS_RADAR_PTYPE_FOOTPRINT_MIN_DBZ = float(
 RUN_RE = re.compile(r"^\d{8}_\d{2}z$")
 TARGET_GRID_METERS_BY_MODEL_REGION: dict[tuple[str, str], tuple[float, float]] = {
     ("hrrr", "pnw"): (3000.0, 3000.0),
-    ("gfs", "pnw"): (3000.0, 3000.0),
-    ("gfs", "conus"): (3000.0, 3000.0),
+    ("gfs", "pnw"): (10000.0, 10000.0),
+    ("gfs", "conus"): (10000.0, 10000.0),
     # Future-facing defaults for planned ECMWF support; tune once product is finalized.
     ("ecmwf", "pnw"): (9000.0, 9000.0),
     ("ecmwf", "conus"): (9000.0, 9000.0),
@@ -289,7 +289,7 @@ def _is_discrete(var: str, meta: dict) -> bool:
 def _warp_tr_meters(model: str, var: str, meta: dict) -> tuple[float, float] | None:
     model_key = str(model or "").strip().lower()
     if model_key == "gfs":
-        return (3000.0, 3000.0)
+        return (10000.0, 10000.0)
     return None
 
 
@@ -3066,15 +3066,6 @@ def main() -> int:
                 if is_discrete:
                     warp_resampling = "near"
                 else:
-                    # Continuous vars: bilinear warp on byte-encoded indices.
-                    # Because byte = scale * float + offset (linear mapping),
-                    # bilinear interpolation of byte values is mathematically
-                    # equivalent to interpolating the float physical values
-                    # (e.g. temperatures) and then encoding.  This produces
-                    # correct intermediate values and smooth gradients in the
-                    # COG at the target grid resolution.  This is the ONLY
-                    # interpolation step — frame images are saved at native
-                    # COG resolution with no resize.
                     warp_resampling = "bilinear"
                 print(f"Warping to EPSG:3857 ({warp_resampling}): {warped_tif}")
                 warp_to_3857(
