@@ -1,5 +1,7 @@
 import { API_BASE, DEFAULTS, absolutizeUrl } from "@/lib/config";
 
+const LEGACY_API_BASE = (import.meta.env.VITE_LEGACY_API_BASE as string | undefined)?.trim() || "https://legacy-api.sodakweather.com";
+
 export type ModelOption = {
   id: string;
   name: string;
@@ -85,6 +87,30 @@ export async function fetchVars(model: string, run: string): Promise<VarRow[]> {
     `${API_BASE}/vars?model=${encodeURIComponent(model)}&run=${encodeURIComponent(runKey)}`
   );
   return vars;
+}
+
+export async function fetchLegacyRuns(model: string, region: string): Promise<string[]> {
+  const base = LEGACY_API_BASE.replace(/\/+$/, "");
+  const endpoint = `${base}/api/v2/${encodeURIComponent(model)}/${encodeURIComponent(region)}/runs`;
+
+  const response = await fetch(endpoint, { credentials: "omit" });
+  if (!response.ok) {
+    throw new Error(`Legacy runs request failed: ${response.status} ${response.statusText}`);
+  }
+
+  const payload = (await response.json()) as unknown;
+  if (!Array.isArray(payload)) {
+    throw new Error("Legacy runs response is not an array");
+  }
+
+  const runs = payload.filter((item): item is string => typeof item === "string");
+
+  if (import.meta.env.DEV) {
+    console.info("[legacy] runs endpoint", endpoint);
+    console.info("[legacy] runs sample", runs.slice(0, 3));
+  }
+
+  return runs;
 }
 
 /**

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import maplibregl, { type StyleSpecification } from "maplibre-gl";
 
 import { DEFAULTS } from "@/lib/config";
-import { fetchRuns } from "@/lib/api";
+import { fetchLegacyRuns } from "@/lib/api";
 import { buildLegacyTileSampleUrl, getLegacyTileTemplate } from "@/lib/tiles";
 
 const LEGACY_SOURCE_ID = "wx-legacy";
@@ -561,21 +561,21 @@ export function MapCanvas({
     let cancelled = false;
     void (async () => {
       try {
-        const runs = await fetchRuns(LEGACY_MODEL);
+        const runs = await fetchLegacyRuns(LEGACY_MODEL, LEGACY_REGION);
         if (cancelled) {
           return;
         }
         const latestRun = resolveLatestLegacyRun(runs);
         setLegacyRunId(latestRun);
         if (!latestRun) {
-          console.warn("[legacy] No valid gfs/pnw run returned for legacy tiles", { runs });
+          console.warn("[legacy] No valid legacy-api gfs/pnw run returned for legacy tiles", { runs });
         }
       } catch (error) {
         if (cancelled) {
           return;
         }
         setLegacyRunId(null);
-        console.warn("[legacy] Failed to resolve gfs/pnw run for legacy tiles", error);
+        console.warn("[legacy] Failed to resolve legacy-api gfs/pnw run for legacy tiles", error);
       }
     })();
 
@@ -587,13 +587,7 @@ export function MapCanvas({
   const legacyVarKey = useMemo(() => variable || "tmp2m", [variable]);
   const legacyVarSupported = useMemo(() => LEGACY_SUPPORTED_VARS.has(legacyVarKey), [legacyVarKey]);
   const legacyForecastHour = useMemo(() => normalizeForecastHour(forecastHourProp), [forecastHourProp]);
-  const propRunLooksValid = useMemo(() => Boolean(run && RUN_ID_RE.test(run)), [run]);
-  const resolvedLegacyRun = useMemo(() => {
-    if (propRunLooksValid && run) {
-      return run;
-    }
-    return legacyRunId ?? "";
-  }, [propRunLooksValid, run, legacyRunId]);
+  const resolvedLegacyRun = useMemo(() => legacyRunId ?? "", [legacyRunId]);
   const shouldRenderLegacyTiles = useMemo(
     () => useLegacyTiles && legacyVarSupported && Boolean(resolvedLegacyRun),
     [useLegacyTiles, legacyVarSupported, resolvedLegacyRun]
