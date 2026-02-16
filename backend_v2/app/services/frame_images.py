@@ -184,26 +184,22 @@ def render_frame_image_webp(
     else:
         out_w, out_h = max_w, max_h
 
-    if is_discrete:
-        # Discrete/categorical: direct 3857 read with nearest-neighbor
-        # to preserve hard category boundaries.
-        encoded = _read_cog_direct(
-            source_cog_path=source_cog_path,
-            output_width=out_w,
-            output_height=out_h,
-            resampling=Resampling.nearest,
-        )
-    else:
-        # Continuous: direct 3857 read with bilinear resampling in pixel
-        # space.  No CRS conversion — the COG's cubic-warped byte data is
-        # upsampled, then the colormap LUT is applied.
-        encoded = _read_cog_direct(
-            source_cog_path=source_cog_path,
-            output_width=out_w,
-            output_height=out_h,
-            resampling=Resampling.bilinear,
-        )
+    # ALWAYS read at native COG resolution with nearest-neighbor.
+    # Byte-encoded palette indices must never be interpolated — blending
+    # index values produces wrong colors via the LUT.
+    encoded = _read_cog_direct(
+        source_cog_path=source_cog_path,
+        resampling=Resampling.nearest,
+    )
 
+    # Apply colormap at native resolution → RGBA with exact colors.
     rgba = _rgba_from_encoded_bands(encoded, varKey)
-    image = Image.fromarray(rgba, mode="RGBA")
+    native_image = Image.fromarray(rgba, mode="RGBA")
+
+    # Upscale in RGBA color space (the only interpolation step).
+    if is_discrete:
+        image = native_image.resize((out_w, out_h), Image.NEAREST)
+    else:
+        image = native_image.resize((out_w, out_h), Image.LANCZOS)
+
     _atomic_save_webp(image, out_webp_path, quality=quality)

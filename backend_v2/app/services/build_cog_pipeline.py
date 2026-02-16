@@ -3065,10 +3065,13 @@ def main() -> int:
                 is_discrete = _is_discrete(args.var, meta)
                 if is_discrete:
                     warp_resampling = "near"
-                elif str(args.model or "").strip().lower() == "gfs":
-                    warp_resampling = "cubic"
                 else:
-                    warp_resampling = "bilinear"
+                    # Continuous vars: nearest-neighbor on byte-encoded palette
+                    # indices.  Interpolating byte indices (cubic/bilinear)
+                    # creates invalid intermediate values that map to wrong
+                    # colors via the LUT, causing a washed-out/blurry look.
+                    # Smooth upscaling happens later in RGBA color space.
+                    warp_resampling = "near"
                 print(f"Warping to EPSG:3857 ({warp_resampling}): {warped_tif}")
                 warp_to_3857(
                     byte_tif,
