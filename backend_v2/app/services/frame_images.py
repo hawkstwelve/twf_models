@@ -8,8 +8,6 @@ import numpy as np
 import rasterio
 from PIL import Image
 from rasterio.enums import Resampling
-from rasterio.transform import from_bounds as transform_from_bounds
-from rasterio.warp import reproject
 
 from app.services.colormaps_v2 import get_lut
 
@@ -65,6 +63,35 @@ DISCRETE_VARS: frozenset[str] = frozenset({
 })
 
 
+def _read_cog_direct(
+    *,
+    source_cog_path: Path,
+    output_width: int | None = None,
+    output_height: int | None = None,
+    resampling: Resampling = Resampling.nearest,
+) -> np.ndarray:
+    """Read byte-encoded bands directly from a COG — no CRS conversion.
+
+    If output_width/output_height are provided and differ from the native
+    COG dimensions, rasterio's built-in overviews + decimated read is used
+    to produce the requested size in the COG's native CRS (EPSG:3857).
+    This avoids the blurriness introduced by a 3857 → 4326 reprojection.
+    """
+    with rasterio.open(source_cog_path) as src:
+        out_w = output_width or src.width
+        out_h = output_height or src.height
+
+        if out_w == src.width and out_h == src.height:
+            # Exact native resolution — simple read, no resampling.
+            return src.read()
+
+        # Resample within the same grid (no CRS change).
+        return src.read(
+            out_shape=(src.count, out_h, out_w),
+            resampling=resampling,
+        )
+
+
 def _read_encoded_frame(
     *,
     source_cog_path: Path,
@@ -73,6 +100,14 @@ def _read_encoded_frame(
     output_height: int,
     resampling: Resampling = Resampling.nearest,
 ) -> np.ndarray:
+    """Legacy path: reprojects from COG CRS to EPSG:4326 at arbitrary size.
+
+    Kept for discrete variables that need exact region-clipped output at a
+    specific pixel size with nearest-neighbor resampling.
+    """
+    from rasterio.transform import from_bounds as transform_from_bounds
+    from rasterio.warp import reproject as rasterio_reproject
+
     west, south, east, north = [float(v) for v in region_bounds]
     if east <= west or north <= south:
         raise ValueError(f"Invalid region bounds: {region_bounds}")
@@ -90,7 +125,7 @@ def _read_encoded_frame(
             else:
                 dst_nodata = 0
 
-            reproject(
+            rasterio_reproject(
                 source=rasterio.band(src, band_index + 1),
                 destination=destination[band_index],
                 src_transform=src.transform,
@@ -135,30 +170,38 @@ def render_frame_image_webp(
     var_key_lower = str(varKey or "").strip().lower()
     is_discrete = var_key_lower in DISCRETE_VARS
 
+    # Compute aspect-preserving output dimensions.  size_px gives the
+    # maximum extent; the COG's native aspect ratio is preserved so pixels
+    # aren't stretched.
+    max_w, max_h = _normalize_size_px(size_px)
+    with rasterio.open(source_cog_path) as src:
+        native_w, native_h = src.width, src.height
+
+    if native_w > 0 and native_h > 0:
+        scale = min(max_w / native_w, max_h / native_h)
+        out_w = max(1, round(native_w * scale))
+        out_h = max(1, round(native_h * scale))
+    else:
+        out_w, out_h = max_w, max_h
+
     if is_discrete:
-        # Discrete/categorical: nearest-neighbor at requested output size
+        # Discrete/categorical: direct 3857 read with nearest-neighbor
         # to preserve hard category boundaries.
-        width, height = _normalize_size_px(size_px)
-        encoded = _read_encoded_frame(
+        encoded = _read_cog_direct(
             source_cog_path=source_cog_path,
-            region_bounds=region_bounds,
-            output_width=width,
-            output_height=height,
+            output_width=out_w,
+            output_height=out_h,
             resampling=Resampling.nearest,
         )
     else:
-        # Continuous: read at native COG resolution with nearest-neighbor.
-        # The GDAL warp (cubic) already handles spatial smoothing; we just
-        # apply the colormap and save — no resize, no extra interpolation.
-        # The frontend's raster-resampling:"linear" handles display scaling.
-        with rasterio.open(source_cog_path) as src:
-            native_w, native_h = src.width, src.height
-        encoded = _read_encoded_frame(
+        # Continuous: direct 3857 read with bilinear resampling in pixel
+        # space.  No CRS conversion — the COG's cubic-warped byte data is
+        # upsampled, then the colormap LUT is applied.
+        encoded = _read_cog_direct(
             source_cog_path=source_cog_path,
-            region_bounds=region_bounds,
-            output_width=native_w,
-            output_height=native_h,
-            resampling=Resampling.nearest,
+            output_width=out_w,
+            output_height=out_h,
+            resampling=Resampling.bilinear,
         )
 
     rgba = _rgba_from_encoded_bands(encoded, varKey)
