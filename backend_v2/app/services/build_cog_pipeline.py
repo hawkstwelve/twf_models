@@ -3053,36 +3053,105 @@ def main() -> int:
                         f"tr_meters={tr_meters} tap={tap}"
                     )
             else:
-                print(f"Writing byte GeoTIFF: {byte_tif}")
-                _, used_latlon = write_byte_geotiff_from_arrays(
-                    da,
-                    byte_band,
-                    alpha_band,
-                    byte_tif,
-                    meta=meta,
-                )
-
                 is_discrete = _is_discrete(args.var, meta)
                 if is_discrete:
-                    warp_resampling = "near"
-                else:
-                    warp_resampling = "bilinear"
-                print(f"Warping to EPSG:3857 ({warp_resampling}): {warped_tif}")
-                warp_to_3857(
-                    byte_tif,
-                    warped_tif,
-                    clip_bounds_3857=clip_bounds_3857,
-                    resampling=warp_resampling,
-                    tr_meters=tr_meters,
-                    tap=tap,
-                    with_alpha=output_mode == "byte_alpha",
-                )
-                if args.debug:
-                    print(
-                        "Warp debug: "
-                        f"model={args.model} var={args.var} used_latlon={used_latlon} "
-                        f"resampling={warp_resampling} tr_meters={tr_meters} tap={tap}"
+                    # ── Discrete vars: byte-first → warp with nearest ──
+                    print(f"Writing byte GeoTIFF (discrete): {byte_tif}")
+                    _, used_latlon = write_byte_geotiff_from_arrays(
+                        da,
+                        byte_band,
+                        alpha_band,
+                        byte_tif,
+                        meta=meta,
                     )
+                    warp_resampling = "near"
+                    print(f"Warping to EPSG:3857 ({warp_resampling}): {warped_tif}")
+                    warp_to_3857(
+                        byte_tif,
+                        warped_tif,
+                        clip_bounds_3857=clip_bounds_3857,
+                        resampling=warp_resampling,
+                        tr_meters=tr_meters,
+                        tap=tap,
+                        with_alpha=output_mode == "byte_alpha",
+                    )
+                    if args.debug:
+                        print(
+                            "Warp debug: "
+                            f"model={args.model} var={args.var} used_latlon=True "
+                            f"resampling={warp_resampling} tr_meters={tr_meters} tap={tap}"
+                        )
+                else:
+                    # ── Continuous vars: float-first warp (Option C) ──
+                    # Warp in physical float space (e.g. Kelvin) with bilinear,
+                    # THEN quantize to byte 0–254, so interpolation produces
+                    # meaningful intermediate values instead of blending palette indices.
+                    float_tif = temp_root / f"{base_name}.native.f32.tif"
+                    warped_float_tif = temp_root / f"{base_name}.3857.f32.tif"
+
+                    print(f"Float-first warp: writing float32 GeoTIFF: {float_tif}")
+                    write_float_geotiff_from_array(da, values, float_tif)
+
+                    print(f"Warping float32 to EPSG:3857 (bilinear): {warped_float_tif}")
+                    warp_to_3857(
+                        float_tif,
+                        warped_float_tif,
+                        clip_bounds_3857=clip_bounds_3857,
+                        resampling="bilinear",
+                        tr_meters=tr_meters,
+                        tap=tap,
+                        with_alpha=False,
+                    )
+
+                    # Read back warped float values
+                    warped_vals = _read_geotiff_band_float32(warped_float_tif)
+                    width_w, height_w, geotransform_w, srs_wkt_w = _extract_raster_georef(
+                        warped_float_tif
+                    )
+
+                    # Unit conversion (must match _encode_with_nodata logic)
+                    spec_units = meta.get("units", "")
+                    if spec_units == "F":
+                        warped_vals = (warped_vals - 273.15) * (9.0 / 5.0) + 32.0
+
+                    # Scale to byte 0–254 using the same range from metadata
+                    vmin_enc, vmax_enc = meta["range"]
+                    nodata_mask = ~np.isfinite(warped_vals)
+                    scaled = np.clip(
+                        np.rint((warped_vals - vmin_enc) / (vmax_enc - vmin_enc) * 254.0),
+                        0,
+                        254,
+                    ).astype(np.uint8)
+                    scaled[nodata_mask] = 255
+                    alpha_w = np.where(nodata_mask, 0, 255).astype(np.uint8)
+
+                    # Debug: post-warp encode stats
+                    warped_valid = warped_vals[~nodata_mask]
+                    if warped_valid.size:
+                        print(
+                            f"Float-first encode: warped_min={warped_valid.min():.2f} "
+                            f"warped_max={warped_valid.max():.2f} "
+                            f"byte_min={int(scaled[~nodata_mask].min())} "
+                            f"byte_max={int(scaled[~nodata_mask].max())} "
+                            f"shape=({height_w},{width_w})"
+                        )
+
+                    print(f"Writing post-warp byte GeoTIFF: {warped_tif}")
+                    write_byte_geotiff_from_georef(
+                        byte_band=scaled,
+                        alpha_band=alpha_w,
+                        out_tif=warped_tif,
+                        geotransform=geotransform_w,
+                        srs_wkt=srs_wkt_w,
+                        meta=meta,
+                    )
+                    if args.debug:
+                        print(
+                            "Warp debug: "
+                            f"model={args.model} var={args.var} used_latlon=True "
+                            f"resampling=bilinear(float-first) "
+                            f"tr_meters={tr_meters} tap={tap}"
+                        )
 
             precip_ptype_singleband = bool(use_precip_ptype_prewarp)
             if spec_key_used == "precip_ptype" and not use_precip_ptype_prewarp:

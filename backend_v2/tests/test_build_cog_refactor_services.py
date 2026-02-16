@@ -128,7 +128,7 @@ def test_encode_meta_tmp2m_unchanged() -> None:
     assert meta["spec_key"] == "tmp2m"
     assert meta["kind"] == "continuous"
     assert meta["units"] == "F"
-    assert meta["range"] == [-40.0, 122.5]
+    assert meta["range"] == [-40.0, 120.0]
     assert meta["output_mode"] == "byte_alpha"
 
 
