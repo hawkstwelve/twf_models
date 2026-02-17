@@ -1791,7 +1791,17 @@ export function MapCanvas({
     const resolvedRegion = LEGACY_REGION;
     const resolvedRun = resolvedLegacyRun;
     const resolvedVar = legacyVarKey;
-    const resolvedFh = legacyForecastHour;
+    const resolvedFh =
+      resolvedModel === "gfs"
+        ? Math.round(legacyForecastHour / 6) * 6
+        : legacyForecastHour;
+
+    if (import.meta.env.DEV) {
+      console.log("[legacy] snapped forecast hour", {
+        requested: legacyForecastHour,
+        snapped: resolvedFh,
+      });
+    }
 
     console.log("[legacy] enabled=", useLegacyTiles, {
       model: resolvedModel,
@@ -1894,7 +1904,7 @@ export function MapCanvas({
       map.addSource(LEGACY_SOURCE_ID, {
         type: "raster",
         tiles: [tileUrl],
-        tileSize: 256,
+        tileSize: 512,
       });
 
       map.addLayer(
