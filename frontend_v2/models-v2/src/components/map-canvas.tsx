@@ -1915,6 +1915,7 @@ export function MapCanvas({
           paint: {
             "raster-opacity": 1,
             "raster-fade-duration": 0,
+            "raster-resampling": getResamplingMode(resolvedVar),
           },
         },
         hasLayer(map, "twf-labels") ? "twf-labels" : undefined
